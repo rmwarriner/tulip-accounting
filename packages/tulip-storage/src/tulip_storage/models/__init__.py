@@ -17,6 +17,7 @@ from tulip_storage.models.base import Base
 from tulip_storage.models.household import Household
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
+from tulip_storage.models.session import Session
 from tulip_storage.models.transaction import Transaction, TransactionStatus
 from tulip_storage.models.user import User, UserRole
 
@@ -29,6 +30,7 @@ __all__ = [
     "Period",
     "PeriodStatus",
     "Posting",
+    "Session",
     "Transaction",
     "TransactionStatus",
     "User",
