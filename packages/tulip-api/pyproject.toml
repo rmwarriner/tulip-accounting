@@ -3,6 +3,29 @@ name = "tulip-api"
 version = "0.0.0"
 description = "FastAPI server for Tulip Accounting."
 requires-python = ">=3.12"
+dependencies = [
+    "tulip-core",
+    "tulip-storage",
+    "fastapi>=0.115",
+    "pydantic>=2.7",
+    "uvicorn>=0.30",
+    "structlog>=24.1",
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.9",
+    "pyotp>=2.9",
+    "qrcode>=7.4",
+    "slowapi>=0.1.9",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+test = [
+    "schemathesis>=3.30",
+]
+
+[tool.uv.sources]
+tulip-core = { workspace = true }
+tulip-storage = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
