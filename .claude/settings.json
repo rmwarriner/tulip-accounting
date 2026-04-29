@@ -26,10 +26,7 @@
       "Grep"
     ],
     "deny": [
-      "Bash(rm -rf:*)",
-      "Bash(sudo:*)",
-      "Bash(curl *)",
-      "Bash(wget *)"
+      "Bash(sudo:*)"
     ]
   }
 }
