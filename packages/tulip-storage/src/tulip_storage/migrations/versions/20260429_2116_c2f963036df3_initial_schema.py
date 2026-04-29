@@ -20,6 +20,10 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from tulip_storage.migrations._triggers import (
+    INITIAL_TRIGGER_NAMES,
+    INITIAL_TRIGGERS,
+)
 from tulip_storage.models.base import GUID
 
 # revision identifiers, used by Alembic.
@@ -27,99 +31,6 @@ revision: str = "c2f963036df3"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
-
-
-# SQL for the balanced-postings trigger. Fires when a transaction's status
-# transitions to POSTED/RECONCILED, or when postings are mutated on an
-# already-posted transaction. Pending transactions may carry unbalanced
-# postings (e.g., import-time staging).
-_TRIGGER_TX_STATUS_BALANCE = """
-CREATE TRIGGER trg_transactions_balanced_on_post
-AFTER UPDATE OF status ON transactions
-WHEN NEW.status IN ('POSTED', 'RECONCILED')
-  AND (OLD.status IS NULL OR OLD.status != NEW.status)
-BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM postings
-      WHERE household_id = NEW.household_id
-        AND transaction_id = NEW.id
-      GROUP BY currency
-      HAVING SUM(amount) != 0
-    )
-    THEN RAISE(ABORT, 'transaction postings do not balance per currency')
-  END;
-END;
-"""
-
-_TRIGGER_POSTING_INSERT_BALANCE = """
-CREATE TRIGGER trg_postings_balanced_on_insert
-AFTER INSERT ON postings
-WHEN EXISTS (
-  SELECT 1 FROM transactions
-  WHERE household_id = NEW.household_id
-    AND id = NEW.transaction_id
-    AND status IN ('POSTED', 'RECONCILED')
-)
-BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM postings
-      WHERE household_id = NEW.household_id
-        AND transaction_id = NEW.transaction_id
-      GROUP BY currency
-      HAVING SUM(amount) != 0
-    )
-    THEN RAISE(ABORT, 'cannot insert posting that breaks balance on a posted transaction')
-  END;
-END;
-"""
-
-_TRIGGER_POSTING_UPDATE_BALANCE = """
-CREATE TRIGGER trg_postings_balanced_on_update
-AFTER UPDATE ON postings
-WHEN EXISTS (
-  SELECT 1 FROM transactions
-  WHERE household_id = NEW.household_id
-    AND id = NEW.transaction_id
-    AND status IN ('POSTED', 'RECONCILED')
-)
-BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM postings
-      WHERE household_id = NEW.household_id
-        AND transaction_id = NEW.transaction_id
-      GROUP BY currency
-      HAVING SUM(amount) != 0
-    )
-    THEN RAISE(ABORT, 'cannot update posting that breaks balance on a posted transaction')
-  END;
-END;
-"""
-
-_TRIGGER_POSTING_DELETE_BALANCE = """
-CREATE TRIGGER trg_postings_balanced_on_delete
-AFTER DELETE ON postings
-WHEN EXISTS (
-  SELECT 1 FROM transactions
-  WHERE household_id = OLD.household_id
-    AND id = OLD.transaction_id
-    AND status IN ('POSTED', 'RECONCILED')
-)
-BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM postings
-      WHERE household_id = OLD.household_id
-        AND transaction_id = OLD.transaction_id
-      GROUP BY currency
-      HAVING SUM(amount) != 0
-    )
-    THEN RAISE(ABORT, 'cannot delete posting that breaks balance on a posted transaction')
-  END;
-END;
-"""
 
 
 def upgrade() -> None:
@@ -386,20 +297,16 @@ def upgrade() -> None:
     # Balance-enforcement triggers — SQLite-specific.
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
-        op.execute(_TRIGGER_TX_STATUS_BALANCE)
-        op.execute(_TRIGGER_POSTING_INSERT_BALANCE)
-        op.execute(_TRIGGER_POSTING_UPDATE_BALANCE)
-        op.execute(_TRIGGER_POSTING_DELETE_BALANCE)
+        for ddl in INITIAL_TRIGGERS:
+            op.execute(ddl)
 
 
 def downgrade() -> None:
     """Drop all triggers, indexes, and tables in reverse order."""
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
-        op.execute("DROP TRIGGER IF EXISTS trg_postings_balanced_on_delete")
-        op.execute("DROP TRIGGER IF EXISTS trg_postings_balanced_on_update")
-        op.execute("DROP TRIGGER IF EXISTS trg_postings_balanced_on_insert")
-        op.execute("DROP TRIGGER IF EXISTS trg_transactions_balanced_on_post")
+        for trigger_name in reversed(INITIAL_TRIGGER_NAMES):
+            op.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
     with op.batch_alter_table("postings", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_postings_transaction_id"))

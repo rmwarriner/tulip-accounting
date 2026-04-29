@@ -132,12 +132,15 @@ class TestTransactionWithPostings:
 
     def test_balanced_transaction_persists(self, session: Session):
         h, cash, food = self._seed(session)
+        # The save flow is: insert tx as PENDING → insert postings →
+        # UPDATE tx to POSTED. The balance trigger validates on the UPDATE.
+        # See ARCHITECTURE §4.2 / migration 0001 for the trigger contract.
         tx = Transaction(
             household_id=h.id,
             id=uuid4(),
             date=date(2026, 6, 1),
             description="Lunch",
-            status=TransactionStatus.POSTED,
+            status=TransactionStatus.PENDING,
         )
         session.add(tx)
         session.flush()
@@ -158,6 +161,8 @@ class TestTransactionWithPostings:
             currency="USD",
         )
         session.add_all([p1, p2])
+        session.flush()
+        tx.status = TransactionStatus.POSTED
         session.commit()
 
         loaded = (
