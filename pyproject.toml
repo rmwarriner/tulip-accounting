@@ -79,6 +79,7 @@ warn_unreachable = true
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 files = [
     "packages/tulip-core/src",
+    "packages/tulip-core/tests",
     "packages/tulip-storage/src",
     "packages/tulip-api/src",
     "packages/tulip-ai/src",
@@ -96,6 +97,15 @@ mypy_path = [
     "packages/tulip-cli/src",
 ]
 explicit_package_bases = true
+
+# Tests don't need full annotations on every method — pytest doesn't read
+# them and `-> None` on dozens of test methods is noise. Type errors inside
+# bodies are still caught.
+[[tool.mypy.overrides]]
+module = ["tests.*", "conftest"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
 
 # ---------------------------------------------------------------------------
 # Pytest
