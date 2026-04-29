@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from tulip_api.logging_config import configure_logging
+from tulip_api.middleware import RequestIdMiddleware
 from tulip_api.routers import health
 
 API_VERSION = "v1"
@@ -17,6 +19,8 @@ API_TITLE = "Tulip Accounting API"
 
 def create_app() -> FastAPI:
     """Build a fresh FastAPI app instance."""
+    configure_logging()
+
     app = FastAPI(
         title=API_TITLE,
         version="0.1.0",
@@ -24,6 +28,10 @@ def create_app() -> FastAPI:
             "Household-focused double-entry accounting API. See ARCHITECTURE.md for design notes."
         ),
     )
+
+    # Request-id stamping must run before any router-level logging so the
+    # request_id is in scope for every log line emitted during handling.
+    app.add_middleware(RequestIdMiddleware)
 
     # Top-level health probe — kept off /v1 so monitors don't break across
     # major-version cuts.

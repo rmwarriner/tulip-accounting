@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
-from io import StringIO
 
 import pytest
 import structlog
@@ -15,20 +13,10 @@ from tulip_api.main import create_app
 
 
 @pytest.fixture
-def captured_logs():
-    """Capture structlog output as JSON dicts."""
-    buf = StringIO()
-    handler = logging.StreamHandler(buf)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    root = logging.getLogger()
-    prev_handlers = root.handlers[:]
-    prev_level = root.level
-    root.handlers = [handler]
-    root.setLevel(logging.INFO)
+def configured_logging():
+    """Configure structlog for the test (idempotent across tests)."""
     configure_logging()
-    yield buf
-    root.handlers = prev_handlers
-    root.setLevel(prev_level)
+    yield
 
 
 class TestRequestIdMiddleware:
@@ -84,19 +72,19 @@ class TestPIIRedaction:
 
 
 class TestStructlogConfig:
-    def test_logger_emits_json(self, captured_logs):
+    def test_logger_emits_json(self, configured_logging, capsys):
         log = structlog.get_logger("tulip_api.test")
         log.info("hello", foo="bar")
-        line = captured_logs.getvalue().strip().splitlines()[-1]
+        line = capsys.readouterr().out.strip().splitlines()[-1]
         record = json.loads(line)
         assert record["event"] == "hello"
         assert record["foo"] == "bar"
         assert record["level"] == "info"
         assert "timestamp" in record
 
-    def test_logger_redacts_password_field(self, captured_logs):
+    def test_logger_redacts_password_field(self, configured_logging, capsys):
         log = structlog.get_logger("tulip_api.test")
         log.info("login", password="secret")
-        line = captured_logs.getvalue().strip().splitlines()[-1]
+        line = capsys.readouterr().out.strip().splitlines()[-1]
         record = json.loads(line)
         assert record["password"] == "<redacted>"
