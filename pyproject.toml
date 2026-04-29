@@ -21,3 +21,96 @@ dev = [
     "pre-commit>=3.7",
     "polyfactory>=2.16",
 ]
+
+# ---------------------------------------------------------------------------
+# Ruff — lint and format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["packages/*/src", "packages/*/tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+    "S",   # flake8-bandit (security)
+    "D",   # pydocstyle (docstrings)
+    "ANN", # flake8-annotations
+]
+ignore = [
+    "D203",  # one-blank-line-before-class (conflicts with D211)
+    "D213",  # multi-line-summary-second-line (conflicts with D212)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/*/tests/**" = [
+    "S101",   # asserts are the whole point of tests
+    "D",      # tests don't need docstrings
+    "ANN",    # tests don't need type annotations on every fixture
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# ---------------------------------------------------------------------------
+# Mypy — strict static type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
+files = [
+    "packages/tulip-core/src",
+    "packages/tulip-storage/src",
+    "packages/tulip-api/src",
+    "packages/tulip-ai/src",
+    "packages/tulip-importers/src",
+    "packages/tulip-reports/src",
+    "packages/tulip-cli/src",
+]
+mypy_path = [
+    "packages/tulip-core/src",
+    "packages/tulip-storage/src",
+    "packages/tulip-api/src",
+    "packages/tulip-ai/src",
+    "packages/tulip-importers/src",
+    "packages/tulip-reports/src",
+    "packages/tulip-cli/src",
+]
+explicit_package_bases = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["packages/tulip-core/tests", "packages/tulip-storage/tests", "packages/tulip-api/tests", "packages/tulip-ai/tests", "packages/tulip-importers/tests", "packages/tulip-reports/tests", "packages/tulip-cli/tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "property: hypothesis property-based tests",
+    "integration: integration tests (DB / network / spawned process)",
+    "slow: slow tests (excluded from the default fast loop)",
+]
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["packages"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
