@@ -1,0 +1,72 @@
+# Dependabot configuration for Tulip Accounting
+#
+# Dependabot opens PRs to update outdated dependencies. We use grouped updates
+# so we get one PR per week for minor/patch bumps (usually safe), and separate
+# PRs for major bumps (need careful review).
+#
+# Ecosystems enabled:
+#   - uv:            Python dependencies (uv-managed, since March 2025)
+#   - github-actions: pinned action versions in .github/workflows/
+#
+# A note on uv quirks (current as of this writing): Dependabot updates
+# pyproject.toml dependency specifiers but does not always regenerate uv.lock.
+# A separate workflow that runs `uv lock` on Dependabot PRs is the standard
+# workaround; add one if/when this becomes painful in practice.
+
+version: 2
+updates:
+
+  # ---------------------------------------------------------------------------
+  # Python dependencies (uv ecosystem)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions (workflow files)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

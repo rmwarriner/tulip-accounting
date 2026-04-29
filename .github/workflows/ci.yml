@@ -1,0 +1,195 @@
+# Tulip Accounting — Continuous Integration
+#
+# This workflow runs on every push to main and every pull request. It enforces
+# the discipline described in README.md and docs/ARCHITECTURE.md §7.3:
+#
+#   - Code is formatted and lint-clean (ruff)
+#   - Code passes strict static type checking (mypy --strict)
+#   - All tests pass with at least 85% line coverage
+#   - No secrets accidentally committed (gitleaks)
+#
+# Jobs run in parallel; the `all-checks-passed` gate at the end is what branch
+# protection should require, so adding a new job doesn't require updating the
+# branch-protection rule.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same PR — saves CI minutes when pushing rapid fixes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "latest"
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Lint & format check (ruff replaces flake8/isort/black with a single fast tool)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: ruff check (lint)
+        run: uv run ruff check
+
+      - name: ruff format --check (no autoformatting allowed in CI)
+        run: uv run ruff format --check
+
+  # ---------------------------------------------------------------------------
+  # Strict static type checking
+  # ---------------------------------------------------------------------------
+  type-check:
+    name: Type check (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: mypy
+        run: uv run mypy
+
+  # ---------------------------------------------------------------------------
+  # Unit + property-based tests with coverage gate
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (pytest + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SQLCipher headers
+        # tulip-storage links against SQLCipher; required for storage tests.
+        # On the macOS/Windows side, contributors install locally; CI is Linux-only.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev sqlcipher
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: Run tests with coverage
+        # --cov-fail-under enforces the project floor declared in README.md.
+        # Bump this number as coverage improves; never lower it without an ADR.
+        run: |
+          uv run pytest \
+            --cov \
+            --cov-report=term \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-fail-under=85 \
+            --junitxml=junit.xml
+
+      - name: Upload coverage XML (for downstream tools)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          if-no-files-found: warn
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit
+          path: junit.xml
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Secrets scanning — catches API keys, credentials, etc. accidentally committed
+  # ---------------------------------------------------------------------------
+  secrets-scan:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks scans full history on PRs
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Single gate to require in branch protection — adding new jobs above does
+  # not require updating the branch protection rule, only this `needs:` list.
+  # ---------------------------------------------------------------------------
+  all-checks-passed:
+    name: All checks passed
+    runs-on: ubuntu-latest
+    needs: [lint, type-check, test, secrets-scan]
+    if: always()
+    steps:
+      - name: Verify all required jobs succeeded
+        run: |
+          if [[ "${{ needs.lint.result }}"          != "success" || \
+                "${{ needs.type-check.result }}"    != "success" || \
+                "${{ needs.test.result }}"          != "success" || \
+                "${{ needs.secrets-scan.result }}"  != "success" ]]; then
+            echo "::error::One or more required checks failed"
+            exit 1
+          fi
+          echo "All required checks passed."
+
+# -----------------------------------------------------------------------------
+# Future additions (track via ADR before adding):
+#
+#   - schemathesis: API contract tests against the live OpenAPI spec.
+#     Add when tulip-api lands (Phase 2).
+#
+#   - architecture tests: verify module-boundary rules (tulip-core has no I/O
+#     imports, tulip-cli does not import tulip-storage, etc.). Add when the
+#     boundary surface is large enough to need automated enforcement (Phase 1+).
+#
+#   - mutation tests (mutmut): scheduled weekly run on tulip-core to find
+#     tests that don't actually constrain behavior. Add as a scheduled workflow,
+#     not a per-PR check.
+#
+#   - dependency audit (pip-audit / uv tree --audit equivalent): scheduled
+#     weekly to flag known-CVE dependencies.
+#
+#   - container image build & scan: when the Dockerfile lands in Phase 8.
+# -----------------------------------------------------------------------------
