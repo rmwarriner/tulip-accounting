@@ -9,7 +9,7 @@ goes through this object.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import TYPE_CHECKING
 
 from tulip_core.currency import Currency
@@ -82,6 +82,19 @@ class Money:
         if not isinstance(scalar_obj, int | Decimal):
             raise TypeError(f"Cannot multiply Money by {type(scalar).__name__}; use int or Decimal")
         return Money(self.amount * Decimal(scalar), self.currency)
+
+    def quantize_to_currency(self) -> Money:
+        """Round amount to the currency's minor units using banker's rounding.
+
+        Uses decimal.ROUND_HALF_EVEN. The number of fractional digits is the
+        currency's `minor_units` (USD=2, JPY=0, BHD=3). Idempotent.
+        """
+        minor_units = Currency.from_code(self.currency).minor_units
+        # Decimal("1e-N") is exactly the quantum we want at N fractional digits;
+        # for minor_units=0 use Decimal("1") so the result has no fractional part.
+        quantum = Decimal(1).scaleb(-minor_units) if minor_units > 0 else Decimal(1)
+        rounded = self.amount.quantize(quantum, rounding=ROUND_HALF_EVEN)
+        return Money(rounded, self.currency)
 
     def __repr__(self) -> str:
         """Return a useful debug string like Money('87.42', 'USD')."""
