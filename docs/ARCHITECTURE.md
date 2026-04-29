@@ -18,6 +18,8 @@ Tulip Accounting is a household-focused, double-entry accounting system with fir
 4. **Plain old data over clever data.** Schemas are explicit, normalized where it matters, denormalized only where measured.
 5. **Defense in depth.** SQLCipher for the database, separate field-level encryption for the most sensitive fields, separate file-level encryption for attachments. No single key compromise leaks everything.
 6. **AI as a participant, never a gatekeeper.** Every AI capability has a non-AI fallback path. The system is fully usable with all AI features disabled.
+7. **Errors are actionable, not apologetic.** No error message ever says "an error occurred," "something went wrong," or any other generic placeholder. Every error names *what* failed, *why*, and — wherever the system has enough context — *what the user can do to recover*. Internal identifiers (UUIDs, stack frames, raw exception names) belong in logs, not in user-facing copy. See §7.8 for the standards (RFC 9457 Problem Details on the API; equivalent shape in the CLI).
+8. **Recover gracefully where the user expects it.** Transient failures (network blips, AI provider rate limits, attachment-store stalls) retry with backoff before surfacing. Hard failures degrade to a known-good fallback (rule-based categorization when the AI provider is down; local export when the cloud is unreachable; queued action with an explicit "will retry at ..." status). The system does not silently drop work.
 
 ### 1.2 v1 Scope (in)
 
@@ -617,6 +619,134 @@ The user has explicitly called out comprehensive testing compliant with modern T
 - v1 implementations: `ConsoleNotifier`, `EmailNotifier` (SMTP).
 - Triggers: scheduled tx requires approval, AI invocation awaiting approval, anomaly detected, period close completed, backup failed.
 - Future: webhook-based (`WebhookNotifier`) for Slack/Discord/etc.
+
+### 7.8 Error Reporting & Recovery
+
+This is a first-class design principle (see §1.1 #7 and #8); the rules below are how it shows up at each layer.
+
+#### 7.8.1 Two distinct concerns
+
+| Concern | What it means | Where it lives |
+|---|---|---|
+| **Actionable error messages** (UX) | The user reads the message and knows what failed, why, and how to fix it. No "an error occurred" placeholders, no UUIDs in user copy, no stack traces on response bodies. | API responses, CLI output, validation errors, exception messages that bubble up. |
+| **Error recovery / graceful degradation** (system) | Transient failures retry with backoff; hard failures degrade to a known-good fallback rather than fail the request entirely. | AI adapters, attachment store, importers, scheduler runner, backup job, notifier. |
+
+These overlap (a degraded-mode response is still an error message that needs to be actionable), but they are separately enforceable and tested separately.
+
+#### 7.8.2 API error response standard — RFC 9457 (Problem Details)
+
+Every non-2xx response from `tulip-api` is a `application/problem+json` body shaped per **RFC 9457 — *Problem Details for HTTP APIs*** (the successor to RFC 7807).
+
+Required fields on every response:
+
+```json
+{
+  "type":     "https://tulip.example/errors/transaction-unbalanced",
+  "title":    "Transaction does not balance",
+  "status":   400,
+  "detail":   "The USD postings sum to $1.00 instead of $0. Add an offsetting USD posting of -$1.00 (or correct an existing amount) and resubmit.",
+  "instance": "/v1/transactions",
+  "code":     "transaction.unbalanced",
+  "request_id": "8c0f...-..."
+}
+```
+
+- **`type`** — URI identifying the problem class. Stable across versions; clients may dispatch on it. Default: a URL under `/.well-known/errors/<code>`. Defaults to `about:blank` only when nothing more specific applies.
+- **`title`** — short human-readable summary. Stable per `type`. Suitable for display as a heading.
+- **`status`** — HTTP status code, mirrored in the body so clients reading the body alone don't need the response object.
+- **`detail`** — long human-readable explanation tailored to *this* occurrence. **This is the field that holds the recovery hint** when one is computable. Always plain English, never identifiers, never raw exception text.
+- **`instance`** — URI of the specific failing request. Useful for support tickets.
+- **`code`** — machine-readable error code (dotted segments). The contract clients program against; never reused for a different meaning. Examples: `transaction.unbalanced`, `account.unknown`, `auth.invalid_credentials`, `period.closed`.
+- **`request_id`** — the same UUID stamped on the response by `RequestIdMiddleware` and bound to the structlog context. Lets a user paste it into a support request and have a sysadmin find the matching log line.
+
+Extension fields per error class (always under additional named keys, never crammed into `detail`):
+
+- `errors: [{loc, code, message}, ...]` for validation failures (one entry per failing field).
+- `retry_after_seconds: <int>` for rate limits and transient AI provider failures.
+- `closed_period_override_url: <uri>` for soft-close violations (where the recovery is "ask an admin to override").
+- `provider_status: {name, last_seen_ok}` when an upstream AI provider is the proximate cause.
+
+#### 7.8.3 Required content for the `detail` field
+
+Every `detail` string must answer:
+
+1. **What** failed in domain terms. Not "validation failed" — say "the transaction's postings don't balance," "no period covers 2024-06-01," "this account is in use by 12 transactions and can't be deleted."
+2. **Why**, when the cause is non-obvious from "what."
+3. **How to fix it**, when the system has enough information to suggest a fix. Examples:
+   - Unbalanced transaction → which currency is off and by how much.
+   - Closed-period write → "Period closed 2025-12-31. Ask an admin to reopen, or post the transaction with `override_closed_period=true` if you have admin role."
+   - Stale refresh token → "Sign in again." (Not "401 Unauthorized.")
+   - Account-in-use on delete → "Deactivate the account instead, or reassign its 12 transactions to a different account first."
+
+If `detail` would just restate `title`, leave it equal to `title` rather than padding with filler.
+
+#### 7.8.4 Anti-patterns the API must never produce
+
+- ❌ `{"detail": "an error occurred"}`
+- ❌ `{"detail": "Internal Server Error"}` on a path the application should have anticipated
+- ❌ Raw stack traces in any response body (logged at ERROR level, never returned)
+- ❌ Naked UUIDs in user copy (use the entity's name where one exists; UUIDs go in logs)
+- ❌ Two routes returning the same `code` for substantively different failures
+- ❌ Validation errors without `loc` — the user can't tell which field is wrong
+
+#### 7.8.5 CLI error output
+
+The CLI mirrors the same shape:
+
+- A leading bold red title (e.g., **"Transaction does not balance"**).
+- An indented `detail` paragraph in plain English (no JSON dump).
+- A trailing line: `Code: transaction.unbalanced  ·  Request: 8c0f...`
+- Exit codes per category (`0` success, `1` user error, `2` auth, `3` server, `4` network, `5` configuration). The mapping is documented in `docs/CLI.md`.
+- `--json` flag emits the raw Problem Details body for scripting.
+
+#### 7.8.6 Exception-message style (server-side internals)
+
+In code, raised exceptions follow the same discipline because they often surface verbatim into log lines and into `detail` after sanitization:
+
+```python
+raise UnbalancedTransactionError(
+    f"USD postings sum to {balance} instead of zero; "
+    f"add an offsetting USD posting of {-balance} or correct an existing amount"
+)
+```
+
+Never:
+
+```python
+raise ValueError("invalid")             # ❌ what's invalid?
+raise RuntimeError(f"tx {tx.id} bad")   # ❌ leaks UUID, says nothing useful
+```
+
+#### 7.8.7 Recovery patterns
+
+For each class of failure the system has a defined recovery path:
+
+| Failure | Recovery |
+|---|---|
+| AI provider 5xx / rate-limit | Retry with exponential backoff (`tulip-ai.adapters` decorator). After max retries, fall back to the configured `fallback_provider` (typically Ollama). After fallback also fails, degrade to the rule-based path (auto-categorization → user-defined regex rules) and surface a `provider_unavailable` notification. |
+| AI cost cap reached | Capability returns the rule-based result with `reason: "monthly cost cap reached"` and a `notifications` row. Never silently no-op. |
+| Importer parse error on row N of M | Persist the import batch as `partial`, report `imported_count`, `skipped_count`, `error_count`, and an `errors` list keyed by source row number. The user reviews and either re-uploads a fixed file or accepts the partial. |
+| Network failure during attachment upload | Local staging directory holds the bytes; a background retry (max 5 attempts, 30s/2m/10m/1h/24h backoff) completes the upload. CLI exits with a "queued for retry" message. |
+| Backup target unreachable | Backup writes to a local fallback path and the `BACKUP_DEGRADED` notification fires. Subsequent runs prefer the configured target again. |
+| Soft-close period write | Reject by default with the explicit recovery hint that an admin can `--override-closed-period` (audit-logged). |
+| MFA required but not enrolled | Return 403 with `code: auth.mfa_required` and a recovery `enrollment_url` extension field pointing at `/v1/auth/mfa/enroll`. |
+
+#### 7.8.8 Where this is enforced
+
+- **Tests** — every error path test asserts the response is a Problem Details body, not just the status code. A reusable `assert_problem(resp, code=..., status=...)` helper lives in `packages/tulip-api/tests/_problem_details.py`.
+- **OpenAPI spec** — every operation's `responses` block lists the Problem Details schemas it can return; schemathesis (Phase 2.x) drives this and fails on undeclared error responses.
+- **Architecture test** — no router function may `raise HTTPException(detail=<str>)` without going through the helper that wraps it as a Problem Details body. (Phase 2.x; current Phase 2 emits plain `detail` strings and is tracked for migration in the §10 plan.)
+
+#### 7.8.9 Status of the current code
+
+Phase 2 endpoints currently raise `HTTPException(status_code=..., detail="...")` — FastAPI's default shape, not RFC 9457. The migration to Problem Details is a Phase 2.x slice (`P2.x: RFC 9457 errors + recovery hints`) that:
+
+1. Adds a project-wide exception → Problem Details mapper (FastAPI exception handler).
+2. Replaces ad-hoc `detail=` strings with typed exceptions whose `code`, `title`, and `detail` come from a registry.
+3. Adds the `assert_problem` test helper and migrates the existing tests to use it.
+4. Publishes `/.well-known/errors/<code>` HTML pages with the canonical explanation.
+
+This is non-blocking for Phase 3 (CLI), since the CLI can be written against the eventual shape from day 1 and the API migration can land underneath it.
 
 ---
 
