@@ -58,6 +58,17 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.isort]
+known-first-party = [
+    "tulip_core",
+    "tulip_storage",
+    "tulip_api",
+    "tulip_ai",
+    "tulip_importers",
+    "tulip_reports",
+    "tulip_cli",
+]
+
 # ---------------------------------------------------------------------------
 # Mypy — strict static type checking
 # ---------------------------------------------------------------------------
