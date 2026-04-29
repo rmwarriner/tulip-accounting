@@ -10,17 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
+
+from tulip_core.currency import Currency
 
 if TYPE_CHECKING:
     from typing import Self
-
-# Minimal ISO 4217 set required by Phase 0 tests. The full canonical table
-# lives in tulip_core.currency (Step 7) and will replace this set in the
-# refactor pass once Currency lands.
-_KNOWN_CURRENCIES: Final[frozenset[str]] = frozenset(
-    {"USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "BHD"}
-)
 
 
 class CurrencyMismatchError(ValueError):
@@ -47,8 +42,9 @@ class Money:
         amount_obj: object = self.amount
         if isinstance(amount_obj, bool) or not isinstance(amount_obj, Decimal):
             raise TypeError(f"Money amount must be Decimal, got {type(self.amount).__name__}")
-        if self.currency not in _KNOWN_CURRENCIES:
-            raise ValueError(f"Unknown currency: {self.currency!r}")
+        # Currency.from_code raises ValueError on unknown / malformed codes,
+        # which preserves the Money construction contract.
+        Currency.from_code(self.currency)
 
     @classmethod
     def zero(cls, currency: str) -> Self:
