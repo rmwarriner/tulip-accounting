@@ -888,28 +888,33 @@ tulip-accounting/
 
 ## 10. Development Phases
 
-The roadmap below is suggested; Claude Code can sequence within each phase as the work clarifies.
+The roadmap below is suggested; Claude Code can sequence within each phase as the work clarifies. Per-slice progress lives in [PHASE_STATUS.md](PHASE_STATUS.md); this section is the long-form definition of each phase.
 
-### Phase 0 — Project bootstrap (1–2 sessions)
+### Phase 0 — Project bootstrap (1–2 sessions) ✅ complete
 - uv workspace skeleton; CI pipeline (lint, type-check, test, coverage gate)
 - `tulip-core` skeleton with `Money`, `Currency`, `Account` value objects
 - Property-based tests for `Money` arithmetic (the foundation invariant)
 - Pre-commit hooks (ruff, mypy, secrets-detection)
 
-### Phase 1 — Storage + accounting engine
+### Phase 1 — Storage + accounting engine ✅ complete
 - SQLAlchemy models for households, users, accounts, transactions, postings
-- SQLCipher wiring with master-key passphrase prompt
-- Field-level encryption helpers
-- Alembic migration #1: initial schema
+- ~~SQLCipher wiring with master-key passphrase prompt~~ — *deferred; field-level only in v1*
+- Field-level encryption helpers (AES-256-GCM via `cryptography`)
+- Alembic migration #1: initial schema + balance-enforcement triggers
 - Accounting engine: post transaction, balanced-postings invariant, period-aware writes
-- Property-based tests over the engine
+- Property-based tests over `Money`; example-based + hypothesis-strategies on the engine
 
-### Phase 2 — API surface (auth + accounts + transactions)
+### Phase 2 — API surface (auth + accounts + transactions) ✅ complete (core) · 🟡 cleanup queued in Phase 2.x
 - FastAPI app with structured logging and request_id middleware
-- Auth endpoints (register, login, MFA enrollment, refresh)
+- Auth endpoints — register, login, refresh, logout (MFA queued in P2.x.1)
 - CRUD for accounts and transactions with permission enforcement
-- OpenAPI spec rendered + schemathesis tests in CI
+- OpenAPI spec rendered (schemathesis contract tests queued in P2.x.3)
 - Audit log writer wired into every mutation
+
+### Phase 2.x — Cleanup before Phase 3 — queued
+- **P2.x.1** — MFA (TOTP) enrollment, login challenge, hashed recovery codes
+- **P2.x.2** — RFC 9457 Problem Details migration (see §7.8)
+- **P2.x.3** — schemathesis contract tests in CI
 
 ### Phase 3 — CLI (Typer) + first useful flows
 - `tulip auth login`, `tulip add`, `tulip register`, `tulip balance`, `tulip accounts`

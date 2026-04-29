@@ -34,7 +34,7 @@ uv run pre-commit install
 uv run pytest                    # confirm green
 ```
 
-You'll also need SQLCipher development headers — `libsqlcipher-dev` on Debian/Ubuntu, `sqlcipher` from Homebrew on macOS.
+SQLCipher development headers are *only* required once full-DB SQLCipher encryption lands (Phase 1.x). The current Phase 1 / Phase 2 codebase uses field-level AES-256-GCM (via the pure-Python `cryptography` library) and needs no native sqlcipher install to develop or test against.
 
 ## Project conventions
 

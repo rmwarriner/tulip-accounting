@@ -2,7 +2,7 @@
 
 Household-focused, double-entry accounting system with first-class envelope budgeting and sinking-fund support.
 
-> **Status:** Pre-alpha — Phase 0 (project bootstrap). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and roadmap.
+> **Status:** Pre-alpha — Phases 0, 1, and 2 complete (project bootstrap, storage + accounting engine, API surface for auth + accounts + transactions). See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for current progress and the queued Phase 2.x work, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ---
 
@@ -44,7 +44,7 @@ tulip-accounting/
 
 - **Python 3.12 or newer**
 - **[uv](https://docs.astral.sh/uv/)** — fast Python package and workspace manager (replaces pip + venv + pip-tools workflows; if you're returning to Python from an earlier era, this is the modern toolchain).
-- **SQLCipher** development headers:
+- **SQLCipher** development headers — *only required once full-DB SQLCipher encryption lands (Phase 1.x)*. Field-level AES-256-GCM (the layer that protects account numbers, TOTP secrets, etc.) uses the pure-Python `cryptography` library and needs no native deps.
   - Debian/Ubuntu: `sudo apt install libsqlcipher-dev sqlcipher`
   - macOS (Homebrew): `brew install sqlcipher`
   - Other platforms: see https://www.zetetic.net/sqlcipher/
@@ -56,7 +56,15 @@ git clone https://github.com/<your-org>/tulip-accounting
 cd tulip-accounting
 uv sync                          # installs all workspace packages + dev deps
 uv run pre-commit install        # enable pre-commit hooks
-uv run pytest                    # confirm tests pass
+uv run pytest                    # confirm tests pass (184 tests, ~5s)
+```
+
+### Initialize a database
+
+```bash
+# From the repo root, against a local SQLite file:
+TULIP_DATABASE_URL=sqlite:///./tulip.db \
+  uv run alembic -c packages/tulip-storage/alembic.ini upgrade head
 ```
 
 ### Common commands
@@ -71,11 +79,21 @@ uv run mypy                                  # type check (strict)
 uv run pre-commit run --all-files            # run all pre-commit hooks
 ```
 
-### Running the API server (once Phase 2 lands)
+### Running the API server
 
 ```bash
-uv run tulip-api serve --bind 127.0.0.1:8000
+TULIP_DATABASE_URL=sqlite:///./tulip.db \
+TULIP_JWT_SECRET="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  uv run uvicorn tulip_api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
+
+Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Available endpoints:
+
+- `POST /v1/auth/{register,login,refresh,logout}`
+- `GET/POST/PATCH/DELETE /v1/accounts[/{id}]`
+- `GET/POST /v1/transactions[/{id}]`
+
+In production, supply `TULIP_JWT_SECRET` from a secret store rather than generating fresh on every start (existing tokens won't validate after a restart with a new secret).
 
 ### Running the CLI (once Phase 3 lands)
 
@@ -99,9 +117,10 @@ This project follows test-driven development. Every feature ships with tests wri
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — full system design, data model, phase roadmap
-- [Phase 0 Checklist](docs/PHASE_0_CHECKLIST.md) — concrete bootstrap steps (current phase)
-- Additional docs (DATA_MODEL, API, CLI, DEPLOYMENT, BACKUP_RESTORE, SECURITY, AI) land as their respective phases are built
+- [Architecture](docs/ARCHITECTURE.md) — full system design, data model, phase roadmap, error-handling standard (§7.8)
+- [Phase Status](docs/PHASE_STATUS.md) — what's shipped, what's queued
+- [Phase 0 Checklist](docs/PHASE_0_CHECKLIST.md) — original bootstrap checklist (Phase 0 complete)
+- Additional docs (DATA_MODEL, API, CLI, DEPLOYMENT, BACKUP_RESTORE, SECURITY, AI) land as their respective phases are built. The OpenAPI spec at `/openapi.json` is the live contract for `tulip-api` until `docs/API.md` exists.
 
 ## Security & privacy
 
