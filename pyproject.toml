@@ -114,7 +114,11 @@ check_untyped_defs = true
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["packages/tulip-core/tests", "packages/tulip-storage/tests", "packages/tulip-api/tests", "packages/tulip-ai/tests", "packages/tulip-importers/tests", "packages/tulip-reports/tests", "packages/tulip-cli/tests"]
-addopts = "-ra --strict-markers --strict-config"
+# importlib import mode lets each package's tests/ have an __init__.py
+# without colliding with sibling packages' tests/ (mypy module-pattern
+# overrides need the __init__.py; pytest's default 'prepend' mode would
+# load both as 'tests', which raises ImportError).
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 markers = [
     "property: hypothesis property-based tests",
     "integration: integration tests (DB / network / spawned process)",
