@@ -1,0 +1,12 @@
+[project]
+name = "tulip-ai"
+version = "0.0.0"
+description = "AI provider adapters and capabilities for Tulip Accounting."
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tulip_ai"]
