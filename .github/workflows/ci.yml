@@ -148,10 +148,14 @@ jobs:
         with:
           fetch-depth: 0  # gitleaks scans full history on PRs
 
+      # Run gitleaks directly rather than via gitleaks-action@v2: that action
+      # fails on initial commits because it tries to diff <root-commit>^..HEAD
+      # (the parent of the root commit doesn't exist). The official Docker
+      # image is the upstream-recommended invocation and works on any history.
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: docker://zricethezav/gitleaks:latest
+        with:
+          args: detect --source=/github/workspace --redact --verbose --no-banner
 
   # ---------------------------------------------------------------------------
   # Single gate to require in branch protection — adding new jobs above does
