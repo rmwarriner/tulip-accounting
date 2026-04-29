@@ -8,7 +8,7 @@ structlog instead.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -37,7 +37,7 @@ from tulip_api.schemas.auth import (
 )
 from tulip_storage.models import Household, User, UserRole
 from tulip_storage.models import Session as SessionRow
-from tulip_storage.repositories import AuditLogWriter
+from tulip_storage.repositories import AuditLogWriter, PeriodRepository
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -85,6 +85,14 @@ def register(
             status_code=status.HTTP_409_CONFLICT,
             detail="email already registered in this household",
         ) from exc
+
+    # Seed a default current-year period so tests + first-time users can
+    # immediately post transactions without explicitly creating one.
+    today = date.today()
+    PeriodRepository(session, household.id).create(
+        start_date=date(today.year, 1, 1),
+        end_date=date(today.year, 12, 31),
+    )
 
     AuditLogWriter(session, household.id).write(
         action="register",

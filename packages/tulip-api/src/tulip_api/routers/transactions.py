@@ -1,0 +1,209 @@
+"""POST/GET /v1/transactions — routes through the accounting engine."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
+
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from tulip_api.auth.deps import get_current_claims, require_role
+from tulip_api.deps import get_session
+from tulip_api.schemas.transaction import (
+    PostingRead,
+    TransactionCreate,
+    TransactionRead,
+)
+from tulip_core.accounting import (
+    ClosedPeriodError,
+    UnbalancedTransactionError,
+    post_transaction,
+)
+from tulip_core.money import Money
+from tulip_core.periods import Period as DomainPeriod
+from tulip_core.periods import PeriodStatus as DomainPS
+from tulip_core.transactions import (
+    Posting as DomainPosting,
+)
+from tulip_core.transactions import (
+    Transaction as DomainTransaction,
+)
+from tulip_core.transactions import (
+    TransactionStatus as DomainTxStatus,
+)
+from tulip_storage.repositories import (
+    AccountRepository,
+    AuditLogWriter,
+    PeriodRepository,
+    TransactionRepository,
+)
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from tulip_api.auth.tokens import Claims
+
+
+router = APIRouter(prefix="/v1/transactions", tags=["transactions"])
+log = structlog.get_logger("tulip_api.transactions")
+
+
+@router.post("", response_model=TransactionRead, status_code=status.HTTP_201_CREATED)
+def create_transaction(
+    body: TransactionCreate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionRead:
+    """Build a domain Transaction, post it through the engine, persist."""
+    accounts_repo = AccountRepository(session, claims.household_id)
+    for p in body.postings:
+        if accounts_repo.get(p.account_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown account_id {p.account_id}",
+            )
+
+    domain_postings: tuple[DomainPosting, ...] = tuple(
+        DomainPosting(
+            id=uuid4(),
+            account_id=p.account_id,
+            amount=Money(p.amount, p.currency),
+            memo=p.memo,
+        )
+        for p in body.postings
+    )
+
+    try:
+        # Construct as PENDING so post_transaction's period check + balance
+        # check both run; it promotes to POSTED on success.
+        domain_tx = DomainTransaction(
+            id=uuid4(),
+            household_id=claims.household_id,
+            date=body.date,
+            description=body.description,
+            reference=body.reference,
+            postings=domain_postings,
+            status=DomainTxStatus.PENDING,
+            created_by_user_id=claims.user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    period_repo = PeriodRepository(session, claims.household_id)
+    candidate_periods = _domain_periods(period_repo)
+    try:
+        posted = post_transaction(domain_tx, periods=candidate_periods)
+    except UnbalancedTransactionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"transaction does not balance: {exc}",
+        ) from exc
+    except ClosedPeriodError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    tx_repo = TransactionRepository(session, claims.household_id)
+    saved = tx_repo.save_balanced(posted)
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="create",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=saved.id,
+        after={"description": saved.description, "date": saved.date.isoformat()},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info("transaction.created", tx_id=str(saved.id))
+    return _read_response(saved.id, claims.household_id, session)
+
+
+@router.get("/{tx_id}", response_model=TransactionRead)
+def get_transaction(
+    tx_id: UUID,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionRead:
+    """Fetch a transaction (header + postings) by id."""
+    repo = TransactionRepository(session, claims.household_id)
+    if repo.get(tx_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="transaction not found")
+    return _read_response(tx_id, claims.household_id, session)
+
+
+@router.get("", response_model=list[TransactionRead])
+def list_transactions(
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> list[TransactionRead]:
+    """List all transactions in the caller's household, newest first."""
+    from sqlalchemy import select
+
+    from tulip_storage.models import Transaction as TxModel
+
+    rows = list(
+        session.execute(
+            select(TxModel)
+            .where(TxModel.household_id == claims.household_id)
+            .order_by(TxModel.date.desc(), TxModel.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return [_read_response(t.id, claims.household_id, session) for t in rows]
+
+
+# ---- helpers ---------------------------------------------------------------
+
+
+def _domain_periods(repo: PeriodRepository) -> list[DomainPeriod]:
+    """Return PeriodRepository's rows wrapped as core Period value objects."""
+    return [
+        DomainPeriod(
+            id=p.id,
+            household_id=p.household_id,
+            start_date=p.start_date,
+            end_date=p.end_date,
+            status=DomainPS(p.status.value),
+        )
+        for p in repo.list_all()
+    ]
+
+
+def _read_response(tx_id: UUID, household_id: UUID, session: Session) -> TransactionRead:
+    repo = TransactionRepository(session, household_id)
+    header = repo.get(tx_id)
+    assert header is not None  # caller verifies before invoking  # noqa: S101
+    postings = repo.list_postings(tx_id)
+    return TransactionRead(
+        id=header.id,
+        date=header.date,
+        description=header.description,
+        reference=header.reference,
+        status=header.status.value,
+        postings=[
+            PostingRead(
+                id=p.id,
+                account_id=p.account_id,
+                amount=p.amount,
+                currency=p.currency,
+                memo=p.memo,
+            )
+            for p in postings
+        ],
+    )
+
+
+def _request_uuid(request: Request) -> UUID | None:
+    rid = request.headers.get("x-request-id")
+    if rid:
+        try:
+            return UUID(rid)
+        except ValueError:
+            return None
+    return None
