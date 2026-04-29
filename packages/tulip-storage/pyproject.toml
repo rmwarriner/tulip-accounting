@@ -3,6 +3,15 @@ name = "tulip-storage"
 version = "0.0.0"
 description = "Storage abstraction and SQLite/SQLCipher implementation for Tulip Accounting."
 requires-python = ">=3.12"
+dependencies = [
+    "tulip-core",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "cryptography>=42.0",
+]
+
+[tool.uv.sources]
+tulip-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -51,6 +51,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "packages/*/tests/**" = [
     "S101",   # asserts are the whole point of tests
+    "S105",   # hardcoded password strings — fine in fixtures
+    "S106",   # hardcoded password kwargs — fine in fixtures
     "D",      # tests don't need docstrings
     "ANN",    # tests don't need type annotations on every fixture
 ]
