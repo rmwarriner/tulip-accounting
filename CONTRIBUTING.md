@@ -111,6 +111,98 @@ If your change involves a non-trivial architectural decision — choosing betwee
 6. CI runs automatically. All required checks must pass before review.
 7. A reviewer (currently the maintainer; eventually anyone designated) will review and either request changes or merge.
 
+## Branch protection on `main`
+
+`main` is protected via GitHub branch protection. The rules below apply to *every* push, including the maintainer's. They guard against catastrophes (force-push, accidental delete, unsigned commits sneaking in from a misconfigured worktree) without adding PR-review friction that doesn't fit a solo / small-team project.
+
+### Active rules
+
+| Rule | Setting |
+|---|---|
+| Block force pushes | ✅ rejected |
+| Block branch deletion | ✅ rejected |
+| Require linear history | ✅ no merge commits — rebase or squash to land |
+| Require signed commits | ✅ every commit on `main` must be signed (SSH or GPG) |
+| Allow admins to bypass | ✅ — emergency escape hatch only |
+| Required status checks | ❌ off (classic protection only enforces these on PR merges; using rulesets to apply them to direct pushes too is on the future-improvements list) |
+| Required PR reviews | ❌ off (solo maintainer) |
+
+### What this means in practice
+
+- `git push origin main` works as long as your commit is signed.
+- `git push --force` and `git push --force-with-lease` to `main` are rejected. If you really need a force-push (rebase mishap on `main`), see the recovery section below.
+- A merge commit on `main` is rejected. Integrate by **rebase** or **squash**:
+  ```bash
+  git checkout main
+  git pull --rebase
+  git checkout my-branch
+  git rebase main
+  git checkout main
+  git merge --ff-only my-branch
+  git push
+  ```
+- An unsigned commit is rejected. The fix is *almost always* a missing or misconfigured local Git config, not a missing key — see the next section.
+
+### Gotcha: unsigned commit rejected on push
+
+By far the most common surprise. Symptom: `git push` succeeds locally but GitHub rejects it with:
+
+> `! [remote rejected] main -> main (commit ... is not signed)`
+
+Diagnose with the three relevant config keys (run from inside the worktree that pushed):
+
+```bash
+git config --get commit.gpgsign     # must be 'true'
+git config --get gpg.format         # must be 'ssh' (or 'openpgp' if you use GPG)
+git config --get user.signingkey    # must point at your signing key
+```
+
+Common causes and fixes:
+
+- **A new clone in a new IDE / temp worktree didn't inherit your global config.** Run the three `git config` checks above. If they're missing, your global `~/.gitconfig` is fine — the worktree is reading a *different* user's config (e.g., a Docker image, a sandbox container, a Codespace). Either set them in the worktree or update the environment.
+- **An automated tool (a Claude Code agent, a CI helper) created a commit and bypassed signing.** Look for `--no-gpg-sign` in your reflog (`git reflog`). The fix is usually `git commit --amend -S --no-edit && git push`. (Amending is fine here because the commit hasn't been published.)
+- **`ssh-agent` doesn't have your signing key loaded.** `ssh-add -l` should list it. If not, `ssh-add ~/.ssh/your_signing_key`. (This is a "git asks for your key passphrase forever" kind of failure too; the agent is the fix.)
+
+If a single bad commit needs to be rewritten *after* it's been amended, you'll need a force-push, which is blocked — see recovery below.
+
+### Recovery: when you genuinely need a force-push
+
+Branch protection is reversible. If you've truly mangled `main` and a force-push is the right answer (rare, and worth a sanity check from a second pair of eyes when possible):
+
+```bash
+# 1. Temporarily relax the rules.
+gh api --method DELETE /repos/rmwarriner/tulip-accounting/branches/main/protection
+
+# 2. Do the surgery.
+git push --force-with-lease origin main
+
+# 3. Restore the rules. (Same commands you used to set them up the first time.)
+gh api --method PUT /repos/rmwarriner/tulip-accounting/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": null,
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": true
+}
+JSON
+
+gh api --method POST \
+  /repos/rmwarriner/tulip-accounting/branches/main/protection/required_signatures
+```
+
+Always re-enable protection in the same session. Leaving `main` unprotected is the kind of mistake the rules exist to prevent.
+
+### Future: tighter CI gating via rulesets
+
+Classic branch protection only enforces required status checks on PR merges, not on direct pushes to `main`. If we ever want "CI must be green before any commit lands on `main`," that's a one-time conversion to GitHub Rulesets. The conversion is non-destructive (rulesets coexist with branch protection) but does change the daily-push workflow — every change goes through a feature branch and PR. We're not doing this today; capturing the option here so it's discoverable.
+
 ## What gets rejected (so you don't waste your time)
 
 - PRs that add features beyond the v1 scope defined in [ARCHITECTURE.md §1.2](docs/ARCHITECTURE.md). Open an issue first to discuss whether the feature fits.

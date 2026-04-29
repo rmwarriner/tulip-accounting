@@ -59,6 +59,8 @@ uv run pre-commit install        # enable pre-commit hooks
 uv run pytest                    # confirm tests pass (184 tests, ~5s)
 ```
 
+> **Note for committers:** `main` is branch-protected and **requires every commit to be signed**. Configure SSH or GPG commit signing before your first push (`git config --global commit.gpgsign true` plus a signing key); see [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection-on-main) for the details, the most common failure modes, and the diagnostic checklist if a push is rejected as unsigned.
+
 ### Initialize a database
 
 ```bash
