@@ -11,7 +11,7 @@ from fastapi import FastAPI
 
 from tulip_api.logging_config import configure_logging
 from tulip_api.middleware import RequestIdMiddleware
-from tulip_api.routers import health
+from tulip_api.routers import auth, health
 
 API_VERSION = "v1"
 API_TITLE = "Tulip Accounting API"
@@ -36,5 +36,6 @@ def create_app() -> FastAPI:
     # Top-level health probe — kept off /v1 so monitors don't break across
     # major-version cuts.
     app.include_router(health.router)
+    app.include_router(auth.router)
 
     return app
