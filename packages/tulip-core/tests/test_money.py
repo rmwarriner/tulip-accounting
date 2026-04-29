@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 from decimal import Decimal
 
 import pytest
+
 from tulip_core.money import CurrencyMismatchError, Money
 
 
