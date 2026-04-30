@@ -25,9 +25,36 @@ from typing import Any, Final
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 PROBLEM_CONTENT_TYPE: Final[str] = "application/problem+json"
 DEFAULT_TYPE_PREFIX: Final[str] = "/.well-known/errors"
+
+
+class ProblemDetailsResponse(BaseModel):
+    """OpenAPI schema for an RFC 9457 ``application/problem+json`` body.
+
+    Referenced from operation ``responses=`` blocks so the OpenAPI spec
+    documents the error contract clients program against, and so
+    schemathesis (P2.x.3) can validate that returned bodies conform.
+
+    Extension fields (e.g. ``mfa_token``, ``enrollment_url``,
+    ``retry_after_seconds``) appear at the top level per RFC 9457 §3.2;
+    ``model_config = {"extra": "allow"}`` keeps the schema permissive.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = Field(description="URI identifying the problem class.")
+    title: str = Field(description="Short human-readable summary, stable per type.")
+    status: int = Field(description="HTTP status code, mirrored in the body.")
+    detail: str = Field(description="Per-occurrence explanation; recovery hint when computable.")
+    instance: str = Field(description="URI of the specific failing request.")
+    code: str = Field(description="Stable machine-readable error code (dotted segments).")
+    request_id: str | None = Field(
+        default=None,
+        description="Request UUID stamped by RequestIdMiddleware; useful for support tickets.",
+    )
 
 
 class TulipProblem(Exception):
@@ -401,9 +428,102 @@ class TransactionNotFoundError(TulipProblem):
         )
 
 
+class ValidationFailedError(TulipProblem):
+    """FastAPI / Pydantic input validation rejected the request body or params."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        """Build the validation.failed problem.
+
+        ``errors`` is the list returned by FastAPI's ``RequestValidationError.errors()``.
+        It's surfaced verbatim under the ``errors`` extension field so clients
+        can localize the failures to specific fields.
+        """
+        super().__init__(
+            code="validation.failed",
+            title="Request validation failed",
+            status=422,
+            detail="One or more fields in the request body or query parameters are invalid.",
+            extensions={"errors": errors},
+        )
+
+
+def problem_response(*codes: str) -> dict[str, Any]:
+    """Build a FastAPI ``responses=`` value for a Problem Details error.
+
+    Use as::
+
+        @router.post("/login", responses={
+            401: problem_response("auth.invalid_credentials", "auth.mfa_required"),
+            403: problem_response("auth.mfa_enrollment_required"),
+        })
+
+    The list of codes is purely for the OpenAPI ``description``; the
+    response body conforms to :class:`ProblemDetailsResponse` regardless.
+    """
+    return {
+        "model": ProblemDetailsResponse,
+        "content": {PROBLEM_CONTENT_TYPE: {}},
+        "description": "; ".join(codes) if codes else "Problem Details error.",
+    }
+
+
+#: Default ``responses`` entries every body-accepting operation should carry.
+#: Documents the framework-level errors (400 bad body, 422 validation) that
+#: schemathesis can trigger with random inputs. Spread into a route's
+#: ``responses=``: ``{**FRAMEWORK_BODY_RESPONSES, 401: ..., ...}``.
+FRAMEWORK_BODY_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
+    400: problem_response("request.body_invalid"),
+    422: problem_response("validation.failed"),
+}
+
+
+_FRAMEWORK_ERROR_CODES: Final[dict[int, str]] = {
+    400: "request.body_invalid",
+    404: "request.not_found",
+    405: "request.method_not_allowed",
+    415: "request.unsupported_media_type",
+}
+
+
 def install_problem_handlers(app: FastAPI) -> None:
-    """Register the :class:`TulipProblem` handler on ``app``."""
+    """Register the :class:`TulipProblem` handler on ``app``.
+
+    Also wraps FastAPI's ``RequestValidationError`` (422) and Starlette's
+    framework-level ``HTTPException`` (400 bad body, 404 no route, 405
+    wrong method, etc.) so the *entire* error surface is RFC 9457 —
+    schemathesis's contract test asserts this.
+    """
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
     @app.exception_handler(TulipProblem)
     def _handle(request: Request, exc: TulipProblem) -> JSONResponse:
         return _render(request, exc)
+
+    @app.exception_handler(RequestValidationError)
+    def _handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return _render(request, ValidationFailedError(errors=list(exc.errors())))
+
+    @app.exception_handler(StarletteHTTPException)
+    def _handle_starlette(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Catches the framework-level errors that bypass our typed
+        # exceptions: malformed body JSON (400), no route (404), wrong
+        # method (405). Maps the status to a stable code so clients can
+        # still dispatch on it.
+        code = _FRAMEWORK_ERROR_CODES.get(exc.status_code, f"request.status_{exc.status_code}")
+        title_by_code = {
+            "request.body_invalid": "Malformed request body",
+            "request.not_found": "Route not found",
+            "request.method_not_allowed": "Method not allowed",
+            "request.unsupported_media_type": "Unsupported media type",
+        }
+        return _render(
+            request,
+            TulipProblem(
+                code=code,
+                title=title_by_code.get(code, "Request error"),
+                status=exc.status_code,
+                detail=str(exc.detail) if exc.detail else None,
+                headers=dict(exc.headers) if exc.headers else None,
+            ),
+        )

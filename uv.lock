@@ -1593,6 +1593,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "schemathesis" },
 ]
 
 [package.metadata]
@@ -1607,6 +1608,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.5" },
+    { name = "schemathesis", specifier = ">=3.30" },
 ]
 
 [[package]]
@@ -1634,11 +1636,6 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
-[package.dev-dependencies]
-test = [
-    { name = "schemathesis" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1" },
@@ -1656,9 +1653,6 @@ requires-dist = [
     { name = "tulip-storage", editable = "packages/tulip-storage" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-
-[package.metadata.requires-dev]
-test = [{ name = "schemathesis", specifier = ">=3.30" }]
 
 [[package]]
 name = "tulip-cli"

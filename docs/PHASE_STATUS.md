@@ -13,7 +13,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
 
-**Tests:** 268 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 287 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
 
 ---
 
@@ -130,9 +130,17 @@ Sub-slices:
 
 P2.x.2 closes; P2.x.3 (schemathesis contract tests) is unblocked next.
 
-### P2.x.3 — schemathesis contract tests in CI — *blocked by P2.x.2*
+### P2.x.3 — schemathesis contract tests in CI — ✅ *(2026-04-30)*
 
-Drives the OpenAPI spec against a running app and asserts every documented error path returns the declared Problem Details schema. Lands as part of Phase 2.x cleanup before Phase 3.
+- Schemathesis relocated from a never-installed `tulip-api`-local `dependency-groups.test` to the root `dependency-groups.dev` so `uv sync --all-packages` actually installs it.
+- New `ProblemDetailsResponse` Pydantic model in `errors.py` provides the OpenAPI schema for every error body. `problem_response("code1", "code2")` helper builds operation `responses=` entries.
+- Every operation in `routers/{auth,accounts,transactions}.py` now declares its full set of error responses (401/403/404/409 + 400/422 framework paths).
+- `RequestValidationError` (FastAPI 422) and Starlette `HTTPException` (framework-level 400 malformed body, 404 no route, 405 wrong method) are now wrapped to RFC 9457 — every non-2xx response is `application/problem+json`. New codes: `validation.failed`, `request.body_invalid`, `request.not_found`, `request.method_not_allowed`, `request.unsupported_media_type`.
+- `tests/test_openapi_contract.py` uses `schemathesis.openapi.from_asgi()` and `@schema.parametrize()` to fuzz every documented operation with 25 examples each (override via `HYPOTHESIS_PROFILE=thorough` for 200). Asserts status codes are in declared sets and bodies conform to declared schemas.
+- **Real bug caught and fixed**: `/v1/auth/login` used `scalar_one_or_none()` against email, but the schema allows the same email across multiple households. Schemathesis fuzzed two registers with the same email and tripped `MultipleResultsFound`. Login now authenticates against all candidates with the email and picks the one whose password verifies.
+- Architecture test (`test_architecture_no_http_exception`) exempts `errors.py` since that's where the legitimate `HTTPException` wrapper handler lives.
+
+P2.x is now fully complete; the next slice is **Phase 3 — CLI (Typer) + first useful flows**.
 
 ---
 
