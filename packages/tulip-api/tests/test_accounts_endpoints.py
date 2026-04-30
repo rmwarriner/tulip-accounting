@@ -66,12 +66,12 @@ class TestAccountCrud:
         assert len(rows) == 1
         assert rows[0]["name"] == "Checking"
 
-    def test_get_returns_404_for_unknown(self, client: TestClient, auth_h: dict[str, str]):
+    def test_get_returns_not_found_for_unknown(self, client: TestClient, auth_h: dict[str, str]):
         r = client.get(
             "/v1/accounts/00000000-0000-0000-0000-000000000000",
             headers=auth_h,
         )
-        assert r.status_code == 404
+        assert_problem(r, code="account.not_found", status=404)
 
     def test_update(self, client: TestClient, auth_h: dict[str, str]):
         a = client.post(
