@@ -83,6 +83,29 @@ class TestUserCrud:
         with pytest.raises(IntegrityError):
             session.commit()
 
+    def test_totp_enrolled_at_defaults_null_and_round_trips(self, session: Session):
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        u = User(
+            household_id=h.id,
+            id=uuid4(),
+            email="bob@example.com",
+            password_hash="argon2id$dummy",
+            display_name="Bob",
+            role=UserRole.MEMBER,
+        )
+        session.add(u)
+        session.commit()
+        loaded = session.execute(select(User).where(User.email == "bob@example.com")).scalar_one()
+        # New users start un-enrolled.
+        assert loaded.totp_enrolled_at is None
+
+        loaded.totp_enrolled_at = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+        session.commit()
+        again = session.execute(select(User).where(User.email == "bob@example.com")).scalar_one()
+        assert again.totp_enrolled_at is not None
+        assert again.totp_enrolled_at.year == 2026
+
 
 class TestAccountCrud:
     def test_round_trip_account(self, session: Session):

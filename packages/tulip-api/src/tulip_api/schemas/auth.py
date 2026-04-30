@@ -50,3 +50,22 @@ class LogoutRequest(BaseModel):
     """Body for POST /v1/auth/logout."""
 
     refresh_token: str
+
+
+class MfaEnrollResponse(BaseModel):
+    """Response from POST /v1/auth/mfa/enroll.
+
+    The plaintext ``secret`` is returned exactly once — at enrollment time
+    — so the user can scan or paste it into an authenticator app. After
+    verification the secret is only retrievable in encrypted form from
+    the database.
+    """
+
+    secret: str
+    provisioning_uri: str
+
+
+class MfaVerifyRequest(BaseModel):
+    """Body for POST /v1/auth/mfa/verify."""
+
+    code: str = Field(min_length=1, max_length=12)
