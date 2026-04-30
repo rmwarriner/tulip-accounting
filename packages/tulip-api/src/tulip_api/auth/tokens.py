@@ -19,8 +19,13 @@ from jwt.exceptions import InvalidTokenError as PyJwtInvalidTokenError
 
 DEFAULT_ACCESS_TTL: Final[timedelta] = timedelta(minutes=15)
 DEFAULT_REFRESH_TTL: Final[timedelta] = timedelta(days=30)
+DEFAULT_MFA_CHALLENGE_TTL: Final[timedelta] = timedelta(minutes=5)
 JWT_ALGORITHM: Final[str] = "HS256"
 ISSUER: Final[str] = "tulip-accounting"
+
+#: ``purpose`` claim values. Access tokens carry no purpose for backward
+#: compatibility; the MFA challenge JWT must carry this exact string.
+PURPOSE_MFA_CHALLENGE: Final[str] = "mfa_challenge"
 
 
 class InvalidTokenError(ValueError):
@@ -92,3 +97,65 @@ def create_refresh_token() -> str:
 def hash_refresh_token(refresh_token: str) -> str:
     """Hash a refresh token for storage (SHA-256, hex)."""
     return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class MfaChallengeClaims:
+    """Validated MFA-challenge JWT payload."""
+
+    user_id: UUID
+    household_id: UUID
+    issued_at: datetime
+    expires_at: datetime
+
+
+def create_mfa_challenge_token(
+    *,
+    user_id: UUID,
+    household_id: UUID,
+    secret: str,
+    ttl: timedelta = DEFAULT_MFA_CHALLENGE_TTL,
+) -> str:
+    """Mint a short-lived JWT that authorizes a single MFA-step-2 attempt.
+
+    Carries ``purpose: "mfa_challenge"`` so an access token cannot be used
+    in its place (and vice versa). Stateless — bound only by TTL.
+    """
+    now = datetime.now(tz=UTC)
+    exp = now + ttl
+    payload: dict[str, object] = {
+        "iss": ISSUER,
+        "sub": str(user_id),
+        "household_id": str(household_id),
+        "purpose": PURPOSE_MFA_CHALLENGE,
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+
+
+def verify_mfa_challenge_token(token: str, *, secret: str) -> MfaChallengeClaims:
+    """Verify an MFA-challenge JWT.
+
+    Raises :class:`InvalidTokenError` on signature mismatch, expiry,
+    issuer mismatch, or — critically — wrong ``purpose``. An access
+    token submitted here is rejected.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            secret,
+            algorithms=[JWT_ALGORITHM],
+            issuer=ISSUER,
+            options={"require": ["sub", "household_id", "purpose", "iat", "exp"]},
+        )
+    except PyJwtInvalidTokenError as exc:
+        raise InvalidTokenError(str(exc)) from exc
+    if payload.get("purpose") != PURPOSE_MFA_CHALLENGE:
+        raise InvalidTokenError("token is not an MFA challenge")
+    return MfaChallengeClaims(
+        user_id=UUID(payload["sub"]),
+        household_id=UUID(payload["household_id"]),
+        issued_at=datetime.fromtimestamp(payload["iat"], tz=UTC),
+        expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
+    )

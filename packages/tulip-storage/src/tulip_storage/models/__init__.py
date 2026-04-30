@@ -14,7 +14,7 @@ architecture test in tulip-core enforces this.
 from tulip_storage.models.account import Account, AccountType
 from tulip_storage.models.audit_log import AuditLog
 from tulip_storage.models.base import Base
-from tulip_storage.models.household import Household
+from tulip_storage.models.household import Household, MfaPolicy
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
 from tulip_storage.models.session import Session
@@ -27,6 +27,7 @@ __all__ = [
     "AuditLog",
     "Base",
     "Household",
+    "MfaPolicy",
     "Period",
     "PeriodStatus",
     "Posting",

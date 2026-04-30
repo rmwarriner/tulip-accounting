@@ -50,6 +50,58 @@ class TestHouseholdCrud:
         assert loaded.name == "Smith Family"
         assert loaded.base_currency == "USD"
 
+    def test_mfa_policy_defaults_to_optional(self, session: Session):
+        from tulip_storage.models import MfaPolicy
+
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.mfa_policy is MfaPolicy.OPTIONAL
+
+    def test_mfa_policy_round_trips(self, session: Session):
+        from tulip_storage.models import MfaPolicy
+
+        h = Household(
+            id=uuid4(),
+            name="Smith",
+            base_currency="USD",
+            mfa_policy=MfaPolicy.REQUIRED_FOR_ADMINS,
+        )
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.mfa_policy is MfaPolicy.REQUIRED_FOR_ADMINS
+
+    def test_mfa_policy_round_trips_after_raw_sql_update(self, session: Session):
+        """Regression: raw SQL writes must round-trip back through the ORM.
+
+        SQLAlchemy ``Enum`` columns default to storing the enum *name*
+        (e.g. ``"OPTIONAL"``); without ``values_callable`` on the column,
+        a raw ``UPDATE … SET mfa_policy='required_for_admins'`` would
+        write a string the ORM can't look up on the next SELECT and the
+        load fails with ``LookupError``. Operators routinely run
+        UPDATE-by-value against this column (it's the ergonomic shape
+        documented in ARCHITECTURE §4.1), so this path has to work.
+        """
+        from sqlalchemy import text
+
+        from tulip_storage.models import MfaPolicy
+
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        session.commit()
+
+        session.execute(
+            text("UPDATE households SET mfa_policy = :p WHERE id = :id"),
+            {"p": "required_for_admins", "id": str(h.id)},
+        )
+        session.commit()
+        session.expire_all()  # force a fresh SELECT
+
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.mfa_policy is MfaPolicy.REQUIRED_FOR_ADMINS
+
 
 class TestUserCrud:
     def test_create_under_household(self, session: Session):

@@ -13,7 +13,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
 
-**Tests:** 215 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 228 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
 
 ---
 
@@ -82,7 +82,7 @@ These slices are between core Phase 2 and the start of Phase 3 (CLI). They're se
 
 ### P2.x.1 — MFA (TOTP) — *in flight*
 
-TOTP enrollment endpoint, login challenge gate, hashed recovery codes. The `User.totp_secret_encrypted` and `Household.mfa_policy` fields are already in the schema. New endpoints are RFC 9457-compliant from day 1 (the `auth.mfa_required` problem-details code is documented in §7.8.7).
+TOTP enrollment endpoint, login challenge gate, hashed recovery codes. `User.totp_secret_encrypted` was in the initial schema; `User.totp_enrolled_at` landed in slice (a); `Household.mfa_policy` landed in slice (b). New endpoints are RFC 9457-compliant from day 1 (the `auth.mfa_required` problem-details code is documented in §7.8.7).
 
 Sub-slices:
 
@@ -94,7 +94,12 @@ Sub-slices:
   - `POST /v1/auth/mfa/enroll` (rotates if not yet verified; 409 `auth.mfa_already_enrolled` after).
   - `POST /v1/auth/mfa/verify` (400 `auth.mfa_not_pending`, 401 `auth.mfa_invalid_code`, 409 `auth.mfa_already_enrolled`; 204 on success).
   - Audit log written on every state-changing path.
-- **P2.x.1.b — Login challenge gate** *(queued)* — `/v1/auth/login` returns `auth.mfa_required` Problem Details when caller is TOTP-enrolled; new `POST /v1/auth/login/mfa` completes the flow with the code. Enforces `Household.mfa_policy` for admins.
+- **P2.x.1.b — Login challenge gate — ✅** *(2026-04-30)*
+  - `households.mfa_policy` column + migration (default `optional`); enum values `optional | required_for_admins | required_for_all`.
+  - Stateless MFA-challenge JWT (`purpose: mfa_challenge`, 5-min TTL) via `create_mfa_challenge_token` / `verify_mfa_challenge_token` in `tulip_api.auth.tokens` — same `jwt_secret`, no new state.
+  - `POST /v1/auth/login` outcomes: wrong creds → 401 plain (unchanged, deliberately doesn't leak enrollment); enrolled → 401 `auth.mfa_required` with flat top-level `mfa_token` + `mfa_token_expires_in`; unenrolled when policy forces it → 403 `auth.mfa_enrollment_required` with `enrollment_url` extension.
+  - New `POST /v1/auth/login/mfa` accepts `{mfa_token, code}`, verifies both, issues access + refresh tokens; access tokens or wrong-purpose JWTs are rejected.
+  - Audit row `login_mfa_success` written on success; failed step-2 attempts are app-log only (matches existing failed-login policy).
 - **P2.x.1.c — Recovery codes** *(queued)* — generate-on-enroll, hashed at rest (argon2id), one-time use; `POST /v1/auth/mfa/recover`.
 
 ### P2.x.2 — RFC 9457 Problem Details migration — *blocked by P2.x.1*

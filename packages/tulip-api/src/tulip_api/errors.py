@@ -119,6 +119,45 @@ class MfaNotPendingError(TulipProblem):
         )
 
 
+class MfaRequiredError(TulipProblem):
+    """The caller must complete an MFA challenge before tokens are issued."""
+
+    def __init__(self, *, mfa_token: str, expires_in: int) -> None:
+        """Build the auth.mfa_required problem with flat top-level extensions."""
+        super().__init__(
+            code="auth.mfa_required",
+            title="MFA required to complete login",
+            status=401,
+            detail=(
+                "This account has TOTP-based MFA enabled. Submit the current "
+                "6-digit code from your authenticator app along with the "
+                "mfa_token below to /v1/auth/login/mfa to complete sign-in."
+            ),
+            extensions={
+                "mfa_token": mfa_token,
+                "mfa_token_expires_in": expires_in,
+            },
+        )
+
+
+class MfaEnrollmentRequiredError(TulipProblem):
+    """The caller must enroll in MFA before logging in (per household policy)."""
+
+    def __init__(self) -> None:
+        """Build the auth.mfa_enrollment_required problem."""
+        super().__init__(
+            code="auth.mfa_enrollment_required",
+            title="MFA enrollment required",
+            status=403,
+            detail=(
+                "This household requires MFA for accounts in your role. "
+                "Visit the enrollment endpoint to set up an authenticator "
+                "app, then sign in again."
+            ),
+            extensions={"enrollment_url": "/v1/auth/mfa/enroll"},
+        )
+
+
 class MfaInvalidCodeError(TulipProblem):
     """The TOTP code did not match the stored secret."""
 
