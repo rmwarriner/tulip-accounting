@@ -70,3 +70,18 @@ class TestTulipProblem:
         )
         body = assert_problem(client.get("/boom"), code="example.terse", status=400)
         assert body["detail"] == "Just the title"
+
+    def test_custom_headers_are_attached(self):
+        client = _app_with_route(
+            TulipProblem(
+                code="example.unauth",
+                title="Auth required",
+                status=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        )
+        r = client.get("/boom")
+        assert r.status_code == 401
+        assert r.headers["www-authenticate"] == "Bearer"
+        # Content-Type for the body must still be application/problem+json.
+        assert r.headers["content-type"].startswith("application/problem+json")

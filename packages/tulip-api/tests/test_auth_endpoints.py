@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from _problem_details import assert_problem
+
 
 @pytest.fixture
 def registered(client: TestClient) -> dict[str, str]:
@@ -80,19 +82,25 @@ class TestLogin:
         assert body["refresh_token"]
         assert body["access_token"] != body["refresh_token"]
 
-    def test_wrong_password_returns_401(self, client: TestClient, registered: dict[str, str]):
+    def test_wrong_password_returns_invalid_credentials(
+        self, client: TestClient, registered: dict[str, str]
+    ):
         r = client.post(
             "/v1/auth/login",
             json={"email": registered["email"], "password": "wrong"},
         )
-        assert r.status_code == 401
+        body = assert_problem(r, code="auth.invalid_credentials", status=401)
+        # Identical body for unknown-email case below — no oracle.
+        assert "password" not in body["detail"].lower() or "email" in body["detail"].lower()
+        assert r.headers["www-authenticate"] == "Bearer"
 
-    def test_unknown_email_returns_401(self, client: TestClient):
+    def test_unknown_email_returns_invalid_credentials(self, client: TestClient):
         r = client.post(
             "/v1/auth/login",
             json={"email": "ghost@example.com", "password": "whatever"},
         )
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_credentials", status=401)
+        assert r.headers["www-authenticate"] == "Bearer"
 
 
 class TestRefresh:
@@ -109,14 +117,14 @@ class TestRefresh:
         assert body["access_token"] and body["refresh_token"]
         # Refresh tokens rotate — same one cannot be reused.
         r2 = client.post("/v1/auth/refresh", json={"refresh_token": old_refresh})
-        assert r2.status_code == 401
+        assert_problem(r2, code="auth.invalid_refresh_token", status=401)
 
     def test_unknown_refresh_token_rejected(self, client: TestClient):
         r = client.post(
             "/v1/auth/refresh",
             json={"refresh_token": "not-a-real-token"},
         )
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_refresh_token", status=401)
 
 
 class TestLogout:
@@ -132,4 +140,4 @@ class TestLogout:
 
         # Subsequent refresh with the same token must be rejected.
         r2 = client.post("/v1/auth/refresh", json={"refresh_token": rt})
-        assert r2.status_code == 401
+        assert_problem(r2, code="auth.invalid_refresh_token", status=401)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from _problem_details import assert_problem
+
 
 @pytest.fixture
 def admin_token(client: TestClient) -> str:
@@ -30,13 +32,14 @@ def auth_h(admin_token: str) -> dict[str, str]:
 
 
 class TestAuthGuards:
-    def test_no_token_returns_401(self, client: TestClient):
+    def test_no_token_returns_unauthorized(self, client: TestClient):
         r = client.get("/v1/accounts")
-        assert r.status_code == 401
+        assert_problem(r, code="auth.unauthorized", status=401)
+        assert r.headers["www-authenticate"] == "Bearer"
 
-    def test_garbage_token_returns_401(self, client: TestClient):
+    def test_garbage_token_returns_unauthorized(self, client: TestClient):
         r = client.get("/v1/accounts", headers={"Authorization": "Bearer xxx"})
-        assert r.status_code == 401
+        assert_problem(r, code="auth.unauthorized", status=401)
 
 
 class TestAccountCrud:

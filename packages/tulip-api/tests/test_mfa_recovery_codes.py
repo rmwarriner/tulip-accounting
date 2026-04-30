@@ -166,7 +166,7 @@ class TestLoginRecover:
             "/v1/auth/login/recover",
             json={"mfa_token": "not-a-jwt", "recovery_code": codes[0]},
         )
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_mfa_token", status=401)
 
     def test_audit_log_recovery_login(
         self,
@@ -322,4 +322,4 @@ class TestStatus:
 
     def test_unauthenticated(self, client: TestClient):
         r = client.get("/v1/auth/mfa/recovery-codes/status")
-        assert r.status_code == 401
+        assert_problem(r, code="auth.unauthorized", status=401)

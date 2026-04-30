@@ -39,7 +39,7 @@ class TulipProblem(Exception):
     in the response body — never crammed into ``detail``.
     """
 
-    __slots__ = ("code", "detail", "extensions", "status", "title", "type_uri")
+    __slots__ = ("code", "detail", "extensions", "headers", "status", "title", "type_uri")
 
     def __init__(
         self,
@@ -50,6 +50,7 @@ class TulipProblem(Exception):
         detail: str | None = None,
         type_uri: str | None = None,
         extensions: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         """Build a Problem Details exception. See class docstring for fields."""
         super().__init__(title)
@@ -59,6 +60,7 @@ class TulipProblem(Exception):
         self.detail = detail if detail is not None else title
         self.type_uri = type_uri or f"{DEFAULT_TYPE_PREFIX}/{code}"
         self.extensions: dict[str, Any] = dict(extensions) if extensions else {}
+        self.headers: dict[str, str] = dict(headers) if headers else {}
 
 
 def _render(request: Request, problem: TulipProblem) -> JSONResponse:
@@ -84,7 +86,121 @@ def _render(request: Request, problem: TulipProblem) -> JSONResponse:
         status_code=problem.status,
         content=body,
         media_type=PROBLEM_CONTENT_TYPE,
+        headers=problem.headers or None,
     )
+
+
+class UnauthorizedError(TulipProblem):
+    """The request lacks valid authentication credentials.
+
+    Covers: missing ``Authorization`` header, malformed bearer, expired
+    token, invalid signature. Detail carries the specific reason; the
+    ``code`` is a single ``auth.unauthorized`` so clients can dispatch
+    on "any 401 means re-authenticate" without enumerating sub-cases.
+    """
+
+    def __init__(self, detail: str = "Authentication required.") -> None:
+        """Build the auth.unauthorized problem with WWW-Authenticate per RFC 7235."""
+        super().__init__(
+            code="auth.unauthorized",
+            title="Authentication required",
+            status=401,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class ForbiddenError(TulipProblem):
+    """The caller is authenticated but lacks permission for the operation."""
+
+    def __init__(self, detail: str | None = None) -> None:
+        """Build the auth.forbidden problem."""
+        super().__init__(
+            code="auth.forbidden",
+            title="Forbidden",
+            status=403,
+            detail=detail or "Your account does not have permission to perform this operation.",
+        )
+
+
+class InvalidCredentialsError(TulipProblem):
+    """Login was attempted with an unknown email or wrong password."""
+
+    def __init__(self) -> None:
+        """Build the auth.invalid_credentials problem.
+
+        The body is intentionally identical for "no such user" and "wrong
+        password" — never reveal which arm of the check failed.
+        """
+        super().__init__(
+            code="auth.invalid_credentials",
+            title="Invalid credentials",
+            status=401,
+            detail="The email or password is incorrect.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class DuplicateEmailError(TulipProblem):
+    """Registration was attempted with an email that already exists in the household."""
+
+    def __init__(self) -> None:
+        """Build the auth.duplicate_email problem."""
+        super().__init__(
+            code="auth.duplicate_email",
+            title="Email already registered",
+            status=409,
+            detail=(
+                "An account with this email already exists in this household. "
+                "Sign in with that account or use a different email."
+            ),
+        )
+
+
+class InvalidRefreshTokenError(TulipProblem):
+    """The refresh token is unknown, expired, or already revoked."""
+
+    def __init__(self) -> None:
+        """Build the auth.invalid_refresh_token problem."""
+        super().__init__(
+            code="auth.invalid_refresh_token",
+            title="Invalid refresh token",
+            status=401,
+            detail="The refresh token is unknown, expired, or already revoked. Sign in again.",
+        )
+
+
+class InvalidMfaTokenError(TulipProblem):
+    """The short-lived MFA challenge token is malformed, expired, or wrong-purpose."""
+
+    def __init__(self) -> None:
+        """Build the auth.invalid_mfa_token problem."""
+        super().__init__(
+            code="auth.invalid_mfa_token",
+            title="Invalid MFA token",
+            status=401,
+            detail=(
+                "The MFA challenge token is invalid or has expired. "
+                "Sign in again to receive a fresh one."
+            ),
+        )
+
+
+class MfaNotEnrolledError(TulipProblem):
+    """An MFA-only operation was attempted by an account without active MFA."""
+
+    def __init__(self) -> None:
+        """Build the auth.mfa_not_enrolled problem."""
+        super().__init__(
+            code="auth.mfa_not_enrolled",
+            title="MFA not enrolled",
+            status=401,
+            detail=(
+                "This operation requires an active TOTP enrollment. "
+                "Enroll via /v1/auth/mfa/enroll first."
+            ),
+            extensions={"enrollment_url": "/v1/auth/mfa/enroll"},
+        )
 
 
 class MfaAlreadyEnrolledError(TulipProblem):
