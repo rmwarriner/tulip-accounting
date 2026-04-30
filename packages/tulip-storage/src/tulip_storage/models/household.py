@@ -34,7 +34,19 @@ class Household(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
     mfa_policy: Mapped[MfaPolicy] = mapped_column(
-        SAEnum(MfaPolicy, native_enum=False, length=30),
+        # ``values_callable`` stores the enum *value* (e.g. ``"optional"``),
+        # not the *name* (``"OPTIONAL"``). Matches the lowercase form in
+        # ARCHITECTURE.md §4.1 and the migration's ``server_default``, and
+        # makes raw SQL (``UPDATE … SET mfa_policy='required_for_admins'``)
+        # round-trip correctly. Without this, only inserts via SQLAlchemy
+        # work — rows written by ``server_default`` or raw SQL would fail
+        # the enum-lookup on SELECT.
+        SAEnum(
+            MfaPolicy,
+            native_enum=False,
+            length=30,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
         nullable=False,
         default=MfaPolicy.OPTIONAL,
         server_default=MfaPolicy.OPTIONAL.value,
