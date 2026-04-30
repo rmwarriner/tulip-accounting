@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -46,12 +46,18 @@ from tulip_api.auth.tokens import (
 from tulip_api.config import Settings, get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
+    DuplicateEmailError,
+    InvalidCredentialsError,
+    InvalidMfaTokenError,
+    InvalidRefreshTokenError,
     MfaAlreadyEnrolledError,
     MfaEnrollmentRequiredError,
     MfaInvalidCodeError,
     MfaInvalidRecoveryCodeError,
+    MfaNotEnrolledError,
     MfaNotPendingError,
     MfaRequiredError,
+    UnauthorizedError,
 )
 from tulip_api.schemas.auth import (
     LoginRequest,
@@ -114,10 +120,7 @@ def register(
         session.flush()
     except IntegrityError as exc:
         session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="email already registered in this household",
-        ) from exc
+        raise DuplicateEmailError() from exc
 
     # Seed a default current-year period so tests + first-time users can
     # immediately post transactions without explicitly creating one.
@@ -165,7 +168,7 @@ def login(
     user = session.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         log.info("login.failed", email=body.email)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+        raise InvalidCredentialsError()
 
     if user.totp_enrolled_at is not None:
         token = create_mfa_challenge_token(
@@ -205,16 +208,14 @@ def login_mfa(
         claims = verify_mfa_challenge_token(body.mfa_token, secret=settings.jwt_secret)
     except InvalidTokenError as exc:
         log.info("user.login.mfa_token_rejected", reason=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token"
-        ) from exc
+        raise InvalidMfaTokenError() from exc
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
         # Token was valid but the user is no longer enrolled (or the row
         # vanished). Treat as a token-rejection rather than an MFA-code
         # error — there's nothing to verify against.
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token")
+        raise InvalidMfaTokenError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
     if not verify_totp_code(secret, body.code):
@@ -256,15 +257,11 @@ def refresh(
         select(SessionRow).where(SessionRow.refresh_token_hash == rt_hash)
     ).scalar_one_or_none()
     if row is None or row.revoked_at is not None or _is_expired(row.expires_at):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token"
-        )
+        raise InvalidRefreshTokenError()
 
     user = session.get(User, (row.household_id, row.user_id))
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token"
-        )
+        raise InvalidRefreshTokenError()
 
     # Rotate: revoke this row, then issue a fresh pair.
     row.revoked_at = datetime.now(tz=UTC)
@@ -312,7 +309,7 @@ def mfa_enroll(
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None:
         # Token is valid but the user row vanished — treat as auth failure.
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+        raise UnauthorizedError("Your account no longer exists.")
     if user.totp_enrolled_at is not None:
         raise MfaAlreadyEnrolledError()
 
@@ -364,7 +361,7 @@ def mfa_verify(
     """
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+        raise UnauthorizedError("Your account no longer exists.")
     if user.totp_enrolled_at is not None:
         raise MfaAlreadyEnrolledError()
     if user.totp_secret_encrypted is None:
@@ -423,13 +420,11 @@ def login_recover(
         claims = verify_mfa_challenge_token(body.mfa_token, secret=settings.jwt_secret)
     except InvalidTokenError as exc:
         log.info("user.login.recover_token_rejected", reason=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token"
-        ) from exc
+        raise InvalidMfaTokenError() from exc
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_enrolled_at is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token")
+        raise InvalidMfaTokenError()
 
     matched = _consume_recovery_code(session, user, body.recovery_code)
     if matched is None:
@@ -468,7 +463,7 @@ def mfa_regenerate_recovery_codes(
     """
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA not enrolled")
+        raise MfaNotEnrolledError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
     if not verify_totp_code(secret, body.code):

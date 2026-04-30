@@ -101,11 +101,10 @@ class TestLoginEnrolledChallenges:
 
         # Wrong password must NOT leak whether the account is enrolled.
         r = _login(client, registered["email"], password="wrong")
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_credentials", status=401)
         # The body must not say "mfa_required" — that would oracle the
         # account's enrollment state to an unauthenticated attacker.
-        body_text = r.text.lower()
-        assert "mfa_required" not in body_text
+        assert "mfa_required" not in r.text.lower()
 
 
 class TestLoginEnforcesPolicy:
@@ -196,15 +195,16 @@ class TestLoginMfaCompletion:
         _mfa_token, secret = self._challenge(client, registered)
         code = pyotp.TOTP(secret).now()
         r = client.post("/v1/auth/login/mfa", json={"mfa_token": "not-a-real-jwt", "code": code})
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_mfa_token", status=401)
 
     def test_access_token_rejected_as_mfa_token(
         self, client: TestClient, registered: dict[str, str]
     ):
         # An attacker who steals an access token must NOT be able to
-        # short-circuit MFA by passing it in here.
+        # short-circuit MFA by passing it in here. Purpose-claim check
+        # rejects it.
         access = _login(client, registered["email"]).json()["access_token"]
         secret = _enroll_and_verify(client, access)
         code = pyotp.TOTP(secret).now()
         r = client.post("/v1/auth/login/mfa", json={"mfa_token": access, "code": code})
-        assert r.status_code == 401
+        assert_problem(r, code="auth.invalid_mfa_token", status=401)

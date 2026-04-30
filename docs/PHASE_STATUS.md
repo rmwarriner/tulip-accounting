@@ -111,16 +111,19 @@ Sub-slices:
 
 P2.x.1 now closes **P2.x.2 (Problem Details migration)** as the next slice.
 
-### P2.x.2 — RFC 9457 Problem Details migration — *blocked by P2.x.1*
+### P2.x.2 — RFC 9457 Problem Details migration — *in flight*
 
-Replaces `HTTPException(detail=str)` with `application/problem+json` per [ARCHITECTURE.md §7.8](ARCHITECTURE.md). Concrete tasks:
+Replaces `HTTPException(detail=str)` with `application/problem+json` per [ARCHITECTURE.md §7.8](ARCHITECTURE.md). Items 1-3 of the original sub-task list landed early as part of P2.x.1.a (the minimum infrastructure needed by MFA's new endpoints). What's left:
 
-1. Typed-exception base + per-error registry mapping `code` → `title` + `detail` template.
-2. Global FastAPI exception handler that renders Problem Details and stamps `request_id`.
-3. `assert_problem(resp, code=..., status=...)` test helper.
-4. Migrate every existing endpoint test to `assert_problem`.
-5. `/.well-known/errors/{code}` stub pages with the canonical explanation.
-6. Architecture test forbidding ad-hoc `HTTPException(detail=str)` outside the wrapper.
+Sub-slices:
+
+- **P2.x.2.a — Auth-domain migration — ✅** *(2026-04-30)*
+  - `TulipProblem` extended with optional `headers` field (RFC 7235 `WWW-Authenticate: Bearer` is the first user; framework now passes them through to the rendered response).
+  - New error subclasses: `UnauthorizedError` (`auth.unauthorized`, 401), `ForbiddenError` (`auth.forbidden`, 403), `InvalidCredentialsError` (`auth.invalid_credentials`, 401), `DuplicateEmailError` (`auth.duplicate_email`, 409), `InvalidRefreshTokenError` (`auth.invalid_refresh_token`, 401), `InvalidMfaTokenError` (`auth.invalid_mfa_token`, 401), `MfaNotEnrolledError` (`auth.mfa_not_enrolled`, 401).
+  - All ~15 legacy `HTTPException` sites in `routers/auth.py` and `auth/deps.py` migrated. `get_current_claims` now emits `auth.unauthorized` Problem Details with `WWW-Authenticate: Bearer`. Existing auth tests upgraded to `assert_problem`.
+  - Login wrong-password path emits `auth.invalid_credentials` for both unknown-email and wrong-password — body identical, no oracle.
+- **P2.x.2.b — Domain-endpoint migration** *(queued)* — `routers/accounts.py` (`account.not_found`, `account.edit_forbidden`) and `routers/transactions.py` (`account.unknown`, `transaction.unbalanced`, `period.closed`, `transaction.not_found`). Codes are pre-specified in §7.8.
+- **P2.x.2.c — Polish** *(queued)* — `/.well-known/errors/{code}` stub pages (dynamic FastAPI route rendering from the registry); architecture test forbidding ad-hoc `HTTPException(detail=str)` outside `tulip_api.errors`.
 
 ### P2.x.3 — schemathesis contract tests in CI — *blocked by P2.x.2*
 

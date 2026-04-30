@@ -41,11 +41,10 @@ def _load_user(session_maker: sessionmaker[Session]) -> User:
 
 class TestEnroll:
     def test_requires_auth(self, client: TestClient):
-        # No Authorization header at all → 401 from get_current_claims.
-        # That dependency still raises plain HTTPException; P2.x.2 will
-        # migrate it. Here we only assert the status code, not the body.
+        # P2.x.2.a migrated get_current_claims to Problem Details.
         r = client.post("/v1/auth/mfa/enroll")
-        assert r.status_code == 401
+        assert_problem(r, code="auth.unauthorized", status=401)
+        assert r.headers["www-authenticate"] == "Bearer"
 
     def test_returns_secret_and_provisioning_uri(
         self, client: TestClient, auth_headers: dict[str, str]
@@ -122,7 +121,7 @@ class TestEnroll:
 class TestVerify:
     def test_requires_auth(self, client: TestClient):
         r = client.post("/v1/auth/mfa/verify", json={"code": "123456"})
-        assert r.status_code == 401
+        assert_problem(r, code="auth.unauthorized", status=401)
 
     def test_no_pending_enrollment_returns_problem(
         self, client: TestClient, auth_headers: dict[str, str]
