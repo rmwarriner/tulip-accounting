@@ -108,8 +108,22 @@ If your change involves a non-trivial architectural decision — choosing betwee
    - Briefly explain the change and the rationale.
    - Note any user-visible impact.
    - Confirm that tests were written first (the TDD rule).
+   - **If the test plan lists a manual smoke test, include the runnable steps inline.** See "Manual smoke tests" below.
 6. CI runs automatically. All required checks must pass before review.
 7. A reviewer (currently the maintainer; eventually anyone designated) will review and either request changes or merge.
+
+### Manual smoke tests
+
+A "manual smoke test" item in a PR test plan is only useful if a reviewer (or future-you) can actually run it. If you list one, the PR body must contain the **complete** runnable steps:
+
+- Every command needed to set up the environment (env vars, fresh DB, dependencies).
+- Every request to make, with the exact body and headers — `curl` or equivalent, copy-pasteable.
+- The expected outcome at each step (status code, body shape, side effect).
+- A cleanup step.
+
+The bar is: a reviewer with a fresh checkout can paste the block into a terminal and reproduce the test without asking questions. "Smoke-test the new endpoint" alone doesn't pass that bar; "Run these eight `curl` commands and confirm step 4 returns a 204" does.
+
+If the smoke test is too long for the PR description, put it in a fenced block at the bottom of the description or in a comment on the PR — but don't omit it. A "[ ] Manual smoke" checkbox with no steps is treated as a missing test plan item.
 
 ## Branch protection on `main`
 
