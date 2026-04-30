@@ -13,7 +13,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
 
-**Tests:** 260 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 268 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
 
 ---
 
@@ -111,7 +111,7 @@ Sub-slices:
 
 P2.x.1 now closes **P2.x.2 (Problem Details migration)** as the next slice.
 
-### P2.x.2 — RFC 9457 Problem Details migration — *in flight*
+### P2.x.2 — RFC 9457 Problem Details migration — ✅ *(2026-04-30)*
 
 Replaces `HTTPException(detail=str)` with `application/problem+json` per [ARCHITECTURE.md §7.8](ARCHITECTURE.md). Items 1-3 of the original sub-task list landed early as part of P2.x.1.a (the minimum infrastructure needed by MFA's new endpoints). What's left:
 
@@ -122,8 +122,13 @@ Sub-slices:
   - New error subclasses: `UnauthorizedError` (`auth.unauthorized`, 401), `ForbiddenError` (`auth.forbidden`, 403), `InvalidCredentialsError` (`auth.invalid_credentials`, 401), `DuplicateEmailError` (`auth.duplicate_email`, 409), `InvalidRefreshTokenError` (`auth.invalid_refresh_token`, 401), `InvalidMfaTokenError` (`auth.invalid_mfa_token`, 401), `MfaNotEnrolledError` (`auth.mfa_not_enrolled`, 401).
   - All ~15 legacy `HTTPException` sites in `routers/auth.py` and `auth/deps.py` migrated. `get_current_claims` now emits `auth.unauthorized` Problem Details with `WWW-Authenticate: Bearer`. Existing auth tests upgraded to `assert_problem`.
   - Login wrong-password path emits `auth.invalid_credentials` for both unknown-email and wrong-password — body identical, no oracle.
-- **P2.x.2.b — Domain-endpoint migration** *(queued)* — `routers/accounts.py` (`account.not_found`, `account.edit_forbidden`) and `routers/transactions.py` (`account.unknown`, `transaction.unbalanced`, `period.closed`, `transaction.not_found`). Codes are pre-specified in §7.8.
-- **P2.x.2.c — Polish** *(queued)* — `/.well-known/errors/{code}` stub pages (dynamic FastAPI route rendering from the registry); architecture test forbidding ad-hoc `HTTPException(detail=str)` outside `tulip_api.errors`.
+- **P2.x.2.b + P2.x.2.c — Domain endpoints + polish — ✅** *(2026-04-30, combined PR)*
+  - All 9 remaining `HTTPException` sites in `routers/accounts.py` and `routers/transactions.py` migrated. New codes (per §7.8 spec where pre-specified): `account.not_found`, `account.unknown`, `transaction.invalid`, `transaction.unbalanced`, `transaction.not_found`, `period.closed`. Edit-forbidden case reuses `auth.forbidden` rather than adding a new code (same client behavior, specifics in `detail`).
+  - **Architecture test** (`tests/test_architecture_no_http_exception.py`): AST scan over `tulip_api/src/` asserts zero `HTTPException` references — import, raise, attribute access, all caught. No allowlist. Re-introducing the legacy pattern is now a CI failure.
+  - **`/.well-known/errors/`** index + **`/.well-known/errors/{code}`** per-code HTML pages, rendered dynamically from `TulipProblem.__subclasses__()`. Adding a new error class auto-publishes a docs page (or, for classes needing constructor args, a one-line entry in `_PLACEHOLDER_ARGS`).
+  - Existing `accounts` / `transactions` endpoint tests upgraded to `assert_problem`.
+
+P2.x.2 closes; P2.x.3 (schemathesis contract tests) is unblocked next.
 
 ### P2.x.3 — schemathesis contract tests in CI — *blocked by P2.x.2*
 

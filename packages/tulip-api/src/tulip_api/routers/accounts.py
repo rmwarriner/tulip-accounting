@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
+from tulip_api.errors import AccountNotFoundError, ForbiddenError
 from tulip_api.schemas.account import AccountCreate, AccountRead, AccountUpdate
 from tulip_storage.models import AccountType
 from tulip_storage.repositories import AccountRepository, AuditLogWriter
@@ -102,7 +103,7 @@ def get_account(
     """Fetch an account by id (404 if not in this household or not visible)."""
     a = AccountRepository(session, claims.household_id).get(account_id)
     if a is None or not _filter_for_role(a, claims):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
+        raise AccountNotFoundError()
     return _to_read(a)
 
 
@@ -118,13 +119,16 @@ def update_account(
     repo = AccountRepository(session, claims.household_id)
     a = repo.get(account_id)
     if a is None or not _filter_for_role(a, claims):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
+        raise AccountNotFoundError()
     if (
         claims.role == "member"
         and a.visibility == "private"
         and a.created_by_user_id != claims.user_id
     ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="cannot edit")
+        raise ForbiddenError(
+            "Members can only edit private accounts they created themselves. "
+            "Ask an admin, or have the original creator make the change."
+        )
 
     before = {"name": a.name, "code": a.code, "visibility": a.visibility}
     if body.name is not None:
@@ -163,9 +167,7 @@ def deactivate_account(
     try:
         a = repo.deactivate(account_id)
     except LookupError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="account not found"
-        ) from exc
+        raise AccountNotFoundError() from exc
     AuditLogWriter(session, claims.household_id).write(
         action="delete",
         actor_kind="user",

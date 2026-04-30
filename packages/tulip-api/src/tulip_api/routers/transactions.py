@@ -6,10 +6,17 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
+from tulip_api.errors import (
+    AccountUnknownError,
+    PeriodClosedError,
+    TransactionInvalidError,
+    TransactionNotFoundError,
+    TransactionUnbalancedError,
+)
 from tulip_api.schemas.transaction import (
     PostingRead,
     TransactionCreate,
@@ -60,10 +67,7 @@ def create_transaction(
     accounts_repo = AccountRepository(session, claims.household_id)
     for p in body.postings:
         if accounts_repo.get(p.account_id) is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"unknown account_id {p.account_id}",
-            )
+            raise AccountUnknownError(account_id=str(p.account_id))
 
     domain_postings: tuple[DomainPosting, ...] = tuple(
         DomainPosting(
@@ -89,22 +93,16 @@ def create_transaction(
             created_by_user_id=claims.user_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise TransactionInvalidError(reason=str(exc)) from exc
 
     period_repo = PeriodRepository(session, claims.household_id)
     candidate_periods = _domain_periods(period_repo)
     try:
         posted = post_transaction(domain_tx, periods=candidate_periods)
     except UnbalancedTransactionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"transaction does not balance: {exc}",
-        ) from exc
+        raise TransactionUnbalancedError(reason=f"Transaction does not balance: {exc}") from exc
     except ClosedPeriodError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise PeriodClosedError(reason=str(exc)) from exc
 
     tx_repo = TransactionRepository(session, claims.household_id)
     saved = tx_repo.save_balanced(posted)
@@ -132,7 +130,7 @@ def get_transaction(
     """Fetch a transaction (header + postings) by id."""
     repo = TransactionRepository(session, claims.household_id)
     if repo.get(tx_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="transaction not found")
+        raise TransactionNotFoundError()
     return _read_response(tx_id, claims.household_id, session)
 
 

@@ -13,9 +13,10 @@ This module provides three things:
   that turns :class:`TulipProblem` into a Problem Details JSON response.
 * The default ``type`` URI scheme — ``/.well-known/errors/<code>``.
 
-The full migration of legacy ``HTTPException(detail=str)`` call sites to
-this infra is tracked as P2.x.2; this module ships first because the MFA
-endpoints in P2.x.1 are required to be RFC 9457 from day 1.
+Every router-layer error path raises a ``TulipProblem`` subclass; the
+architecture test in ``tests/test_architecture_no_http_exception.py``
+enforces that no source file under ``tulip_api/src/`` references
+FastAPI's plain ``HTTPException`` (P2.x.2.c).
 """
 
 from __future__ import annotations
@@ -305,6 +306,98 @@ class MfaInvalidRecoveryCodeError(TulipProblem):
                 "out of codes, sign in with your authenticator app and "
                 "regenerate a fresh set."
             ),
+        )
+
+
+class AccountNotFoundError(TulipProblem):
+    """An account lookup either missed entirely or hit a row not visible to the caller."""
+
+    def __init__(self) -> None:
+        """Build the account.not_found problem."""
+        super().__init__(
+            code="account.not_found",
+            title="Account not found",
+            status=404,
+            detail=(
+                "No account with that ID exists in this household, or it is "
+                "private to a member other than you."
+            ),
+        )
+
+
+class AccountUnknownError(TulipProblem):
+    """A transaction posting referenced an account that doesn't exist in this household."""
+
+    def __init__(self, account_id: str) -> None:
+        """Build the account.unknown problem.
+
+        ``account_id`` is included in ``detail`` so the user can identify
+        which posting was at fault.
+        """
+        super().__init__(
+            code="account.unknown",
+            title="Unknown account in posting",
+            status=400,
+            detail=(
+                f"Posting references account {account_id}, which does not "
+                "exist in this household. Check the account ID and resubmit."
+            ),
+        )
+
+
+class TransactionInvalidError(TulipProblem):
+    """A transaction failed domain-level validation (e.g. empty postings, bad shape)."""
+
+    def __init__(self, reason: str) -> None:
+        """Build the transaction.invalid problem.
+
+        ``reason`` is the underlying validation message from
+        ``tulip-core`` and is surfaced verbatim in ``detail``.
+        """
+        super().__init__(
+            code="transaction.invalid",
+            title="Invalid transaction",
+            status=400,
+            detail=reason,
+        )
+
+
+class TransactionUnbalancedError(TulipProblem):
+    """A transaction's postings don't sum to zero per currency."""
+
+    def __init__(self, reason: str) -> None:
+        """Build the transaction.unbalanced problem (per ARCHITECTURE §7.8)."""
+        super().__init__(
+            code="transaction.unbalanced",
+            title="Transaction does not balance",
+            status=400,
+            detail=reason,
+        )
+
+
+class PeriodClosedError(TulipProblem):
+    """A write was attempted against a soft-closed period."""
+
+    def __init__(self, reason: str) -> None:
+        """Build the period.closed problem (per ARCHITECTURE §7.8)."""
+        super().__init__(
+            code="period.closed",
+            title="Period is closed",
+            status=400,
+            detail=reason,
+        )
+
+
+class TransactionNotFoundError(TulipProblem):
+    """A transaction lookup either missed or hit a row not in this household."""
+
+    def __init__(self) -> None:
+        """Build the transaction.not_found problem."""
+        super().__init__(
+            code="transaction.not_found",
+            title="Transaction not found",
+            status=404,
+            detail="No transaction with that ID exists in this household.",
         )
 
 

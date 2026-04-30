@@ -7,6 +7,8 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
+from _problem_details import assert_problem
+
 
 @pytest.fixture
 def admin_token(client: TestClient) -> str:
@@ -87,10 +89,10 @@ class TestCreateTransaction:
             ],
         }
         r = client.post("/v1/transactions", headers=auth_h, json=body)
-        assert r.status_code == 400
-        assert "balance" in r.json()["detail"].lower()
+        body_json = assert_problem(r, code="transaction.unbalanced", status=400)
+        assert "balance" in body_json["detail"].lower()
 
-    def test_transaction_with_unknown_account_returns_400(
+    def test_transaction_with_unknown_account_returns_problem(
         self, client: TestClient, auth_h: dict[str, str]
     ):
         today = date.today()
@@ -111,10 +113,10 @@ class TestCreateTransaction:
             ],
         }
         r = client.post("/v1/transactions", headers=auth_h, json=body)
-        assert r.status_code == 400
-        assert "unknown account_id" in r.json()["detail"]
+        body_json = assert_problem(r, code="account.unknown", status=400)
+        assert "00000000-0000-0000-0000-000000000000" in body_json["detail"]
 
-    def test_transaction_outside_period_returns_400(
+    def test_transaction_outside_period_returns_problem(
         self,
         client: TestClient,
         auth_h: dict[str, str],
@@ -131,8 +133,8 @@ class TestCreateTransaction:
             ],
         }
         r = client.post("/v1/transactions", headers=auth_h, json=body)
-        assert r.status_code == 400
-        assert "no period" in r.json()["detail"].lower()
+        body_json = assert_problem(r, code="period.closed", status=400)
+        assert "no period" in body_json["detail"].lower()
 
 
 class TestReadTransactions:

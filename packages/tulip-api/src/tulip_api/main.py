@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from tulip_api.errors import install_problem_handlers
 from tulip_api.logging_config import configure_logging
 from tulip_api.middleware import RequestIdMiddleware
-from tulip_api.routers import accounts, auth, health, transactions
+from tulip_api.routers import accounts, auth, health, transactions, well_known_errors
 
 API_VERSION = "v1"
 API_TITLE = "Tulip Accounting API"
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     # Top-level health probe — kept off /v1 so monitors don't break across
     # major-version cuts.
     app.include_router(health.router)
+    app.include_router(well_known_errors.router)
     app.include_router(auth.router)
     app.include_router(accounts.router)
     app.include_router(transactions.router)
