@@ -69,3 +69,10 @@ class MfaVerifyRequest(BaseModel):
     """Body for POST /v1/auth/mfa/verify."""
 
     code: str = Field(min_length=1, max_length=12)
+
+
+class MfaLoginRequest(BaseModel):
+    """Body for POST /v1/auth/login/mfa (the step-2 challenge response)."""
+
+    mfa_token: str = Field(min_length=1)
+    code: str = Field(min_length=1, max_length=12)

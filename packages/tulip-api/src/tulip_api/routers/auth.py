@@ -28,30 +28,37 @@ from tulip_api.auth.mfa import (
 from tulip_api.auth.passwords import hash_password, verify_password
 from tulip_api.auth.tokens import (
     DEFAULT_ACCESS_TTL,
+    DEFAULT_MFA_CHALLENGE_TTL,
     DEFAULT_REFRESH_TTL,
     Claims,
+    InvalidTokenError,
     create_access_token,
+    create_mfa_challenge_token,
     create_refresh_token,
     hash_refresh_token,
+    verify_mfa_challenge_token,
 )
 from tulip_api.config import Settings, get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     MfaAlreadyEnrolledError,
+    MfaEnrollmentRequiredError,
     MfaInvalidCodeError,
     MfaNotPendingError,
+    MfaRequiredError,
 )
 from tulip_api.schemas.auth import (
     LoginRequest,
     LogoutRequest,
     MfaEnrollResponse,
+    MfaLoginRequest,
     MfaVerifyRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
 )
-from tulip_storage.models import Household, User, UserRole
+from tulip_storage.models import Household, MfaPolicy, User, UserRole
 from tulip_storage.models import Session as SessionRow
 from tulip_storage.repositories import AuditLogWriter, PeriodRepository
 
@@ -133,13 +140,97 @@ def login(
     settings: Settings = Depends(get_settings),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> TokenResponse:
-    """Verify credentials and issue an access + refresh token pair."""
+    """Verify credentials and either issue tokens or trigger an MFA challenge.
+
+    Outcomes (deciding in order):
+
+    * Wrong credentials → 401 plain ``invalid credentials`` (will become
+      ``auth.invalid_credentials`` in P2.x.2). Never reveals enrollment.
+    * Caller is TOTP-enrolled → 401 ``auth.mfa_required`` carrying a
+      short-lived ``mfa_token`` for ``/v1/auth/login/mfa``.
+    * Household policy mandates MFA for the caller's role and they are
+      not enrolled → 403 ``auth.mfa_enrollment_required``.
+    * Otherwise → tokens (the pre-P2.x.1.b behavior).
+    """
     user = session.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         log.info("login.failed", email=body.email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
+    if user.totp_enrolled_at is not None:
+        token = create_mfa_challenge_token(
+            user_id=user.id,
+            household_id=user.household_id,
+            secret=settings.jwt_secret,
+            ttl=DEFAULT_MFA_CHALLENGE_TTL,
+        )
+        log.info("user.login.mfa_challenge_issued", user_id=str(user.id))
+        raise MfaRequiredError(
+            mfa_token=token,
+            expires_in=int(DEFAULT_MFA_CHALLENGE_TTL.total_seconds()),
+        )
+
+    household = session.get(Household, user.household_id)
+    if household is not None and _enrollment_required(household.mfa_policy, user.role):
+        log.info("user.login.enrollment_required", user_id=str(user.id))
+        raise MfaEnrollmentRequiredError()
+
     return _issue_tokens(session, user, settings, request)
+
+
+@router.post("/login/mfa", response_model=TokenResponse)
+def login_mfa(
+    body: MfaLoginRequest,
+    request: Request,
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TokenResponse:
+    """Complete a login that was gated by an MFA challenge.
+
+    Verifies the short-lived ``mfa_token`` from step 1, validates the
+    submitted TOTP code against the user's stored secret, and issues
+    access + refresh tokens on success.
+    """
+    try:
+        claims = verify_mfa_challenge_token(body.mfa_token, secret=settings.jwt_secret)
+    except InvalidTokenError as exc:
+        log.info("user.login.mfa_token_rejected", reason=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token"
+        ) from exc
+
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
+        # Token was valid but the user is no longer enrolled (or the row
+        # vanished). Treat as a token-rejection rather than an MFA-code
+        # error — there's nothing to verify against.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token")
+
+    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    if not verify_totp_code(secret, body.code):
+        log.info("user.login.mfa_code_rejected", user_id=str(user.id))
+        raise MfaInvalidCodeError()
+
+    AuditLogWriter(session, user.household_id).write(
+        action="login_mfa_success",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return _issue_tokens(session, user, settings, request)
+
+
+def _enrollment_required(policy: MfaPolicy, role: UserRole) -> bool:
+    """Decide whether a user must enroll in MFA before logging in."""
+    if policy is MfaPolicy.REQUIRED_FOR_ALL:
+        return True
+    if policy is MfaPolicy.REQUIRED_FOR_ADMINS:
+        return role is UserRole.ADMIN
+    return False
 
 
 @router.post("/refresh", response_model=TokenResponse)

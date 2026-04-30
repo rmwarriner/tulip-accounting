@@ -50,6 +50,29 @@ class TestHouseholdCrud:
         assert loaded.name == "Smith Family"
         assert loaded.base_currency == "USD"
 
+    def test_mfa_policy_defaults_to_optional(self, session: Session):
+        from tulip_storage.models import MfaPolicy
+
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.mfa_policy is MfaPolicy.OPTIONAL
+
+    def test_mfa_policy_round_trips(self, session: Session):
+        from tulip_storage.models import MfaPolicy
+
+        h = Household(
+            id=uuid4(),
+            name="Smith",
+            base_currency="USD",
+            mfa_policy=MfaPolicy.REQUIRED_FOR_ADMINS,
+        )
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.mfa_policy is MfaPolicy.REQUIRED_FOR_ADMINS
+
 
 class TestUserCrud:
     def test_create_under_household(self, session: Session):
