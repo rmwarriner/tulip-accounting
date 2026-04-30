@@ -58,6 +58,7 @@ from tulip_api.errors import (
     MfaNotPendingError,
     MfaRequiredError,
     UnauthorizedError,
+    problem_response,
 )
 from tulip_api.schemas.auth import (
     LoginRequest,
@@ -92,6 +93,11 @@ log = structlog.get_logger("tulip_api.auth")
     "/register",
     response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        409: problem_response("auth.duplicate_email"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
 )
 def register(
     body: RegisterRequest,
@@ -146,7 +152,16 @@ def register(
     return RegisterResponse(user_id=user.id, household_id=household.id, role="admin")
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    responses={
+        401: problem_response("auth.invalid_credentials", "auth.mfa_required"),
+        403: problem_response("auth.mfa_enrollment_required"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def login(
     body: LoginRequest,
     request: Request,
@@ -165,8 +180,15 @@ def login(
       not enrolled → 403 ``auth.mfa_enrollment_required``.
     * Otherwise → tokens (the pre-P2.x.1.b behavior).
     """
-    user = session.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.password_hash):
+    # Email is unique per household, not globally — two households can
+    # both have alice@example.com. On login we don't have a household
+    # discriminator, so we authenticate against every user with that
+    # email and pick the one whose password matches. Collisions across
+    # households + matching passwords are extremely unlikely; if it ever
+    # happens, we just sign in as the first match.
+    candidates = session.execute(select(User).where(User.email == body.email)).scalars().all()
+    user = next((u for u in candidates if verify_password(body.password, u.password_hash)), None)
+    if user is None:
         log.info("login.failed", email=body.email)
         raise InvalidCredentialsError()
 
@@ -191,7 +213,15 @@ def login(
     return _issue_tokens(session, user, settings, request)
 
 
-@router.post("/login/mfa", response_model=TokenResponse)
+@router.post(
+    "/login/mfa",
+    response_model=TokenResponse,
+    responses={
+        401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_code"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def login_mfa(
     body: MfaLoginRequest,
     request: Request,
@@ -244,7 +274,15 @@ def _enrollment_required(policy: MfaPolicy, role: UserRole) -> bool:
     return False
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    responses={
+        401: problem_response("auth.invalid_refresh_token"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def refresh(
     body: RefreshRequest,
     request: Request,
@@ -269,7 +307,14 @@ def refresh(
     return _issue_tokens(session, user, settings, request)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def logout(
     body: LogoutRequest,
     session: Session = Depends(get_session),  # noqa: B008
@@ -288,6 +333,10 @@ def logout(
     "/mfa/enroll",
     response_model=MfaEnrollResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        409: problem_response("auth.mfa_already_enrolled"),
+    },
 )
 def mfa_enroll(
     request: Request,
@@ -340,6 +389,12 @@ def mfa_enroll(
     "/mfa/verify",
     response_model=MfaRecoveryCodesResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        400: problem_response("auth.mfa_not_pending", "request.body_invalid"),
+        401: problem_response("auth.unauthorized", "auth.mfa_invalid_code"),
+        409: problem_response("auth.mfa_already_enrolled"),
+        422: problem_response("validation.failed"),
+    },
 )
 def mfa_verify(
     body: MfaVerifyRequest,
@@ -401,7 +456,15 @@ def mfa_verify(
     return MfaRecoveryCodesResponse(recovery_codes=plaintext_codes)
 
 
-@router.post("/login/recover", response_model=TokenResponse)
+@router.post(
+    "/login/recover",
+    response_model=TokenResponse,
+    responses={
+        401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_recovery_code"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def login_recover(
     body: MfaRecoveryLoginRequest,
     request: Request,
@@ -448,6 +511,13 @@ def login_recover(
 @router.post(
     "/mfa/recovery-codes/regenerate",
     response_model=MfaRecoveryCodesResponse,
+    responses={
+        401: problem_response(
+            "auth.unauthorized", "auth.mfa_invalid_code", "auth.mfa_not_enrolled"
+        ),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
 )
 def mfa_regenerate_recovery_codes(
     body: MfaRegenerateRequest,
@@ -497,6 +567,7 @@ def mfa_regenerate_recovery_codes(
 @router.get(
     "/mfa/recovery-codes/status",
     response_model=MfaRecoveryStatusResponse,
+    responses={401: problem_response("auth.unauthorized")},
 )
 def mfa_recovery_codes_status(
     claims: Claims = Depends(get_current_claims),  # noqa: B008

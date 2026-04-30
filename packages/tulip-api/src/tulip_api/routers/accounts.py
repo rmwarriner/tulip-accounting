@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
-from tulip_api.errors import AccountNotFoundError, ForbiddenError
+from tulip_api.errors import AccountNotFoundError, ForbiddenError, problem_response
 from tulip_api.schemas.account import AccountCreate, AccountRead, AccountUpdate
 from tulip_storage.models import AccountType
 from tulip_storage.repositories import AccountRepository, AuditLogWriter
@@ -50,7 +50,11 @@ def _filter_for_role(account: Account, claims: Claims) -> bool:
     return account.created_by_user_id == claims.user_id
 
 
-@router.get("", response_model=list[AccountRead])
+@router.get(
+    "",
+    response_model=list[AccountRead],
+    responses={401: problem_response("auth.unauthorized")},
+)
 def list_accounts(
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
@@ -61,7 +65,17 @@ def list_accounts(
     return [_to_read(a) for a in rows]
 
 
-@router.post("", response_model=AccountRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=AccountRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def create_account(
     body: AccountCreate,
     request: Request,
@@ -94,7 +108,14 @@ def create_account(
     return _to_read(a)
 
 
-@router.get("/{account_id}", response_model=AccountRead)
+@router.get(
+    "/{account_id}",
+    response_model=AccountRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        404: problem_response("account.not_found"),
+    },
+)
 def get_account(
     account_id: UUID,
     claims: Claims = Depends(get_current_claims),  # noqa: B008
@@ -107,7 +128,17 @@ def get_account(
     return _to_read(a)
 
 
-@router.patch("/{account_id}", response_model=AccountRead)
+@router.patch(
+    "/{account_id}",
+    response_model=AccountRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("account.not_found"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
 def update_account(
     account_id: UUID,
     body: AccountUpdate,
@@ -155,7 +186,15 @@ def update_account(
     return _to_read(a)
 
 
-@router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{account_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("account.not_found"),
+    },
+)
 def deactivate_account(
     account_id: UUID,
     request: Request,

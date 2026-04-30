@@ -18,6 +18,17 @@ from pathlib import Path
 
 _API_SRC = Path(__file__).resolve().parents[1] / "src" / "tulip_api"
 
+# ``errors.py`` is the one legitimate site for HTTPException references:
+# it imports Starlette's HTTPException so the global handler can wrap any
+# framework-level error (404 unknown route, 405 method not allowed,
+# 400 malformed body, etc.) into RFC 9457 Problem Details. Every *other*
+# source file must use TulipProblem subclasses.
+_ALLOWED_FILES: frozenset[str] = frozenset(
+    {
+        "errors.py",
+    }
+)
+
 
 def _python_files() -> list[Path]:
     return sorted(_API_SRC.rglob("*.py"))
@@ -52,6 +63,8 @@ def test_no_http_exception_in_source() -> None:
     """Every error path must use TulipProblem, not HTTPException."""
     offenders: dict[str, list[int]] = {}
     for path in _python_files():
+        if path.name in _ALLOWED_FILES:
+            continue
         hits = _references_http_exception(path)
         if hits:
             offenders[str(path.relative_to(_API_SRC))] = hits

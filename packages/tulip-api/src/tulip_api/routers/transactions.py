@@ -16,6 +16,7 @@ from tulip_api.errors import (
     TransactionInvalidError,
     TransactionNotFoundError,
     TransactionUnbalancedError,
+    problem_response,
 )
 from tulip_api.schemas.transaction import (
     PostingRead,
@@ -56,7 +57,23 @@ router = APIRouter(prefix="/v1/transactions", tags=["transactions"])
 log = structlog.get_logger("tulip_api.transactions")
 
 
-@router.post("", response_model=TransactionRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=TransactionRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "account.unknown",
+            "transaction.invalid",
+            "transaction.unbalanced",
+            "period.closed",
+            "request.body_invalid",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
+    },
+)
 def create_transaction(
     body: TransactionCreate,
     request: Request,
@@ -121,7 +138,14 @@ def create_transaction(
     return _read_response(saved.id, claims.household_id, session)
 
 
-@router.get("/{tx_id}", response_model=TransactionRead)
+@router.get(
+    "/{tx_id}",
+    response_model=TransactionRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        404: problem_response("transaction.not_found"),
+    },
+)
 def get_transaction(
     tx_id: UUID,
     claims: Claims = Depends(get_current_claims),  # noqa: B008
@@ -134,7 +158,11 @@ def get_transaction(
     return _read_response(tx_id, claims.household_id, session)
 
 
-@router.get("", response_model=list[TransactionRead])
+@router.get(
+    "",
+    response_model=list[TransactionRead],
+    responses={401: problem_response("auth.unauthorized")},
+)
 def list_transactions(
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008

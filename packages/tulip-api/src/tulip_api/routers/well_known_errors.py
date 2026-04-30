@@ -37,6 +37,16 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "reason": "Transaction does not balance: USD postings sum to 1.00 instead of 0."
     },
     "PeriodClosedError": {"reason": "Period 2025-12-31 is closed."},
+    "ValidationFailedError": {
+        "errors": [
+            {
+                "type": "missing",
+                "loc": ["body", "email"],
+                "msg": "Field required",
+                "input": {},
+            }
+        ],
+    },
 }
 
 
