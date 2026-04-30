@@ -13,7 +13,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
 
-**Tests:** 184 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 215 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
 
 ---
 
@@ -80,9 +80,22 @@ Per [PHASE_0_CHECKLIST.md](PHASE_0_CHECKLIST.md). Completed 2026-04-29.
 
 These slices are between core Phase 2 and the start of Phase 3 (CLI). They're sequenced so each one builds on the last.
 
-### P2.x.1 — MFA (TOTP) — *next*
+### P2.x.1 — MFA (TOTP) — *in flight*
 
-TOTP enrollment endpoint, login challenge gate, hashed recovery codes. The `User.totp_secret_encrypted` and `Household.mfa_policy` fields are already in the schema. New endpoints will be RFC 9457-compliant from day 1 (the `auth.mfa_required` problem-details code is documented in §7.8.7).
+TOTP enrollment endpoint, login challenge gate, hashed recovery codes. The `User.totp_secret_encrypted` and `Household.mfa_policy` fields are already in the schema. New endpoints are RFC 9457-compliant from day 1 (the `auth.mfa_required` problem-details code is documented in §7.8.7).
+
+Sub-slices:
+
+- **P2.x.1.a — Enrollment + verification — ✅** *(2026-04-30)*
+  - `Settings.master_key` wired in (`TULIP_MASTER_KEY` env, base64-32-bytes; ephemeral fallback warns).
+  - `users.totp_enrolled_at` column + migration; distinguishes "secret stored, awaiting verify" from "verified."
+  - **Minimum Problem Details infrastructure** landed alongside (`tulip_api.errors.TulipProblem`, `install_problem_handlers`, `_problem_details.assert_problem`). MFA error paths use it; legacy endpoints still emit plain `HTTPException` until P2.x.2 migrates them onto the same registry.
+  - `tulip_api.auth.mfa` service: `pyotp` wrappers + AES-256-GCM encrypt/decrypt of stored secrets.
+  - `POST /v1/auth/mfa/enroll` (rotates if not yet verified; 409 `auth.mfa_already_enrolled` after).
+  - `POST /v1/auth/mfa/verify` (400 `auth.mfa_not_pending`, 401 `auth.mfa_invalid_code`, 409 `auth.mfa_already_enrolled`; 204 on success).
+  - Audit log written on every state-changing path.
+- **P2.x.1.b — Login challenge gate** *(queued)* — `/v1/auth/login` returns `auth.mfa_required` Problem Details when caller is TOTP-enrolled; new `POST /v1/auth/login/mfa` completes the flow with the code. Enforces `Household.mfa_policy` for admins.
+- **P2.x.1.c — Recovery codes** *(queued)* — generate-on-enroll, hashed at rest (argon2id), one-time use; `POST /v1/auth/mfa/recover`.
 
 ### P2.x.2 — RFC 9457 Problem Details migration — *blocked by P2.x.1*
 

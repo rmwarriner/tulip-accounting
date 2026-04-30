@@ -17,19 +17,35 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from tulip_api.auth.deps import get_current_claims
+from tulip_api.auth.mfa import (
+    build_provisioning_uri,
+    decrypt_totp_secret,
+    encrypt_totp_secret,
+    generate_totp_secret,
+    verify_totp_code,
+)
 from tulip_api.auth.passwords import hash_password, verify_password
 from tulip_api.auth.tokens import (
     DEFAULT_ACCESS_TTL,
     DEFAULT_REFRESH_TTL,
+    Claims,
     create_access_token,
     create_refresh_token,
     hash_refresh_token,
 )
 from tulip_api.config import Settings, get_settings
 from tulip_api.deps import get_session
+from tulip_api.errors import (
+    MfaAlreadyEnrolledError,
+    MfaInvalidCodeError,
+    MfaNotPendingError,
+)
 from tulip_api.schemas.auth import (
     LoginRequest,
     LogoutRequest,
+    MfaEnrollResponse,
+    MfaVerifyRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -168,6 +184,103 @@ def logout(
     if row is not None and row.revoked_at is None:
         row.revoked_at = datetime.now(tz=UTC)
         session.commit()
+
+
+@router.post(
+    "/mfa/enroll",
+    response_model=MfaEnrollResponse,
+    status_code=status.HTTP_200_OK,
+)
+def mfa_enroll(
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MfaEnrollResponse:
+    """Start TOTP enrollment.
+
+    Generates a fresh secret, persists it field-encrypted, and returns
+    the plaintext + an ``otpauth://`` provisioning URI so the caller can
+    render a QR code. The secret is not active until the caller proves
+    possession via ``POST /v1/auth/mfa/verify``.
+
+    Repeated calls before verification rotate the secret (intended — the
+    user may lose the QR before scanning). After verification, this
+    endpoint returns 409 ``auth.mfa_already_enrolled``.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        # Token is valid but the user row vanished — treat as auth failure.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+    if user.totp_enrolled_at is not None:
+        raise MfaAlreadyEnrolledError()
+
+    secret = generate_totp_secret()
+    user.totp_secret_encrypted = encrypt_totp_secret(secret, master_key=settings.master_key)
+    session.flush()
+
+    AuditLogWriter(session, user.household_id).write(
+        action="mfa.enroll",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info("user.mfa_enroll_started", user_id=str(user.id))
+
+    return MfaEnrollResponse(
+        secret=secret,
+        provisioning_uri=build_provisioning_uri(secret=secret, email=user.email),
+    )
+
+
+@router.post("/mfa/verify", status_code=status.HTTP_204_NO_CONTENT)
+def mfa_verify(
+    body: MfaVerifyRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Complete TOTP enrollment by proving possession of the authenticator.
+
+    Errors emitted as RFC 9457 Problem Details:
+        * ``auth.mfa_not_pending`` (400) — no enrollment in progress.
+        * ``auth.mfa_already_enrolled`` (409) — enrollment already active.
+        * ``auth.mfa_invalid_code`` (401) — code did not match.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+    if user.totp_enrolled_at is not None:
+        raise MfaAlreadyEnrolledError()
+    if user.totp_secret_encrypted is None:
+        raise MfaNotPendingError()
+
+    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    if not verify_totp_code(secret, body.code):
+        log.info("user.mfa_verify_failed", user_id=str(user.id))
+        raise MfaInvalidCodeError()
+
+    user.totp_enrolled_at = datetime.now(tz=UTC)
+    session.flush()
+
+    AuditLogWriter(session, user.household_id).write(
+        action="mfa.verify",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info("user.mfa_enrolled", user_id=str(user.id))
 
 
 # ---- helpers ---------------------------------------------------------------

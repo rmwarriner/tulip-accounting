@@ -7,8 +7,13 @@ dependency is overridden so handlers run inside the test's session scope.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+
+# Make sibling test-helper modules (e.g. _problem_details.py) importable by
+# basename. pytest's importlib mode doesn't put the tests/ dir on sys.path.
+sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest
 from alembic.command import upgrade
@@ -60,6 +65,7 @@ def settings() -> Settings:
     return Settings(
         database_url="sqlite:///:memory:",  # overridden per-app via deps
         jwt_secret="test-secret-32bytes-test-secret!!",
+        master_key=b"\xab" * 32,  # deterministic test key; never used outside tests
     )
 
 

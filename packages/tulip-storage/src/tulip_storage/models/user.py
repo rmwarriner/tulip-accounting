@@ -47,6 +47,9 @@ class User(Base):
         SAEnum(UserRole, native_enum=False, length=20), nullable=False
     )
     totp_secret_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
+    totp_enrolled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
