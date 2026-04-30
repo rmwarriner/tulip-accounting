@@ -47,7 +47,8 @@ def _enroll_and_verify(client: TestClient, access_token: str) -> str:
         headers={"Authorization": f"Bearer {access_token}"},
         json={"code": code},
     )
-    assert r.status_code == 204, r.text
+    # /verify returns 200 with recovery_codes since slice (c).
+    assert r.status_code == 200, r.text
     return secret
 
 

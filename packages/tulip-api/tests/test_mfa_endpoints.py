@@ -98,7 +98,7 @@ class TestEnroll:
         secret = client.post("/v1/auth/mfa/enroll", headers=auth_headers).json()["secret"]
         code = pyotp.TOTP(secret).now()
         verify = client.post("/v1/auth/mfa/verify", headers=auth_headers, json={"code": code})
-        assert verify.status_code == 204, verify.text
+        assert verify.status_code == 200, verify.text
 
         # Re-enroll → 409 with mfa_already_enrolled.
         r = client.post("/v1/auth/mfa/enroll", headers=auth_headers)
@@ -135,7 +135,7 @@ class TestVerify:
         r = client.post("/v1/auth/mfa/verify", headers=auth_headers, json={"code": "000000"})
         assert_problem(r, code="auth.mfa_invalid_code", status=401)
 
-    def test_correct_code_returns_204_and_marks_enrolled(
+    def test_correct_code_returns_recovery_codes_and_marks_enrolled(
         self,
         client: TestClient,
         auth_headers: dict[str, str],
@@ -144,7 +144,10 @@ class TestVerify:
         secret = client.post("/v1/auth/mfa/enroll", headers=auth_headers).json()["secret"]
         code = pyotp.TOTP(secret).now()
         r = client.post("/v1/auth/mfa/verify", headers=auth_headers, json={"code": code})
-        assert r.status_code == 204
+        # Slice (c): /verify now returns 200 with 8 plaintext recovery codes.
+        # The codes themselves are tested in test_mfa_recovery_codes.py.
+        assert r.status_code == 200
+        assert len(r.json()["recovery_codes"]) == 8
         user = _load_user(session_maker)
         assert user.totp_enrolled_at is not None
 
