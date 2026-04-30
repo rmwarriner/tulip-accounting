@@ -174,6 +174,24 @@ class MfaInvalidCodeError(TulipProblem):
         )
 
 
+class MfaInvalidRecoveryCodeError(TulipProblem):
+    """The submitted recovery code didn't match an unused stored hash."""
+
+    def __init__(self) -> None:
+        """Build the auth.mfa_invalid_recovery_code problem."""
+        super().__init__(
+            code="auth.mfa_invalid_recovery_code",
+            title="Invalid recovery code",
+            status=401,
+            detail=(
+                "That recovery code is unknown or has already been used. "
+                "Each recovery code can be used only once. If you have run "
+                "out of codes, sign in with your authenticator app and "
+                "regenerate a fresh set."
+            ),
+        )
+
+
 def install_problem_handlers(app: FastAPI) -> None:
     """Register the :class:`TulipProblem` handler on ``app``."""
 

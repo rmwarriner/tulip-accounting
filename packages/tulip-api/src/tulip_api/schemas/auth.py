@@ -76,3 +76,39 @@ class MfaLoginRequest(BaseModel):
 
     mfa_token: str = Field(min_length=1)
     code: str = Field(min_length=1, max_length=12)
+
+
+class MfaRecoveryLoginRequest(BaseModel):
+    """Body for POST /v1/auth/login/recover (alternative step-2 path)."""
+
+    mfa_token: str = Field(min_length=1)
+    recovery_code: str = Field(min_length=1, max_length=64)
+
+
+class MfaRegenerateRequest(BaseModel):
+    """Body for POST /v1/auth/mfa/recovery-codes/regenerate.
+
+    Requires a current TOTP code as the "MFA-fresh" gate — bare access
+    tokens are not enough for this sensitive operation.
+    """
+
+    code: str = Field(min_length=1, max_length=12)
+
+
+class MfaRecoveryCodesResponse(BaseModel):
+    """Recovery codes returned at enrollment-verify or regeneration.
+
+    Returned by ``/v1/auth/mfa/verify`` (slice c) and
+    ``/v1/auth/mfa/recovery-codes/regenerate``. The plaintext is shown
+    to the user **only** at these endpoints — once. After that they're
+    recoverable only via regeneration.
+    """
+
+    recovery_codes: list[str]
+
+
+class MfaRecoveryStatusResponse(BaseModel):
+    """Response from GET /v1/auth/mfa/recovery-codes/status."""
+
+    remaining: int
+    total: int

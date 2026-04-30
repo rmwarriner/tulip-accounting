@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from tulip_api.auth.deps import get_current_claims
@@ -26,6 +26,11 @@ from tulip_api.auth.mfa import (
     verify_totp_code,
 )
 from tulip_api.auth.passwords import hash_password, verify_password
+from tulip_api.auth.recovery_codes import (
+    generate_recovery_codes,
+    hash_recovery_code,
+    verify_recovery_code,
+)
 from tulip_api.auth.tokens import (
     DEFAULT_ACCESS_TTL,
     DEFAULT_MFA_CHALLENGE_TTL,
@@ -44,6 +49,7 @@ from tulip_api.errors import (
     MfaAlreadyEnrolledError,
     MfaEnrollmentRequiredError,
     MfaInvalidCodeError,
+    MfaInvalidRecoveryCodeError,
     MfaNotPendingError,
     MfaRequiredError,
 )
@@ -52,13 +58,17 @@ from tulip_api.schemas.auth import (
     LogoutRequest,
     MfaEnrollResponse,
     MfaLoginRequest,
+    MfaRecoveryCodesResponse,
+    MfaRecoveryLoginRequest,
+    MfaRecoveryStatusResponse,
+    MfaRegenerateRequest,
     MfaVerifyRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
 )
-from tulip_storage.models import Household, MfaPolicy, User, UserRole
+from tulip_storage.models import Household, MfaPolicy, MfaRecoveryCode, User, UserRole
 from tulip_storage.models import Session as SessionRow
 from tulip_storage.repositories import AuditLogWriter, PeriodRepository
 
@@ -329,15 +339,23 @@ def mfa_enroll(
     )
 
 
-@router.post("/mfa/verify", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/mfa/verify",
+    response_model=MfaRecoveryCodesResponse,
+    status_code=status.HTTP_200_OK,
+)
 def mfa_verify(
     body: MfaVerifyRequest,
     request: Request,
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
-) -> None:
-    """Complete TOTP enrollment by proving possession of the authenticator.
+) -> MfaRecoveryCodesResponse:
+    """Complete TOTP enrollment and mint single-use recovery codes.
+
+    Returns 8 plaintext recovery codes — the only time they're ever
+    visible. They're stored argon2id-hashed in ``mfa_recovery_codes``;
+    each can be redeemed at most once via ``/v1/auth/login/recover``.
 
     Errors emitted as RFC 9457 Problem Details:
         * ``auth.mfa_not_pending`` (400) — no enrollment in progress.
@@ -358,6 +376,7 @@ def mfa_verify(
         raise MfaInvalidCodeError()
 
     user.totp_enrolled_at = datetime.now(tz=UTC)
+    plaintext_codes = _mint_recovery_codes(session, user)
     session.flush()
 
     AuditLogWriter(session, user.household_id).write(
@@ -370,8 +389,143 @@ def mfa_verify(
         ip_address=_client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
+    AuditLogWriter(session, user.household_id).write(
+        action="mfa.recovery_codes_generated",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     session.commit()
     log.info("user.mfa_enrolled", user_id=str(user.id))
+    return MfaRecoveryCodesResponse(recovery_codes=plaintext_codes)
+
+
+@router.post("/login/recover", response_model=TokenResponse)
+def login_recover(
+    body: MfaRecoveryLoginRequest,
+    request: Request,
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TokenResponse:
+    """Step-2 alternative to ``/login/mfa`` using a recovery code.
+
+    Verifies the short-lived ``mfa_token`` from step 1, then matches the
+    submitted ``recovery_code`` against the user's unused stored hashes.
+    On a hit: marks the row used, audit-logs ``mfa.recovery_login``,
+    issues access + refresh tokens. MFA stays enrolled — the user keeps
+    their authenticator and the remaining codes — per design decision (2a).
+    """
+    try:
+        claims = verify_mfa_challenge_token(body.mfa_token, secret=settings.jwt_secret)
+    except InvalidTokenError as exc:
+        log.info("user.login.recover_token_rejected", reason=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token"
+        ) from exc
+
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None or user.totp_enrolled_at is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid mfa token")
+
+    matched = _consume_recovery_code(session, user, body.recovery_code)
+    if matched is None:
+        log.info("user.login.recover_rejected", user_id=str(user.id))
+        raise MfaInvalidRecoveryCodeError()
+
+    AuditLogWriter(session, user.household_id).write(
+        action="mfa.recovery_login",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={"recovery_code_id": str(matched.id)},
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return _issue_tokens(session, user, settings, request)
+
+
+@router.post(
+    "/mfa/recovery-codes/regenerate",
+    response_model=MfaRecoveryCodesResponse,
+)
+def mfa_regenerate_recovery_codes(
+    body: MfaRegenerateRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MfaRecoveryCodesResponse:
+    """Invalidate existing recovery codes and mint a fresh set.
+
+    Sensitive — requires both an access token *and* a current TOTP code
+    (the "MFA-fresh" gate). A stale stolen access token is not enough.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA not enrolled")
+
+    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    if not verify_totp_code(secret, body.code):
+        log.info("user.mfa_regenerate_failed", user_id=str(user.id))
+        raise MfaInvalidCodeError()
+
+    # Invalidate old set wholesale; mint new.
+    session.execute(
+        delete(MfaRecoveryCode).where(
+            MfaRecoveryCode.household_id == user.household_id,
+            MfaRecoveryCode.user_id == user.id,
+        )
+    )
+    plaintext_codes = _mint_recovery_codes(session, user)
+
+    AuditLogWriter(session, user.household_id).write(
+        action="mfa.recovery_codes_regenerated",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info("user.mfa_recovery_codes_regenerated", user_id=str(user.id))
+    return MfaRecoveryCodesResponse(recovery_codes=plaintext_codes)
+
+
+@router.get(
+    "/mfa/recovery-codes/status",
+    response_model=MfaRecoveryStatusResponse,
+)
+def mfa_recovery_codes_status(
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MfaRecoveryStatusResponse:
+    """Return ``{remaining, total}`` for the caller's recovery codes.
+
+    Never returns the codes themselves — the plaintext is shown only at
+    ``/mfa/verify`` and ``/mfa/recovery-codes/regenerate``.
+    """
+    rows = (
+        session.execute(
+            select(MfaRecoveryCode).where(
+                MfaRecoveryCode.household_id == claims.household_id,
+                MfaRecoveryCode.user_id == claims.user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return MfaRecoveryStatusResponse(
+        remaining=sum(1 for r in rows if r.used_at is None),
+        total=len(rows),
+    )
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -447,3 +601,48 @@ def _is_expired(expires_at: datetime) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return expires_at <= datetime.now(tz=UTC)
+
+
+def _mint_recovery_codes(session: Session, user: User) -> list[str]:
+    """Generate, store (hashed), and return plaintext recovery codes.
+
+    Caller is responsible for committing the session.
+    """
+    plaintext = generate_recovery_codes()
+    for code in plaintext:
+        session.add(
+            MfaRecoveryCode(
+                id=uuid4(),
+                household_id=user.household_id,
+                user_id=user.id,
+                code_hash=hash_recovery_code(code),
+            )
+        )
+    return plaintext
+
+
+def _consume_recovery_code(session: Session, user: User, submitted: str) -> MfaRecoveryCode | None:
+    """Find an unused row whose hash matches ``submitted`` and mark it used.
+
+    Returns the matched row on success, or ``None`` if no unused code
+    matches. The caller is responsible for committing the session.
+    """
+    rows = (
+        session.execute(
+            select(MfaRecoveryCode)
+            .where(
+                MfaRecoveryCode.household_id == user.household_id,
+                MfaRecoveryCode.user_id == user.id,
+                MfaRecoveryCode.used_at.is_(None),
+            )
+            .order_by(MfaRecoveryCode.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        if verify_recovery_code(submitted, row.code_hash):
+            row.used_at = datetime.now(tz=UTC)
+            session.flush()
+            return row
+    return None

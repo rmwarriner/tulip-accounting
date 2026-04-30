@@ -13,7 +13,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
 
-**Tests:** 228 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 260 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
 
 ---
 
@@ -80,7 +80,7 @@ Per [PHASE_0_CHECKLIST.md](PHASE_0_CHECKLIST.md). Completed 2026-04-29.
 
 These slices are between core Phase 2 and the start of Phase 3 (CLI). They're sequenced so each one builds on the last.
 
-### P2.x.1 — MFA (TOTP) — *in flight*
+### P2.x.1 — MFA (TOTP) — ✅ *(2026-04-30)*
 
 TOTP enrollment endpoint, login challenge gate, hashed recovery codes. `User.totp_secret_encrypted` was in the initial schema; `User.totp_enrolled_at` landed in slice (a); `Household.mfa_policy` landed in slice (b). New endpoints are RFC 9457-compliant from day 1 (the `auth.mfa_required` problem-details code is documented in §7.8.7).
 
@@ -92,7 +92,7 @@ Sub-slices:
   - **Minimum Problem Details infrastructure** landed alongside (`tulip_api.errors.TulipProblem`, `install_problem_handlers`, `_problem_details.assert_problem`). MFA error paths use it; legacy endpoints still emit plain `HTTPException` until P2.x.2 migrates them onto the same registry.
   - `tulip_api.auth.mfa` service: `pyotp` wrappers + AES-256-GCM encrypt/decrypt of stored secrets.
   - `POST /v1/auth/mfa/enroll` (rotates if not yet verified; 409 `auth.mfa_already_enrolled` after).
-  - `POST /v1/auth/mfa/verify` (400 `auth.mfa_not_pending`, 401 `auth.mfa_invalid_code`, 409 `auth.mfa_already_enrolled`; 204 on success).
+  - `POST /v1/auth/mfa/verify` (400 `auth.mfa_not_pending`, 401 `auth.mfa_invalid_code`, 409 `auth.mfa_already_enrolled`; 200 + recovery codes on success — body shape changed in slice c).
   - Audit log written on every state-changing path.
 - **P2.x.1.b — Login challenge gate — ✅** *(2026-04-30)*
   - `households.mfa_policy` column + migration (default `optional`); enum values `optional | required_for_admins | required_for_all`.
@@ -100,7 +100,16 @@ Sub-slices:
   - `POST /v1/auth/login` outcomes: wrong creds → 401 plain (unchanged, deliberately doesn't leak enrollment); enrolled → 401 `auth.mfa_required` with flat top-level `mfa_token` + `mfa_token_expires_in`; unenrolled when policy forces it → 403 `auth.mfa_enrollment_required` with `enrollment_url` extension.
   - New `POST /v1/auth/login/mfa` accepts `{mfa_token, code}`, verifies both, issues access + refresh tokens; access tokens or wrong-purpose JWTs are rejected.
   - Audit row `login_mfa_success` written on success; failed step-2 attempts are app-log only (matches existing failed-login policy).
-- **P2.x.1.c — Recovery codes** *(queued)* — generate-on-enroll, hashed at rest (argon2id), one-time use; `POST /v1/auth/mfa/recover`.
+- **P2.x.1.c — Recovery codes — ✅** *(2026-04-30)*
+  - `mfa_recovery_codes` table + migration; argon2id-hashed, one row per code, `used_at` marks consumption (rows preserved for audit).
+  - 8 codes minted at `/v1/auth/mfa/verify` and returned **once** as plaintext in the body (response changed from 204 → 200 with `{recovery_codes: [...]}`); format `XXXX-XXXX` from RFC 4648 base32 (40 bits/code). Input normalization tolerates lowercase / missing-dash transcription.
+  - `POST /v1/auth/login/recover` — step-2 alternative to `/login/mfa`. Verifies the same `mfa_token`, redeems an unused code (single-use), audit-logs `mfa.recovery_login`, issues tokens. MFA stays enrolled — using a recovery code only consumes that one code.
+  - `POST /v1/auth/mfa/recovery-codes/regenerate` — invalidates all existing codes, mints 8 fresh ones. **MFA-fresh** gate: requires both an access token *and* a current TOTP code in the body, so a stale stolen access token cannot silently swap codes.
+  - `GET /v1/auth/mfa/recovery-codes/status` — returns `{remaining, total}`. Never returns the codes themselves.
+  - Audit actions: `mfa.recovery_codes_generated`, `mfa.recovery_login`, `mfa.recovery_codes_regenerated`. Failed redemptions are app-log only.
+  - New error code: `auth.mfa_invalid_recovery_code` (401) — distinct from `auth.mfa_invalid_code` so clients can tell apart "wrong TOTP" from "wrong/used recovery code."
+
+P2.x.1 now closes **P2.x.2 (Problem Details migration)** as the next slice.
 
 ### P2.x.2 — RFC 9457 Problem Details migration — *blocked by P2.x.1*
 
