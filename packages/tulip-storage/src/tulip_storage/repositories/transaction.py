@@ -10,11 +10,14 @@ writes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from datetime import date as date_type
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from tulip_storage.models import Posting, Transaction, TransactionStatus
 
@@ -30,6 +33,19 @@ _DOMAIN_TO_STORAGE_STATUS: dict[str, TransactionStatus] = {
     "posted": TransactionStatus.POSTED,
     "reconciled": TransactionStatus.RECONCILED,
 }
+
+#: Statuses whose postings count toward the ledger. Pending transactions
+#: are workflow state, not ledger state, and are excluded from balances.
+_LEDGER_STATUSES = (TransactionStatus.POSTED, TransactionStatus.RECONCILED)
+
+
+@dataclass(frozen=True, slots=True)
+class TrialBalanceRow:
+    """One row of a per-(account, currency) trial-balance result."""
+
+    account_id: UUID
+    currency: str
+    balance: Decimal
 
 
 class TransactionRepository:
@@ -61,6 +77,75 @@ class TransactionRepository:
             .scalars()
             .all()
         )
+
+    def balance_for_account(
+        self,
+        account_id: UUID,
+        *,
+        currency: str,
+        as_of: date_type | None = None,
+    ) -> Decimal:
+        """Sum the ledger postings on ``account_id`` in ``currency``.
+
+        Pending transactions are excluded — only POSTED and RECONCILED
+        contribute. ``as_of`` limits to transactions on or before that
+        date; ``None`` means "all time."
+        """
+        query = (
+            select(func.coalesce(func.sum(Posting.amount), 0))
+            .join(Transaction, Transaction.id == Posting.transaction_id)
+            .where(
+                Posting.household_id == self._household_id,
+                Posting.account_id == account_id,
+                Posting.currency == currency,
+                Transaction.status.in_(_LEDGER_STATUSES),
+            )
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        result = self._session.execute(query).scalar_one()
+        # SQLite returns int 0 from ``coalesce(..., 0)`` even when the
+        # column is NUMERIC; normalize to Decimal so callers don't see
+        # a type drift on the empty-result branch.
+        return Decimal(str(result))
+
+    def trial_balance(
+        self,
+        *,
+        as_of: date_type | None = None,
+    ) -> list[TrialBalanceRow]:
+        """Return one row per (account_id, currency) for the household's ledger.
+
+        Pending transactions are excluded. ``as_of`` filters to
+        transactions on or before that date; ``None`` means "all time."
+        Accounts with no postings (or only zero-net postings) still
+        appear when they have any matching posting at all — callers may
+        filter zeros if they want.
+        """
+        query = (
+            select(
+                Posting.account_id,
+                Posting.currency,
+                func.coalesce(func.sum(Posting.amount), 0).label("balance"),
+            )
+            .join(Transaction, Transaction.id == Posting.transaction_id)
+            .where(
+                Posting.household_id == self._household_id,
+                Transaction.status.in_(_LEDGER_STATUSES),
+            )
+            .group_by(Posting.account_id, Posting.currency)
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        rows = self._session.execute(query).all()
+        return [
+            TrialBalanceRow(
+                account_id=account_id,
+                currency=currency,
+                balance=Decimal(str(balance)),
+            )
+            for account_id, currency, balance in rows
+        ]
 
     def save_balanced(self, domain_tx: DomainTransaction) -> Transaction:
         """Persist a balanced Domain Transaction.

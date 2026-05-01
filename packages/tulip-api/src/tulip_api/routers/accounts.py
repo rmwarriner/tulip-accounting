@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import date as date_type
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
 from tulip_api.errors import AccountNotFoundError, ForbiddenError, problem_response
 from tulip_api.schemas.account import AccountCreate, AccountRead, AccountUpdate
+from tulip_api.schemas.balance import AccountBalanceRead
+from tulip_core.money import Money
 from tulip_storage.models import AccountType
-from tulip_storage.repositories import AccountRepository, AuditLogWriter
+from tulip_storage.repositories import AccountRepository, AuditLogWriter, TransactionRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -184,6 +187,53 @@ def update_account(
     )
     session.commit()
     return _to_read(a)
+
+
+@router.get(
+    "/{account_id}/balance",
+    response_model=AccountBalanceRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        404: problem_response("account.not_found"),
+    },
+)
+def get_account_balance(
+    account_id: UUID,
+    as_of: date_type | None = Query(  # noqa: B008 — FastAPI uses Query() in defaults
+        default=None,
+        description=(
+            "Optional point-in-time date (YYYY-MM-DD). Includes only "
+            "transactions on or before this date. Defaults to today."
+        ),
+    ),
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> AccountBalanceRead:
+    """Return the ledger balance of an account in its primary currency.
+
+    Pending transactions are excluded — only POSTED + RECONCILED contribute.
+    Postings in other currencies on this account (e.g. FX postings) are
+    not included; use the trial-balance report for the multi-currency view.
+    """
+    a = AccountRepository(session, claims.household_id).get(account_id)
+    if a is None or not _filter_for_role(a, claims):
+        raise AccountNotFoundError()
+
+    effective_as_of = as_of or date_type.today()
+    raw_balance = TransactionRepository(session, claims.household_id).balance_for_account(
+        a.id, currency=a.currency, as_of=effective_as_of
+    )
+    # Quantize to the currency's minor units so the JSON representation
+    # is the natural "12.50" rather than the storage-precision "12.50000000".
+    balance = Money(raw_balance, a.currency).quantize_to_currency().amount
+    return AccountBalanceRead(
+        account_id=a.id,
+        code=a.code,
+        name=a.name,
+        currency=a.currency,
+        balance=balance,
+        as_of=effective_as_of,
+    )
 
 
 @router.delete(
