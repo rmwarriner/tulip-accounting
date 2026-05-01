@@ -26,6 +26,15 @@ class AccountUpdate(BaseModel):
     code: str | None = Field(default=None, max_length=50)
     subtype: str | None = Field(default=None, max_length=50)
     visibility: str | None = Field(default=None, pattern=r"^(shared|private)$")
+    parent_account_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Reparent under another account. Subject to the same type / "
+            "currency / visibility / no-cycle rules as POST /v1/accounts. "
+            "Currently no way to clear the parent via PATCH; create a new "
+            "top-level account instead."
+        ),
+    )
 
 
 class AccountRead(BaseModel):
