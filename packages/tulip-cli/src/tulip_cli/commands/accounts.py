@@ -155,6 +155,74 @@ def list_accounts(ctx: typer.Context) -> None:
     _render_table(accounts)
 
 
+@accounts_app.command("add")
+def add_account(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Option("--name", help="Display name.")],
+    type_: Annotated[
+        str,
+        typer.Option(
+            "--type",
+            help="One of: asset, liability, equity, income, expense.",
+        ),
+    ],
+    currency: Annotated[
+        str,
+        typer.Option(
+            "--currency",
+            help="ISO 4217 three-letter code (e.g. USD).",
+        ),
+    ],
+    code: Annotated[
+        str | None,
+        typer.Option(
+            "--code",
+            help="Optional short code (e.g. assets:checking).",
+        ),
+    ] = None,
+    subtype: Annotated[
+        str | None,
+        typer.Option("--subtype", help="Optional subtype label."),
+    ] = None,
+    visibility: Annotated[
+        str,
+        typer.Option(
+            "--visibility",
+            help="'shared' (default) or 'private'.",
+        ),
+    ] = "shared",
+) -> None:
+    """Create a new account in the logged-in user's household."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    body: dict[str, Any] = {
+        "name": name,
+        "type": type_,
+        "currency": currency,
+        "visibility": visibility,
+    }
+    if code is not None:
+        body["code"] = code
+    if subtype is not None:
+        body["subtype"] = subtype
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post("/v1/accounts", json=body, authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    payload = response.json()
+    typer.echo(f"Created account {payload.get('id', '')}")
+    _render_account(payload)
+
+
 @accounts_app.command("show")
 def show_account(
     ctx: typer.Context,
