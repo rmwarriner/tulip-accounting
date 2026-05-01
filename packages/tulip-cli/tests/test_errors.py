@@ -81,8 +81,8 @@ def test_parse_problem_response_with_problem_json() -> None:
     assert parsed == body
 
 
-def test_parse_problem_response_html_body_treated_as_wrong_server() -> None:
-    """HTML 4xx/5xx → not a Tulip API; map to a config-level problem (exit 5)."""
+def test_parse_problem_response_html_4xx_treated_as_wrong_server() -> None:
+    """4xx + non-JSON body → wrong host. Misconfigured DNS / wrong port returns 404 HTML."""
     request = httpx.Request("GET", "https://example.com/health")
     response = httpx.Response(
         404,
@@ -95,6 +95,28 @@ def test_parse_problem_response_html_body_treated_as_wrong_server() -> None:
     assert parsed["code"] == "config.not_a_tulip_api"
     assert "Tulip" in parsed["title"]
     assert str(request.url) in parsed["detail"]
+
+
+def test_parse_problem_response_text_5xx_is_server_bug_not_wrong_server() -> None:
+    """5xx + non-JSON body → real API crashed, not wrong-host.
+
+    A 500 with text/plain is what Starlette emits when an unhandled
+    exception escapes before the Problem Details handler can wrap it.
+    Telling the user "you've got the wrong URL" in that case is wrong
+    and unhelpful — they want to know the server crashed.
+    """
+    request = httpx.Request("POST", "http://127.0.0.1:8000/v1/auth/register")
+    response = httpx.Response(
+        500,
+        content=b"Internal Server Error",
+        headers={"content-type": "text/plain; charset=utf-8"},
+        request=request,
+    )
+    parsed = parse_problem_response(response)
+    assert parsed["status"] == 500
+    assert parsed["code"] == "server.unexpected_response"
+    err = CliError(problem=parsed, as_json=False)
+    assert err.exit_code == EXIT_SERVER
 
 
 def test_html_response_yields_exit_config_when_wrapped_in_clierror() -> None:
@@ -126,12 +148,12 @@ def test_parse_problem_response_json_but_not_problem_body_keeps_unexpected() -> 
 def test_parse_problem_response_falls_back_for_request_less_response() -> None:
     """Synthesized responses with no request attached still produce a problem dict."""
     response = httpx.Response(
-        500,
-        content=b"<html>boom</html>",
+        404,
+        content=b"<html>not found</html>",
         headers={"content-type": "text/html"},
     )
     parsed = parse_problem_response(response)
-    assert parsed["status"] == 500
+    assert parsed["status"] == 404
     assert parsed["code"] == "config.not_a_tulip_api"
     assert "title" in parsed
     assert "detail" in parsed
@@ -150,6 +172,96 @@ def test_exit_code_for_problem_routes_network_codes_to_exit_4() -> None:
 def test_network_error_maps_to_exit_4() -> None:
     err = CliError.from_network_error(httpx.ConnectError("nope"), as_json=False)
     assert err.exit_code == EXIT_NETWORK
+
+
+def test_render_problem_surfaces_pydantic_validation_errors(capsys: object) -> None:
+    """validation.failed bodies carry a Pydantic-shaped ``errors`` extension. Render it."""
+    body = {
+        "type": "/.well-known/errors/validation.failed",
+        "title": "Request validation failed",
+        "status": 422,
+        "detail": "One or more fields in the request body or query parameters are invalid.",
+        "instance": "/v1/auth/register",
+        "code": "validation.failed",
+        "errors": [
+            {
+                "type": "string_too_short",
+                "loc": ["body", "password"],
+                "msg": "String should have at least 12 characters",
+                "input": "shorty",
+            },
+            {
+                "type": "value_error",
+                "loc": ["body", "email"],
+                "msg": "value is not a valid email address",
+                "input": "bad-email",
+            },
+        ],
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    # The leading ``body``/``query``/``path`` segment is Pydantic's loc
+    # convention for "this came from the request body" and is jargon to
+    # the user. The renderer strips it so messages read naturally.
+    assert "password" in captured.err
+    assert "body.password" not in captured.err
+    assert "at least 12 characters" in captured.err
+    assert "email" in captured.err
+    assert "body.email" not in captured.err
+    assert "valid email address" in captured.err
+
+
+def test_render_problem_keeps_inner_loc_segments(capsys: object) -> None:
+    """Stripping is one segment deep; nested locations stay legible."""
+    body = {
+        "title": "Request validation failed",
+        "status": 422,
+        "detail": "...",
+        "code": "validation.failed",
+        "errors": [
+            {
+                "loc": ["body", "postings", 0, "account_id"],
+                "msg": "field required",
+            }
+        ],
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "postings.0.account_id" in captured.err
+    # No leading "body." after the strip.
+    assert "body.postings" not in captured.err
+
+
+def test_render_problem_ignores_non_list_errors_extension(capsys: object) -> None:
+    """An ``errors`` extension that isn't pydantic-shaped is silently skipped."""
+    body = {
+        "title": "Something",
+        "status": 422,
+        "detail": "...",
+        "code": "validation.failed",
+        "errors": "not a list",
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "not a list" not in captured.err
+
+
+def test_render_problem_json_mode_does_not_split_errors_extension(capsys: object) -> None:
+    """--json mode passes the body through verbatim, errors extension included."""
+    body = {
+        "title": "Request validation failed",
+        "status": 422,
+        "code": "validation.failed",
+        "errors": [{"loc": ["body", "x"], "msg": "nope"}],
+    }
+    err = CliError(problem=body, as_json=True)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    parsed = json.loads(captured.out)
+    assert parsed == body
 
 
 def test_render_problem_includes_request_id_when_present(capsys: object) -> None:

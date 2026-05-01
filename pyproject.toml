@@ -54,6 +54,8 @@ ignore = [
     "S101",   # asserts are the whole point of tests
     "S105",   # hardcoded password strings — fine in fixtures
     "S106",   # hardcoded password kwargs — fine in fixtures
+    "S603",   # subprocess.run/Popen — needed for E2E CLI tests against a spawned API
+    "S607",   # partial-path start-process — sys.executable / "uvicorn" are intentional
     "D",      # tests don't need docstrings
     "ANN",    # tests don't need type annotations on every fixture
 ]
