@@ -173,12 +173,17 @@ Split into two PRs against the same umbrella issue.
 - Note: `auth.duplicate_email` (409) is unreachable through `register` alone because each call mints a new household, so `(household_id, email)` is unique by construction. Rejection coverage for that code will land when there's an "invite user to existing household" endpoint.
 - Project test count: 314 passing.
 
-#### P3.2.b — `login` (with MFA + recovery), `logout`, `status`, transparent refresh — queued
+#### P3.2.b — `login` (with MFA + recovery), `logout`, `status`, transparent refresh — ✅ *(2026-05-01)*
 
-- Keyring-backed token storage primitive.
-- Login handles all three documented outcomes: tokens, `auth.mfa_required` (prompt for TOTP), `auth.mfa_enrollment_required`. `--recovery` alt path via `/v1/auth/login/recover`.
-- `logout` revokes the refresh token; `status` decodes the access-token payload locally for now (full validation lands when `GET /v1/auth/me` ships — tracked as #24).
-- `TulipClient` gains transparent refresh on access-token expiry.
+Closes #19.
+
+- `tulip_cli.auth.tokens` — `TokenSet` dataclass + `TokenStore` with two backends. Default writes to the OS keyring (`tulip-accounting` service); setting `TULIP_TOKEN_STORE` to a path switches to a JSON-file backend. The file backend is used in tests and CI; real users get keyring. Pluggable backends (1Password CLI, `pass`) tracked separately as #28.
+- `tulip_cli.auth.jwt_decode` — stdlib-only base64 decode of the JWT payload, no signature verification. Used by `auth status`; the next real call validates against the API.
+- `TulipClient` learns pre-emptive transparent refresh: authenticated requests check the access-token expiry locally and call `POST /v1/auth/refresh` if within 30s of expiry. Refresh failure clears tokens and surfaces an `auth.session_expired` problem (exit `2`). Reactive (refresh on 401) was rejected because the API doesn't expose a distinct `auth.token_expired` code from a generic 401.
+- `tulip auth login` — handles all three documented outcomes: 200 → tokens stored; 401 `auth.mfa_required` → prompt for TOTP code → `POST /v1/auth/login/mfa`; 403 `auth.mfa_enrollment_required` → render the `enrollment_url` and exit `2`. `--recovery` switches the step-2 prompt to a recovery code and POSTs to `/v1/auth/login/recover`. `--password-stdin` / `--code-stdin` for scripts.
+- `tulip auth logout` — revokes the refresh token at the API and clears local tokens. Idempotent: already-logged-out is exit `0`.
+- `tulip auth status` — reads tokens locally and decodes the access-token payload to display email, household_id, role, and access-token TTL. No network call; full server-side validation lands behind a `--check` flag once #24 (`GET /v1/auth/me`) ships.
+- 35 new tests (token store round-trip with both backends, JWT decode, transparent refresh via `httpx.MockTransport`, plus 9 E2E covering happy login, MFA-TOTP, MFA-recovery, wrong-password exit code, status logged-in/out, JSON status, logout, idempotent logout). Project test count: 350 passing.
 
 ### P3.3 — Read flows (`accounts`, `balance`) — queued (#20)
 

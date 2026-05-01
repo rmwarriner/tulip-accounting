@@ -1,0 +1,132 @@
+"""Persistent storage for the access + refresh tokens issued by the Tulip API.
+
+Two backends:
+
+* **keyring** (default) — uses the OS keychain via the ``keyring``
+  library. Tokens never appear on disk in plaintext. The right choice
+  for real users.
+* **file** (``TULIP_TOKEN_STORE`` env var pointing at a path) — writes
+  tokens to a JSON file at the named path. **Unencrypted.** Intended
+  for tests and CI; not for real-user use. Documented as such in
+  ``docs/CLI.md`` (when that exists).
+
+The keyring entry is keyed by the API base URL so multiple tenants /
+environments can coexist without the CLI getting confused. Pluggable
+secret-tool backends (``1Password``, ``pass``, etc.) are tracked
+separately in #28.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Final
+
+import keyring
+
+_KEYRING_SERVICE: Final[str] = "tulip-accounting"
+_ENV_TOKEN_STORE: Final[str] = "TULIP_TOKEN_STORE"  # noqa: S105 — env var name, not a credential
+
+
+@dataclass(frozen=True, slots=True)
+class TokenSet:
+    """The data the CLI persists after a successful login."""
+
+    email: str
+    access_token: str
+    refresh_token: str
+    access_expires_at: int
+
+
+def _normalize(api_url: str) -> str:
+    return api_url.rstrip("/")
+
+
+class TokenStore:
+    """Read/write/clear tokens keyed by API URL.
+
+    Construct with ``file_path=...`` to use the JSON-file backend (tests).
+    Without it, falls through to the OS keyring.
+    """
+
+    def __init__(self, *, file_path: Path | None = None) -> None:
+        """Build a store using either the file backend (if a path is given) or keyring."""
+        self._file_path = file_path
+
+    @property
+    def is_keyring_backed(self) -> bool:
+        """Return whether this store writes to the OS keyring."""
+        return self._file_path is None
+
+    def save(self, api_url: str, tokens: TokenSet) -> None:
+        """Persist ``tokens`` for ``api_url``, replacing any existing entry."""
+        url = _normalize(api_url)
+        payload = json.dumps(asdict(tokens))
+        if self._file_path is not None:
+            data = self._read_file()
+            data[url] = payload
+            self._write_file(data)
+        else:
+            keyring.set_password(_KEYRING_SERVICE, url, payload)
+
+    def load(self, api_url: str) -> TokenSet | None:
+        """Return tokens for ``api_url`` if any are stored, else ``None``."""
+        url = _normalize(api_url)
+        if self._file_path is not None:
+            payload = self._read_file().get(url)
+        else:
+            payload = keyring.get_password(_KEYRING_SERVICE, url)
+        if not payload:
+            return None
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        try:
+            return TokenSet(**data)
+        except TypeError:
+            return None
+
+    def clear(self, api_url: str) -> None:
+        """Remove any stored tokens for ``api_url``. Idempotent — no error if absent."""
+        url = _normalize(api_url)
+        if self._file_path is not None:
+            data = self._read_file()
+            data.pop(url, None)
+            self._write_file(data)
+        else:
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, url)
+            except keyring.errors.PasswordDeleteError:
+                pass
+
+    def _read_file(self) -> dict[str, str]:
+        if self._file_path is None or not self._file_path.is_file():
+            return {}
+        try:
+            data = json.loads(self._file_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_file(self, data: dict[str, str]) -> None:
+        if self._file_path is None:
+            return
+        self._file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def default_token_store() -> TokenStore:
+    """Build a ``TokenStore`` from environment configuration.
+
+    ``TULIP_TOKEN_STORE`` set → file backend at that path.
+    Unset → keyring-backed (default for real users).
+    """
+    env_path = os.environ.get(_ENV_TOKEN_STORE)
+    if env_path:
+        return TokenStore(file_path=Path(env_path))
+    return TokenStore()
