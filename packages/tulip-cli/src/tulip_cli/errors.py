@@ -49,18 +49,54 @@ def exit_code_for_status(status: int) -> int:
 
 
 def exit_code_for_problem(problem: dict[str, Any]) -> int:
-    """Pick an exit code from a Problem Details body (uses ``status``)."""
+    """Pick an exit code from a Problem Details body.
+
+    ``code`` wins when its prefix indicates a category (``config.*`` →
+    exit 5, ``network.*`` → exit 4); otherwise ``status`` decides.
+    """
+    code = problem.get("code")
+    if isinstance(code, str):
+        if code.startswith("config."):
+            return EXIT_CONFIG
+        if code.startswith("network."):
+            return EXIT_NETWORK
     status = problem.get("status")
     return exit_code_for_status(int(status)) if isinstance(status, int) else EXIT_USER
+
+
+def _request_url(response: httpx.Response) -> str:
+    """Return the full URL of the request that produced ``response``, or ``""``."""
+    try:
+        return str(response.request.url)
+    except RuntimeError:
+        return ""
+
+
+def _request_path(response: httpx.Response) -> str:
+    """Return the path of the request that produced ``response``, or ``""``."""
+    try:
+        return str(response.request.url.path)
+    except RuntimeError:
+        return ""
+
+
+def _looks_like_tulip_api_body(content_type: str) -> bool:
+    """A Tulip API always speaks JSON. HTML/text/etc. mean we're talking to the wrong server."""
+    return "json" in content_type.lower()
 
 
 def parse_problem_response(response: httpx.Response) -> dict[str, Any]:
     """Parse an ``httpx.Response`` into a Problem Details dict.
 
-    If the response really is ``application/problem+json``, return the
-    decoded body. Otherwise synthesize a minimal Problem Details dict so
-    the renderer has something consistent to display — surprising server
-    output should still produce an actionable error, never a stack trace.
+    Three cases:
+
+    1. ``application/problem+json`` — pass through.
+    2. ``application/json`` (or similar) but not problem-shaped — synthesize
+       a ``server.unexpected_response`` problem; the API is real but
+       speaking a non-RFC-9457 dialect, which is a server bug.
+    3. Anything else (HTML, plaintext) — synthesize a
+       ``config.not_a_tulip_api`` problem. The URL is pointing at something
+       that isn't a Tulip API, which is a configuration error on our side.
     """
     content_type = response.headers.get("content-type", "")
     if PROBLEM_CONTENT_TYPE in content_type:
@@ -70,20 +106,34 @@ def parse_problem_response(response: httpx.Response) -> dict[str, Any]:
             data = None
         if isinstance(data, dict):
             return data
-    try:
-        instance = str(response.request.url.path)
-    except RuntimeError:
-        instance = ""
+
+    instance = _request_path(response)
+    if _looks_like_tulip_api_body(content_type):
+        return {
+            "type": "/.well-known/errors/server.unexpected_response",
+            "title": "Unexpected response from the API",
+            "status": response.status_code,
+            "detail": (
+                f"The API returned status {response.status_code} with a body that "
+                "isn't RFC 9457 Problem Details. This is a server bug — the API "
+                "should always emit application/problem+json on errors."
+            ),
+            "instance": instance,
+            "code": "server.unexpected_response",
+        }
+
+    url = _request_url(response) or "(no URL)"
     return {
-        "type": "/.well-known/errors/server.unexpected_response",
-        "title": "Unexpected response from the API",
+        "type": "/.well-known/errors/config.not_a_tulip_api",
+        "title": "That URL doesn't look like a Tulip API",
         "status": response.status_code,
         "detail": (
-            f"The API returned status {response.status_code} with an unexpected body. "
-            "This is a bug in the server or a sign that you are pointed at the wrong URL."
+            f"GET {url} returned status {response.status_code} with content-type "
+            f"{content_type or '(unset)'}. A Tulip API always responds with JSON. "
+            "Check that --api-url / TULIP_API_URL points at a running Tulip server."
         ),
         "instance": instance,
-        "code": "server.unexpected_response",
+        "code": "config.not_a_tulip_api",
     }
 
 
