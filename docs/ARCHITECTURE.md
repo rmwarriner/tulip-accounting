@@ -735,18 +735,17 @@ For each class of failure the system has a defined recovery path:
 
 - **Tests** — every error path test asserts the response is a Problem Details body, not just the status code. A reusable `assert_problem(resp, code=..., status=...)` helper lives in `packages/tulip-api/tests/_problem_details.py`.
 - **OpenAPI spec** — every operation's `responses` block lists the Problem Details schemas it can return; schemathesis (Phase 2.x) drives this and fails on undeclared error responses.
-- **Architecture test** — no router function may `raise HTTPException(detail=<str>)` without going through the helper that wraps it as a Problem Details body. (Phase 2.x; current Phase 2 emits plain `detail` strings and is tracked for migration in the §10 plan.)
+- **Architecture test** — `tests/test_architecture_no_http_exception.py` AST-scans `tulip_api/src/` and rejects any reference to FastAPI's plain `HTTPException`. Re-introducing the legacy pattern is a CI failure.
 
 #### 7.8.9 Status of the current code
 
-Phase 2 endpoints currently raise `HTTPException(status_code=..., detail="...")` — FastAPI's default shape, not RFC 9457. The migration to Problem Details is a Phase 2.x slice (`P2.x: RFC 9457 errors + recovery hints`) that:
+✅ Shipped end to end (Phase 2.x.1 – 2.x.4).
 
-1. Adds a project-wide exception → Problem Details mapper (FastAPI exception handler).
-2. Replaces ad-hoc `detail=` strings with typed exceptions whose `code`, `title`, and `detail` come from a registry.
-3. Adds the `assert_problem` test helper and migrates the existing tests to use it.
-4. Publishes `/.well-known/errors/<code>` HTML pages with the canonical explanation.
-
-This is non-blocking for Phase 3 (CLI), since the CLI can be written against the eventual shape from day 1 and the API migration can land underneath it.
+1. Project-wide `TulipProblem` base + FastAPI exception handlers (`install_problem_handlers` in `tulip_api.errors`).
+2. Typed exception classes whose `code`, `title`, `status`, and `detail` are constructed from a single registry; routers raise these instead of `HTTPException`.
+3. `assert_problem` test helper at `packages/tulip-api/tests/_problem_details.py`; every error-path test uses it.
+4. `/.well-known/errors/{code}` HTML pages auto-published from `TulipProblem.__subclasses__()`; index at `/.well-known/errors/`.
+5. Schemathesis contract tests fuzz every documented operation (`tests/test_openapi_contract.py`); every non-2xx response is `application/problem+json`, including `RequestValidationError` (422), Starlette framework errors (400/404/405/415), and unhandled exceptions (catch-all → `server.internal_error` 500).
 
 ---
 
@@ -904,23 +903,34 @@ The roadmap below is suggested; Claude Code can sequence within each phase as th
 - Accounting engine: post transaction, balanced-postings invariant, period-aware writes
 - Property-based tests over `Money`; example-based + hypothesis-strategies on the engine
 
-### Phase 2 — API surface (auth + accounts + transactions) ✅ complete (core) · 🟡 cleanup queued in Phase 2.x
+### Phase 2 — API surface (auth + accounts + transactions) ✅ complete
 - FastAPI app with structured logging and request_id middleware
-- Auth endpoints — register, login, refresh, logout (MFA queued in P2.x.1)
+- Auth endpoints — register, login, refresh, logout
 - CRUD for accounts and transactions with permission enforcement
-- OpenAPI spec rendered (schemathesis contract tests queued in P2.x.3)
+- OpenAPI spec rendered
 - Audit log writer wired into every mutation
 
-### Phase 2.x — Cleanup before Phase 3 — queued
-- **P2.x.1** — MFA (TOTP) enrollment, login challenge, hashed recovery codes
-- **P2.x.2** — RFC 9457 Problem Details migration (see §7.8)
-- **P2.x.3** — schemathesis contract tests in CI
+### Phase 2.x — Cleanup before Phase 3 ✅ complete
+- **P2.x.1** ✅ — MFA (TOTP) enrollment, login challenge, hashed recovery codes
+- **P2.x.2** ✅ — RFC 9457 Problem Details migration (see §7.8)
+- **P2.x.3** ✅ — schemathesis contract tests in CI
+- **P2.x.4** ✅ — catch-all unhandled-exception handler so even uncaught exceptions emit `application/problem+json`
 
-### Phase 3 — CLI (Typer) + first useful flows
-- `tulip auth login`, `tulip add`, `tulip register`, `tulip balance`, `tulip accounts`
-- Token storage via keyring
-- End-to-end tests of CLI against a spawned API server
-- Toner-friendly print stylesheet finalized
+### Phase 3 — CLI (Typer) + first useful flows ✅ complete
+- ✅ `tulip register`, `tulip auth {login,logout,status}` (login handles MFA + recovery branches)
+- ✅ `tulip accounts {list,show,add}` with parent nesting; `tulip add` (transactions) in flag and `--edit` editor modes
+- ✅ `tulip balance` (single account or trial-balance summary)
+- ✅ Token storage via OS keyring (file-backed fallback under `TULIP_TOKEN_STORE` for tests / CI)
+- ✅ End-to-end tests of CLI against a spawned uvicorn (`live_api` fixture)
+- 🟡 Toner-friendly print stylesheet — deferred to Phase 8 (#22), where it lands alongside actual reports
+
+#### Phase 3 follow-ups also shipped
+
+These weren't in the original Phase 3 list but landed before Phase 4 because the CLI's full ergonomic loop wanted them:
+
+- Balance + trial-balance API endpoints (#31, PR #37) — `GET /v1/accounts/{id}/balance` and `GET /v1/reports/trial-balance`, both with `?as_of=YYYY-MM-DD`.
+- Account nesting end-to-end (#42) — `parent_account_id` consistency rules (type / currency / visibility / no-cycle), reparenting via PATCH, CLI `--parent` flag, tree rendering, parent-name surfacing on `show`. Multi-currency parents deliberately rejected for now (#44 is the holding pen).
+- Interactive `tulip add --edit` (#43) — opens `$EDITOR` with a hledger-subset template; reopens with a banner on parse / balance / unknown-account errors.
 
 ### Phase 4 — Envelopes + sinking funds
 - Allocation pool models and CRUD

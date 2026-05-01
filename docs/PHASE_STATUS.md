@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-01 · `main` @ `ba5beb8`
+**Last updated:** 2026-05-01 · `main` @ `39e1498`
 
 ---
 
@@ -11,10 +11,12 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 0:** ✅ complete
 - **Phase 1:** ✅ complete
 - **Phase 2 (core API surface):** ✅ complete
-- **Phase 2.x (cleanup before Phase 3):** ✅ complete
-- **Phase 3 (CLI):** in flight — P3.1 skeleton landed, P3.2–P3.5 queued (issues #18–#22)
+- **Phase 2.x (cleanup before Phase 3):** ✅ complete (P2.x.1 – P2.x.4)
+- **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
+- **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
+- **Phase 4 (envelopes + sinking funds):** not started
 
-**Tests:** 304 passing · **CI:** green on `main`
+**Tests:** 460 passing · **CI:** green on `main`
 
 ---
 
@@ -228,9 +230,45 @@ Closes #21.
 - 21 new tests: 10 parser unit tests (account+amount, negative, currency override, UUIDs, multiple-colon codes, malformed shapes); 5 E2E for `accounts add` (happy, minimal-no-code, --json, invalid type, unauthenticated); 6 E2E for `tulip add` (happy with balance round-trip, --json, unbalanced rejection, unknown-account-in-post, single-posting validation, unauthenticated).
 - Project test count: 411 passing.
 
-Phase 3 is now complete except for **P3.5 (toner-friendly print stylesheet)**, which is recommended to defer to Phase 8 alongside the actual reports — see #22.
+### P3.5 — Toner-friendly print stylesheet — deferred to Phase 8 (#22)
 
-### P3.5 — Toner-friendly print stylesheet — queued (#22), may defer to Phase 8
+Phase 3 originally included a print-stylesheet skeleton, but with no reports to render against, the invariants are easy to drift out of sync. Recommended deferral until Phase 8 reports work; #22 stays open as the holding pen.
+
+---
+
+## Post-Phase-3 enhancements
+
+These weren't in the original Phase 3 plan but landed before Phase 4 work begins, and the CLI's full ergonomic loop (register → login → accounts add (with parent) → add (interactive or flag) → balance) needed all three to feel complete.
+
+### Balance endpoints + `tulip balance` (#31, #20-b) — ✅ *(2026-05-01)*
+
+- **API**: `TransactionRepository.balance_for_account` and `TransactionRepository.trial_balance` (POSTED + RECONCILED only; pending is workflow state). New schemas in `tulip_api.schemas.balance`. Two endpoints: `GET /v1/accounts/{id}/balance` and `GET /v1/reports/trial-balance` (new `routers/reports.py`). Both accept `?as_of=YYYY-MM-DD`. All Decimal balances are quantized to currency minor units via `Money.quantize_to_currency()`.
+- **CLI**: `tulip balance` (no arg) renders trial balance with debit/credit zero-sum check; `tulip balance ACCOUNT` (code or UUID) shows a single account's balance.
+- 23 new tests (8 storage, 10 API, 8 CLI). PRs #37 + #38.
+
+### Account nesting end-to-end (#42) — ✅ *(2026-05-01)*
+
+- **API** (#42.a, PR #45): On `POST` and `PATCH /v1/accounts`, parent_account_id is validated against four rules: `parent.type == child.type`, `parent.currency == child.currency`, no shared-child-under-private-parent, and no cycles (cycle walk on PATCH only). Five new error codes: `account.parent_not_found`, `account.parent_type_mismatch`, `account.parent_currency_mismatch`, `account.parent_visibility_violation`, `account.parent_cycle`. `AccountUpdate` learns `parent_account_id` so PATCH can reparent.
+- **CLI** (#42.b, PR #47): `tulip accounts add --parent ACCOUNT` (code or UUID); `tulip accounts list` defaults to a Rich tree when nesting exists, falls back to flat table when it doesn't or under `--flat`; `tulip accounts show` resolves and displays the parent's code+name.
+- Multi-currency parent hierarchies (USD-base household with EUR/GBP/JPY travel sub-accounts) are deliberately rejected; the design discussion lives in **#44** as a holding pen.
+- 23 new tests (14 API, 9 CLI).
+
+### Interactive `tulip add --edit` (#43) — ✅ *(2026-05-01)*
+
+PR #48. Editor-driven transaction entry as an alternative to the flag mode.
+
+- New `tulip_cli.commands._editor` spawns `$VISUAL` → `$EDITOR` → `vi`/`notepad` (with `shlex.split` so `EDITOR='code --wait'` works).
+- New `tulip_cli.commands._ledger` parses a strict subset of hledger syntax: `YYYY-MM-DD <description>` header, indented `<account>  <amount> [<currency>]` postings, `#` and `;` comments. Errors carry line numbers.
+- The editor loop reopens with a banner on parse / balance / unknown-account / period-closed errors so users fix their typing rather than re-typing from scratch (matches `git commit` ergonomics). Saving an empty/comments-only buffer aborts cleanly with exit `0`.
+- 26 new tests: 15 parser unit, 5 editor-spawn unit, 6 E2E with a fake editor (happy + abort + 3 reopen-on-error + `--json`).
+
+---
+
+## Other shipped fixes
+
+### P2.x.4 — catch-all unhandled-exception handler — ✅ *(2026-05-01)*
+
+PR #30. Closed #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL parse error escaped the Problem Details middleware and emitted Starlette's default `text/plain` 500. New `InternalServerError` (`server.internal_error`, 500) `TulipProblem` subclass; `install_problem_handlers` registers a fourth handler for the `Exception` base. Exception text and tracebacks stay in logs; clients get a generic detail with a `request_id` for support correlation.
 
 ---
 
