@@ -485,16 +485,54 @@ _FRAMEWORK_ERROR_CODES: Final[dict[int, str]] = {
 }
 
 
+class InternalServerError(TulipProblem):
+    """Catch-all for an unhandled exception escaping a route handler.
+
+    The detail is deliberately generic — exception messages and
+    tracebacks belong in server logs, not in HTTP responses. Clients see
+    a stable ``server.internal_error`` code and a request_id (when one
+    was supplied) for support correlation.
+    """
+
+    def __init__(self) -> None:
+        """Build the server.internal_error problem (no exception text leaked)."""
+        super().__init__(
+            code="server.internal_error",
+            title="Internal server error",
+            status=500,
+            detail=(
+                "An unexpected error occurred on the server. If you can reproduce "
+                "this, the request_id below identifies the failing request in the "
+                "server logs."
+            ),
+        )
+
+
 def install_problem_handlers(app: FastAPI) -> None:
     """Register the :class:`TulipProblem` handler on ``app``.
 
-    Also wraps FastAPI's ``RequestValidationError`` (422) and Starlette's
-    framework-level ``HTTPException`` (400 bad body, 404 no route, 405
-    wrong method, etc.) so the *entire* error surface is RFC 9457 —
-    schemathesis's contract test asserts this.
+    Wires up four handlers, in order of specificity (Starlette dispatches
+    by MRO, picking the most specific match):
+
+    * :class:`TulipProblem` — typed domain errors raised by route code.
+    * :class:`fastapi.exceptions.RequestValidationError` — Pydantic 422.
+    * :class:`starlette.exceptions.HTTPException` — framework-level
+      400 (malformed body), 404 (no route), 405 (wrong method), 415, etc.
+    * :class:`Exception` — last-resort catch-all so an unhandled
+      exception never escapes as the default ``text/plain`` 500.
+
+    With all four registered, every non-2xx response is RFC 9457
+    ``application/problem+json``. Schemathesis's contract test asserts
+    this for documented endpoints; the catch-all closes the
+    "unhandled-exception" gap that schemathesis can't see (production
+    routes don't declare ``500`` because that's not a normal client
+    response — it's a server bug).
     """
+    import structlog
     from fastapi.exceptions import RequestValidationError
     from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    log = structlog.get_logger("tulip_api.errors")
 
     @app.exception_handler(TulipProblem)
     def _handle(request: Request, exc: TulipProblem) -> JSONResponse:
@@ -503,6 +541,21 @@ def install_problem_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     def _handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
         return _render(request, ValidationFailedError(errors=list(exc.errors())))
+
+    @app.exception_handler(Exception)
+    def _handle_unhandled(request: Request, exc: Exception) -> JSONResponse:
+        # Log the full exception (with traceback, via exc_info) under
+        # the request's structlog context so operators can find it.
+        # Critically, do NOT include the exception text in the response
+        # body — that's the principle in ARCHITECTURE.md §1.1.7
+        # (no internal identifiers in user-facing copy).
+        log.exception(
+            "internal_error",
+            exc_info=exc,
+            exc_type=type(exc).__name__,
+            path=request.url.path,
+        )
+        return _render(request, InternalServerError())
 
     @app.exception_handler(StarletteHTTPException)
     def _handle_starlette(request: Request, exc: StarletteHTTPException) -> JSONResponse:

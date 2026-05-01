@@ -143,6 +143,15 @@ P2.x.2 closes; P2.x.3 (schemathesis contract tests) is unblocked next.
 
 P2.x is now fully complete; the next slice is **Phase 3 — CLI (Typer) + first useful flows**.
 
+### P2.x.4 — catch-all unhandled-exception handler — ✅ *(2026-05-01)*
+
+Closes #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL parse error escaped the Problem Details middleware and emitted Starlette's default `text/plain` 500.
+
+- New `InternalServerError` (`server.internal_error`, 500) `TulipProblem` subclass — generic detail, no exception text or traceback in the body (per ARCHITECTURE.md §1.1.7 / §7.8.6).
+- `install_problem_handlers` registers a fourth handler for the `Exception` base class. Starlette dispatches by MRO so the existing `TulipProblem` / `RequestValidationError` / `StarletteHTTPException` handlers still win for their specific types; the catch-all only fires for genuinely-unhandled exceptions.
+- Logs the full exception (with traceback, via `structlog.exception(exc_info=...)`) under the request's structlog context — operators have the detail in logs, clients don't.
+- 5 new tests against a deliberate-panic FastAPI app: 500 problem+json shape, no leak of exception text / class name / traceback in the body, all exception types caught (RuntimeError, ValueError, KeyError), client-supplied `X-Request-Id` echoed, typed `TulipProblem` handler still wins over the catch-all.
+
 ---
 
 ## Phase 3 — CLI (Typer) + first useful flows — in flight
