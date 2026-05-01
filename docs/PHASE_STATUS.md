@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-04-29 · `main` @ `a89cc89`
+**Last updated:** 2026-05-01 · `main` @ `ba5beb8`
 
 ---
 
@@ -11,9 +11,10 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 0:** ✅ complete
 - **Phase 1:** ✅ complete
 - **Phase 2 (core API surface):** ✅ complete
-- **Phase 2.x (cleanup before Phase 3):** queued — three slices, ordered
+- **Phase 2.x (cleanup before Phase 3):** ✅ complete
+- **Phase 3 (CLI):** in flight — P3.1 skeleton landed, P3.2–P3.5 queued (issues #18–#22)
 
-**Tests:** 287 passing · **coverage:** 95% project, ≥95% on `tulip-core` and `tulip-storage` · **CI:** green on `main`
+**Tests:** 304 passing · **CI:** green on `main`
 
 ---
 
@@ -144,14 +145,29 @@ P2.x is now fully complete; the next slice is **Phase 3 — CLI (Typer) + first 
 
 ---
 
-## Phase 3 — CLI (Typer) + first useful flows — not started
+## Phase 3 — CLI (Typer) + first useful flows — in flight
 
-Per ARCHITECTURE.md §10. Picks up after Phase 2.x is complete.
+Per ARCHITECTURE.md §10. Phase 2.x cleared; this phase ships the CLI in five sequenced slices tracked as GitHub issues.
 
-- `tulip auth login`, `tulip add`, `tulip register`, `tulip balance`, `tulip accounts`
-- Token storage via `keyring`
-- End-to-end tests of CLI against a spawned API server
-- Toner-friendly print stylesheet finalized
+### P3.1 — CLI skeleton — ✅ *(2026-05-01)*
+
+Issue #18. Foundation slice — no domain commands yet, just plumbing every later slice depends on.
+
+- `tulip-cli` package wired with `typer`, `httpx`, `rich` deps and a `tulip` console script (`[project.scripts]` → `tulip_cli.main:app`).
+- `tulip_cli.config`: TOML loader at `~/.config/tulip/config.toml` (XDG-aware), with precedence CLI flag > `TULIP_API_URL` > config file > default. `Config` dataclass strips trailing slashes.
+- `tulip_cli.errors`: RFC 9457 Problem Details renderer. Bold-red title + indented detail to stderr; `--json` emits the raw body to stdout. Exit-code map per ARCHITECTURE.md §7.8.5 (`0`/`1`/`2`/`3`/`4`/`5`). Synthesizes a Problem Details body for non-`application/problem+json` failures so output stays consistent.
+- `tulip_cli.http`: `TulipClient` thin wrapper over `httpx.Client`; raises `CliError` on both 4xx/5xx and network failures. Bearer-token slot ready for P3.2.
+- `tulip ping` exercises the full path against `/health`. Without a server: exit `4`, network problem rendered. With `--json`: raw Problem Details body.
+- Architecture test (`test_architecture.py`): AST scan over `tulip_cli/src/` rejects imports of `tulip_api`, `tulip_storage`, `sqlalchemy`, FastAPI, etc. — keeps the CLI a pure network client.
+- 17 new tests; project total now 304 passing.
+
+### P3.2 — Auth (`register`, `login`, `logout`, `status`) — queued (#19)
+
+### P3.3 — Read flows (`accounts`, `balance`) — queued (#20)
+
+### P3.4 — Write flows (`accounts add`, `add`) — queued (#21)
+
+### P3.5 — Toner-friendly print stylesheet — queued (#22), may defer to Phase 8
 
 ---
 
