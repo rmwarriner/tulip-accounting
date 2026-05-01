@@ -186,6 +186,35 @@ class CliError(Exception):
         detail = self.problem.get("detail")
         if detail:
             console.print(Text(f"  {detail}"))
+        for line in _format_pydantic_errors(self.problem.get("errors")):
+            console.print(Text(f"  - {line}"))
         request_id = self.problem.get("request_id")
         if request_id:
             console.print(Text(f"  request_id: {request_id}", style="dim"))
+
+
+def _format_pydantic_errors(errors: object) -> list[str]:
+    """Render a Pydantic-shaped ``errors`` extension as ``loc: msg`` lines.
+
+    The API surfaces ``RequestValidationError.errors()`` verbatim under the
+    ``errors`` key (RFC 9457 §3.2 extension); each entry has ``loc`` and
+    ``msg`` keys at minimum. Anything that doesn't match the shape is
+    silently ignored — extension fields are open-ended and the renderer
+    shouldn't crash on a payload it doesn't understand.
+    """
+    if not isinstance(errors, list):
+        return []
+    lines: list[str] = []
+    for entry in errors:
+        if not isinstance(entry, dict):
+            continue
+        loc = entry.get("loc")
+        msg = entry.get("msg")
+        if not isinstance(msg, str):
+            continue
+        if isinstance(loc, list | tuple) and loc:
+            location = ".".join(str(part) for part in loc)
+            lines.append(f"{location}: {msg}")
+        else:
+            lines.append(msg)
+    return lines

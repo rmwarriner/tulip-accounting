@@ -57,7 +57,7 @@ def test_register_happy_path(live_api: str) -> None:
 
 @pytest.mark.integration
 def test_register_short_password_yields_validation_failed(live_api: str) -> None:
-    """Pydantic enforces password min_length=12 server-side; surface clearly."""
+    """Pydantic enforces password min_length=12 server-side; surface field-level info."""
     result = _run_cli(
         "register",
         "--email",
@@ -71,7 +71,10 @@ def test_register_short_password_yields_validation_failed(live_api: str) -> None
         stdin="short\n",
     )
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "validation" in result.stderr.lower() or "password" in result.stderr.lower()
+    # The renderer surfaces the failing field name and the constraint
+    # message, not just a generic "validation failed".
+    assert "body.password" in result.stderr
+    assert "12" in result.stderr  # the min-length constraint mentioned in the message
 
 
 @pytest.mark.integration

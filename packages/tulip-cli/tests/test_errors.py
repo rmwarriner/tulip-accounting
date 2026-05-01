@@ -174,6 +174,69 @@ def test_network_error_maps_to_exit_4() -> None:
     assert err.exit_code == EXIT_NETWORK
 
 
+def test_render_problem_surfaces_pydantic_validation_errors(capsys: object) -> None:
+    """validation.failed bodies carry a Pydantic-shaped ``errors`` extension. Render it."""
+    body = {
+        "type": "/.well-known/errors/validation.failed",
+        "title": "Request validation failed",
+        "status": 422,
+        "detail": "One or more fields in the request body or query parameters are invalid.",
+        "instance": "/v1/auth/register",
+        "code": "validation.failed",
+        "errors": [
+            {
+                "type": "string_too_short",
+                "loc": ["body", "password"],
+                "msg": "String should have at least 12 characters",
+                "input": "shorty",
+            },
+            {
+                "type": "value_error",
+                "loc": ["body", "email"],
+                "msg": "value is not a valid email address",
+                "input": "bad-email",
+            },
+        ],
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "body.password" in captured.err
+    assert "at least 12 characters" in captured.err
+    assert "body.email" in captured.err
+    assert "valid email address" in captured.err
+
+
+def test_render_problem_ignores_non_list_errors_extension(capsys: object) -> None:
+    """An ``errors`` extension that isn't pydantic-shaped is silently skipped."""
+    body = {
+        "title": "Something",
+        "status": 422,
+        "detail": "...",
+        "code": "validation.failed",
+        "errors": "not a list",
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "not a list" not in captured.err
+
+
+def test_render_problem_json_mode_does_not_split_errors_extension(capsys: object) -> None:
+    """--json mode passes the body through verbatim, errors extension included."""
+    body = {
+        "title": "Request validation failed",
+        "status": 422,
+        "code": "validation.failed",
+        "errors": [{"loc": ["body", "x"], "msg": "nope"}],
+    }
+    err = CliError(problem=body, as_json=True)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    parsed = json.loads(captured.out)
+    assert parsed == body
+
+
 def test_render_problem_includes_request_id_when_present(capsys: object) -> None:
     body = _problem(request_id="abc-123")
     err = CliError(problem=body, as_json=False)
