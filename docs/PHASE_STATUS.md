@@ -217,7 +217,18 @@ Closes P3.3 (#20). Consumes the balance endpoints landed by #31.
 
 Also incidentally closes the `tulip-storage` `TrialBalanceRow` export gap surfaced during #31.
 
-### P3.4 — Write flows (`accounts add`, `add`) — queued (#21)
+### P3.4 — Write flows (`accounts add`, `add`) — ✅ *(2026-05-01)*
+
+Closes #21.
+
+- `tulip accounts add` — `POST /v1/accounts`. Required: `--name`, `--type`, `--currency`. Optional: `--code`, `--subtype`, `--visibility` (default `shared`). Returns the created account body; `--json` passes through.
+- `tulip add` (transactions) — `POST /v1/transactions`. Required: `--date YYYY-MM-DD`, `--description` (or `-m`), repeated `--post`. Optional: `--reference`.
+- **Posting syntax: `--post account=amount[@CURRENCY]`** — picked over `account:amount` because account codes contain colons (e.g. `assets:checking`). The parser splits on the **last** `=` so codes-with-colons round-trip; `@CURRENCY` is optional and inherits from the account when omitted.
+- New `tulip_cli.commands.transactions` exports `parse_posting()` + `ParsedPosting` so the parser is unit-testable independently of the API.
+- 21 new tests: 10 parser unit tests (account+amount, negative, currency override, UUIDs, multiple-colon codes, malformed shapes); 5 E2E for `accounts add` (happy, minimal-no-code, --json, invalid type, unauthenticated); 6 E2E for `tulip add` (happy with balance round-trip, --json, unbalanced rejection, unknown-account-in-post, single-posting validation, unauthenticated).
+- Project test count: 411 passing.
+
+Phase 3 is now complete except for **P3.5 (toner-friendly print stylesheet)**, which is recommended to defer to Phase 8 alongside the actual reports — see #22.
 
 ### P3.5 — Toner-friendly print stylesheet — queued (#22), may defer to Phase 8
 
