@@ -20,6 +20,7 @@ from uuid import UUID
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.tree import Tree
 
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
@@ -117,8 +118,60 @@ def _render_table(accounts: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
-def _render_account(account: dict[str, Any]) -> None:
-    """Render a single account dict as a vertical key/value list."""
+def _render_tree(accounts: list[dict[str, Any]]) -> None:
+    """Render the account list as a tree grouped by ``parent_account_id``."""
+    by_id = {a["id"]: a for a in accounts}
+    children_by_parent: dict[str | None, list[dict[str, Any]]] = {}
+    for a in accounts:
+        parent_id = a.get("parent_account_id")
+        children_by_parent.setdefault(parent_id, []).append(a)
+
+    def _label(a: dict[str, Any]) -> str:
+        code = a.get("code") or "—"
+        name = a.get("name") or ""
+        atype = a.get("type") or ""
+        return f"{code}  [dim]{name} · {atype}[/dim]"
+
+    def _attach(node: Tree, account: dict[str, Any]) -> None:
+        for child in sorted(
+            children_by_parent.get(account["id"], []),
+            key=lambda c: (c.get("code") or "", c.get("name") or ""),
+        ):
+            child_node = node.add(_label(child))
+            _attach(child_node, child)
+
+    root = Tree("[bold]accounts[/bold]")
+    top_level = sorted(
+        children_by_parent.get(None, []),
+        key=lambda c: (c.get("code") or "", c.get("name") or ""),
+    )
+    # Also include any accounts whose declared parent isn't in our list
+    # (orphans — shouldn't happen given the API's role filtering, but
+    # render them anyway so we don't silently swallow rows).
+    orphans = [
+        a
+        for a in accounts
+        if a.get("parent_account_id") is not None and a.get("parent_account_id") not in by_id
+    ]
+    for a in top_level:
+        node = root.add(_label(a))
+        _attach(node, a)
+    for a in orphans:
+        node = root.add(_label(a) + " [yellow](parent not visible)[/yellow]")
+        _attach(node, a)
+    Console().print(root)
+
+
+def _has_nesting(accounts: list[dict[str, Any]]) -> bool:
+    return any(a.get("parent_account_id") for a in accounts)
+
+
+def _render_account(account: dict[str, Any], parent: dict[str, Any] | None = None) -> None:
+    """Render a single account dict as a vertical key/value list.
+
+    If ``parent`` is provided, the parent's code/name are surfaced inline
+    so users don't have to mentally resolve a UUID.
+    """
     typer.echo(f"id:           {account.get('id', '')}")
     typer.echo(f"code:         {account.get('code') or '—'}")
     typer.echo(f"name:         {account.get('name', '')}")
@@ -129,12 +182,29 @@ def _render_account(account: dict[str, Any]) -> None:
     typer.echo(f"visibility:   {account.get('visibility', '')}")
     typer.echo(f"is_active:    {account.get('is_active', '')}")
     if account.get("parent_account_id"):
-        typer.echo(f"parent:       {account['parent_account_id']}")
+        if parent is not None:
+            parent_label = f"{parent.get('code') or '—'} ({parent.get('name', '')})"
+            typer.echo(f"parent:       {parent_label} [{account['parent_account_id']}]")
+        else:
+            typer.echo(f"parent:       {account['parent_account_id']}")
 
 
 @accounts_app.command("list")
-def list_accounts(ctx: typer.Context) -> None:
-    """List active accounts visible to the logged-in user."""
+def list_accounts(
+    ctx: typer.Context,
+    flat: Annotated[
+        bool,
+        typer.Option(
+            "--flat",
+            help="Force the flat table view instead of the default tree.",
+        ),
+    ] = False,
+) -> None:
+    """List active accounts visible to the logged-in user.
+
+    Default rendering is a tree when any account has a parent; otherwise
+    a flat table. ``--flat`` forces the table view (useful for scripts).
+    """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     try:
@@ -150,9 +220,12 @@ def list_accounts(ctx: typer.Context) -> None:
 
     accounts = response.json()
     if not accounts:
-        typer.echo("No accounts. Run `tulip accounts add` to create one (P3.4 — coming soon).")
+        typer.echo("No accounts. Run `tulip accounts add` to create one.")
         return
-    _render_table(accounts)
+    if flat or not _has_nesting(accounts):
+        _render_table(accounts)
+    else:
+        _render_tree(accounts)
 
 
 @accounts_app.command("add")
@@ -191,6 +264,17 @@ def add_account(
             help="'shared' (default) or 'private'.",
         ),
     ] = "shared",
+    parent: Annotated[
+        str | None,
+        typer.Option(
+            "--parent",
+            help=(
+                "Optional parent account (code or UUID). The parent's type "
+                "and currency must match this account, and a private parent "
+                "forces a private child."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Create a new account in the logged-in user's household."""
     config: Config = ctx.obj["config"]
@@ -209,6 +293,9 @@ def add_account(
 
     try:
         with _client(config, as_json=as_json) as client:
+            if parent is not None:
+                resolved = _resolve_account(client, parent)
+                body["parent_account_id"] = resolved["id"]
             response = client.post("/v1/accounts", json=body, authenticated=True)
     except CliError as err:
         err.render()
@@ -237,9 +324,21 @@ def show_account(
     """Show one account by code or UUID."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+    parent: dict[str, Any] | None = None
     try:
         with _client(config, as_json=as_json) as client:
             account = _resolve_account(client, identifier)
+            parent_id = account.get("parent_account_id")
+            if parent_id:
+                # Fetch the parent to surface its code/name. A 404 here
+                # would be unexpected (the API just returned this child)
+                # but if it happens we render the child without the
+                # enriched parent line rather than crashing.
+                try:
+                    parent_response = client.get(f"/v1/accounts/{parent_id}", authenticated=True)
+                    parent = dict(parent_response.json())
+                except CliError:
+                    parent = None
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -247,4 +346,4 @@ def show_account(
     if as_json:
         sys.stdout.write(json.dumps(account) + "\n")
         return
-    _render_account(account)
+    _render_account(account, parent=parent)
