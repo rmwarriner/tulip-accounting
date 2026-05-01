@@ -193,6 +193,9 @@ class CliError(Exception):
             console.print(Text(f"  request_id: {request_id}", style="dim"))
 
 
+_LOC_REQUEST_PART_PREFIXES: Final[frozenset[str]] = frozenset({"body", "query", "path", "header"})
+
+
 def _format_pydantic_errors(errors: object) -> list[str]:
     """Render a Pydantic-shaped ``errors`` extension as ``loc: msg`` lines.
 
@@ -201,6 +204,13 @@ def _format_pydantic_errors(errors: object) -> list[str]:
     ``msg`` keys at minimum. Anything that doesn't match the shape is
     silently ignored — extension fields are open-ended and the renderer
     shouldn't crash on a payload it doesn't understand.
+
+    Pydantic prefixes ``loc`` with the request part the field came from
+    (``"body"``, ``"query"``, ``"path"``, ``"header"``). That's
+    implementation jargon to a CLI user, so we strip the leading segment
+    when it's one of those — ``["body", "password"]`` renders as
+    ``password``; ``["body", "postings", 0, "account_id"]`` as
+    ``postings.0.account_id``.
     """
     if not isinstance(errors, list):
         return []
@@ -213,7 +223,11 @@ def _format_pydantic_errors(errors: object) -> list[str]:
         if not isinstance(msg, str):
             continue
         if isinstance(loc, list | tuple) and loc:
-            location = ".".join(str(part) for part in loc)
+            parts = list(loc)
+            head = parts[0]
+            if isinstance(head, str) and head in _LOC_REQUEST_PART_PREFIXES and len(parts) > 1:
+                parts = parts[1:]
+            location = ".".join(str(part) for part in parts)
             lines.append(f"{location}: {msg}")
         else:
             lines.append(msg)

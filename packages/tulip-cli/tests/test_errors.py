@@ -201,10 +201,37 @@ def test_render_problem_surfaces_pydantic_validation_errors(capsys: object) -> N
     err = CliError(problem=body, as_json=False)
     err.render()
     captured = capsys.readouterr()  # type: ignore[attr-defined]
-    assert "body.password" in captured.err
+    # The leading ``body``/``query``/``path`` segment is Pydantic's loc
+    # convention for "this came from the request body" and is jargon to
+    # the user. The renderer strips it so messages read naturally.
+    assert "password" in captured.err
+    assert "body.password" not in captured.err
     assert "at least 12 characters" in captured.err
-    assert "body.email" in captured.err
+    assert "email" in captured.err
+    assert "body.email" not in captured.err
     assert "valid email address" in captured.err
+
+
+def test_render_problem_keeps_inner_loc_segments(capsys: object) -> None:
+    """Stripping is one segment deep; nested locations stay legible."""
+    body = {
+        "title": "Request validation failed",
+        "status": 422,
+        "detail": "...",
+        "code": "validation.failed",
+        "errors": [
+            {
+                "loc": ["body", "postings", 0, "account_id"],
+                "msg": "field required",
+            }
+        ],
+    }
+    err = CliError(problem=body, as_json=False)
+    err.render()
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "postings.0.account_id" in captured.err
+    # No leading "body." after the strip.
+    assert "body.postings" not in captured.err
 
 
 def test_render_problem_ignores_non_list_errors_extension(capsys: object) -> None:
