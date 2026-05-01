@@ -14,7 +14,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2.x (cleanup before Phase 3):** ✅ complete (P2.x.1 – P2.x.4)
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
-- **Queued before Phase 4:** P3.6 — CLI read+edit completeness (#54). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation.
+- **Queued before Phase 4:** P3.6 — CLI read+edit completeness (#54); threat-model checkpoint (#56). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** not started
 
 **Tests:** 460 passing · **CI:** green on `main`

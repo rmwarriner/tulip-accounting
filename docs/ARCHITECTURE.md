@@ -945,6 +945,7 @@ These weren't in the original Phase 3 list but landed before Phase 4 because the
 - Import batches and rollback
 
 ### Phase 6 — AI integration
+- **Privacy audit** *before* AI capabilities ship — household financial data starts leaving the local boundary here, so data-flow review, redaction policy, retention, and per-tenant opt-in/opt-out shape this phase's design rather than reviewing it after. Tracked as part of the Phase 6 entry criteria.
 - `tulip-ai` package with litellm adapter
 - Capabilities: categorization (used in importers) → NL query → forecasting → agentic
 - Tenant + user policy resolution
@@ -960,7 +961,7 @@ These weren't in the original Phase 3 list but landed before Phase 4 because the
 - Docker compose for home server
 - Backup/restore CLI commands
 - Documentation pass: ARCHITECTURE, DEPLOYMENT, SECURITY, AI
-- Threat model review
+- **Deep security audit** — full threat model review, dependency / SBOM review, secrets handling, key management, encryption-at-rest verification (SQLCipher landing here if not earlier), tenant-scoping enforcement audit, and a pen-test pass against the self-hosted single-tenant deployment.
 - Performance pass on common queries
 
 ### Phase 9 — Pre-cloud preparation (optional, before multi-tenant rollout)
@@ -968,6 +969,16 @@ These weren't in the original Phase 3 list but landed before Phase 4 because the
 - KMS integration (master key no longer interactive)
 - Worker-process separation for scheduler
 - Object-storage attachment backend (S3 / MinIO)
+- **Pre-cloud security re-audit** — multi-tenant blast-radius review, KMS / key-rotation, network exposure, the full tenant-isolation listener (currently deferred from Phase 1), rate limiting, and any cloud-provider-specific surface. Re-runs the Phase 8 audit against the new threat model that comes with multi-tenant + network-exposed.
+
+### Audit cadence — quick reference
+
+| Audit | When | Why then |
+|---|---|---|
+| **Lightweight threat-model checkpoint** | Now (between Phase 3 and Phase 4) | Captures trust boundaries and constraints that Phase 4–6 work must not violate; cheap insurance before envelopes / importers / AI add surface area. Tracked as a small `docs/THREAT_MODEL.md` slice. |
+| **Privacy audit** | Before Phase 6 implementation begins | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
+| **Deep security audit** | Phase 8 (operations + hardening) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
+| **Pre-cloud security re-audit** | Phase 9, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
 
 ---
 
