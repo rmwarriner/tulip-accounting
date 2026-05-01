@@ -181,16 +181,18 @@ accounts
   notes_encrypted (nullable, field-level encrypted)
   created_by_user_id, created_at, updated_at
 
-allocation_pools (base for envelopes + sinking_funds)
+allocation_pools (base for envelopes + sinking_funds + system pools — see [ADR-0001](adrs/0001-envelope-shadow-ledger.md))
   id (uuid pk)
   household_id (fk)
-  pool_type (enum: envelope, sinking_fund) — discriminator
+  pool_type (enum: envelope, sinking_fund, inflow, unallocated, spent) — discriminator
   name
   visibility (enum)
-  current_balance (Numeric)
   currency (ISO 4217)
   is_active (bool)
+  is_system (bool — auto-created system pools have is_system=true)
   created_by_user_id, created_at, updated_at
+  — Note: balance is derived from sum(shadow_postings), NOT stored on this row.
+  —       The earlier `current_balance` column was dropped per ADR-0001.
 
 envelopes (joined to allocation_pools)
   pool_id (pk + fk)
@@ -381,9 +383,11 @@ Standard double-entry. The accounting engine module (`tulip.core.accounting`) is
 
 ### 5.2 Envelope Budgeting
 
+> **Mechanic:** see [ADR-0001 — envelope and sinking-fund tracking via shadow ledger](adrs/0001-envelope-shadow-ledger.md). Refills, allocations, transfers, and rollovers are double-entry shadow-ledger transactions; spending is auto-paired from main-ledger postings carrying `pool_id`. Pool balances are derived from `sum(shadow_postings)`, not stored.
+
 - Envelopes are funded from income or from accounts (depending on user model preference — both supported).
-- Spending against an envelope is achieved by including a `pool_id` reference on an expense-account posting. The accounting engine reduces the envelope balance accordingly.
-- Refill happens on a schedule (typically monthly), driven by the scheduled-tx runner reading each envelope's `refill_rule`.
+- Spending against an envelope is achieved by including a `pool_id` reference on an expense-account posting; the engine auto-pairs a shadow transaction that decrements the envelope.
+- Refill happens on a schedule (typically monthly), driven by the scheduled-tx runner reading each envelope's `refill_rule` and posting a shadow refill transaction.
 - Overspend is permitted but flagged on reports.
 
 ### 5.3 Refill Rules (envelope `refill_rule` JSON)
@@ -406,8 +410,8 @@ Three supported strategies:
 ### 5.4 Sinking Funds
 
 - Each sinking fund has `target_amount` and `target_date`.
-- Recommended monthly contribution = `(target_amount - current_balance) / months_until_target`. Reported live; not auto-applied unless `contribution_strategy` says so.
-- Spending from a sinking fund follows the same `pool_id`-on-posting mechanic as envelopes.
+- Recommended monthly contribution = `(target_amount - current_balance) / months_until_target`, where `current_balance` is the derived `sum(shadow_postings)` for the pool (per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)). Reported live; not auto-applied unless `contribution_strategy` says so.
+- Spending from a sinking fund follows the same `pool_id`-on-posting mechanic as envelopes — auto-paired into the shadow ledger.
 - Reports show "saved toward goal" rather than "remaining this period."
 
 ### 5.5 Period Closing (soft)
@@ -873,7 +877,7 @@ tulip-accounting/
     ├── BACKUP_RESTORE.md
     ├── SECURITY.md            # threat model + key management
     ├── AI.md                  # AI integration details
-    └── ADRs/                  # Architecture Decision Records
+    └── adrs/                  # Architecture Decision Records (see 0001-envelope-shadow-ledger.md)
 ```
 
 **Module boundary rules (enforced by architecture tests):**
