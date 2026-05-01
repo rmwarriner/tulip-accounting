@@ -194,7 +194,19 @@ Closes #19.
 - `tulip auth status` — reads tokens locally and decodes the access-token payload to display email, household_id, role, and access-token TTL. No network call; full server-side validation lands behind a `--check` flag once #24 (`GET /v1/auth/me`) ships.
 - 35 new tests (token store round-trip with both backends, JWT decode, transparent refresh via `httpx.MockTransport`, plus 9 E2E covering happy login, MFA-TOTP, MFA-recovery, wrong-password exit code, status logged-in/out, JSON status, logout, idempotent logout). Project test count: 350 passing.
 
-### P3.3 — Read flows (`accounts`, `balance`) — queued (#20)
+### P3.3 — Read flows (`accounts`, `balance`) — in flight (#20)
+
+#### P3.3.a — `tulip accounts list` + `show` — ✅ *(2026-05-01)*
+
+- New `tulip_cli.commands.accounts` registers an `accounts` Typer subcommand group.
+- `tulip accounts list` consumes `GET /v1/accounts` (authenticated). Renders a Rich table for humans (`code`/`name`/`type`/`currency`/`visibility`); `--json` passes through the raw array. Empty households get a "no accounts yet" hint pointing at the (yet-to-land) `add` command.
+- `tulip accounts show ACCOUNT` resolves the identifier as a UUID first, falling back to a `code` lookup over the listed accounts. `code` has no server-side uniqueness constraint, so multiple matches surface a CLI-side `account.ambiguous_code` problem (exit 1) rather than silently picking one.
+- First slice that exercises the authenticated request path → `TulipClient.request(authenticated=True)` → transparent refresh from P3.2.b. Logged-out invocations cleanly surface `auth.not_logged_in` with exit 2.
+- 8 new E2E tests: empty list, multi-account table, `--json` array, `show` by code, `show` by UUID, unknown code → user error, ambiguous code → user error, unauthenticated → exit 2. Project test count: 363 passing.
+
+#### P3.3.b — `tulip balance` — queued, blocked on #31
+
+The CLI command needs balance endpoints in the API; currently the trial-balance computation only lives in a `tulip-storage` test fixture. Tracked as #31; once that lands, this slice is small.
 
 ### P3.4 — Write flows (`accounts add`, `add`) — queued (#21)
 
