@@ -975,7 +975,7 @@ These weren't in the original Phase 3 list but landed before Phase 4 because the
 
 | Audit | When | Why then |
 |---|---|---|
-| **Lightweight threat-model checkpoint** | Now (between Phase 3 and Phase 4) | Captures trust boundaries and constraints that Phase 4–6 work must not violate; cheap insurance before envelopes / importers / AI add surface area. Tracked as a small `docs/THREAT_MODEL.md` slice. |
+| **Lightweight threat-model checkpoint** | Between Phase 3 and Phase 4 — ✅ shipped 2026-05-01 | Captures trust boundaries, data classifications, deferred mitigations, and the constraints Phase 4–6 work must not violate. See [docs/THREAT_MODEL.md](THREAT_MODEL.md). |
 | **Privacy audit** | Before Phase 6 implementation begins | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
 | **Deep security audit** | Phase 8 (operations + hardening) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
 | **Pre-cloud security re-audit** | Phase 9, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
