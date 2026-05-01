@@ -204,9 +204,18 @@ Closes #19.
 - First slice that exercises the authenticated request path → `TulipClient.request(authenticated=True)` → transparent refresh from P3.2.b. Logged-out invocations cleanly surface `auth.not_logged_in` with exit 2.
 - 8 new E2E tests: empty list, multi-account table, `--json` array, `show` by code, `show` by UUID, unknown code → user error, ambiguous code → user error, unauthenticated → exit 2. Project test count: 363 passing.
 
-#### P3.3.b — `tulip balance` — queued, blocked on #31
+#### P3.3.b — `tulip balance` — ✅ *(2026-05-01)*
 
-The CLI command needs balance endpoints in the API; currently the trial-balance computation only lives in a `tulip-storage` test fixture. Tracked as #31; once that lands, this slice is small.
+Closes P3.3 (#20). Consumes the balance endpoints landed by #31.
+
+- New `tulip_cli.commands.balance` registers a top-level `tulip balance` command.
+- **No argument** → `GET /v1/reports/trial-balance`. Renders a Rich table (`code`/`name`/`type`/`currency`/`balance`) plus per-currency totals (debits / credits / ✓ or ⚠ marker for the zero-sum check).
+- **With `ACCOUNT`** (code or UUID) → `GET /v1/accounts/{id}/balance`. Reuses the UUID-or-code resolver from P3.3.a.
+- `--as-of YYYY-MM-DD` flag passes through to the API for both shapes; client-side validation rejects malformed dates with `typer.BadParameter`.
+- `--json` passes through the raw API body.
+- 8 new E2E tests: empty trial balance, populated trial balance, JSON trial balance, single-account by code, single-account by UUID, as-of filtering, unknown code → user error, unauthenticated → exit 2. Project test count: 390 passing.
+
+Also incidentally closes the `tulip-storage` `TrialBalanceRow` export gap surfaced during #31.
 
 ### P3.4 — Write flows (`accounts add`, `add`) — queued (#21)
 

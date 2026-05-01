@@ -16,6 +16,7 @@ import typer
 from tulip_cli import __version__
 from tulip_cli.commands.accounts import accounts_app
 from tulip_cli.commands.auth import auth_app
+from tulip_cli.commands.balance import balance as balance_command
 from tulip_cli.commands.register import register as register_command
 from tulip_cli.config import Config, load_config
 from tulip_cli.errors import EXIT_OK, CliError
@@ -85,6 +86,7 @@ def ping(ctx: typer.Context) -> None:
 
 
 app.command("register")(register_command)
+app.command("balance")(balance_command)
 app.add_typer(auth_app, name="auth")
 app.add_typer(accounts_app, name="accounts")
 
