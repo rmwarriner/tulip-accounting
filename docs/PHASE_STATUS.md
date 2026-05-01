@@ -14,6 +14,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 2.x (cleanup before Phase 3):** ✅ complete (P2.x.1 – P2.x.4)
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
+- **Queued before Phase 4:** P3.6 — CLI read+edit completeness (#54). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation.
 - **Phase 4 (envelopes + sinking funds):** not started
 
 **Tests:** 460 passing · **CI:** green on `main`
@@ -233,6 +234,14 @@ Closes #21.
 ### P3.5 — Toner-friendly print stylesheet — deferred to Phase 8 (#22)
 
 Phase 3 originally included a print-stylesheet skeleton, but with no reports to render against, the invariants are easy to drift out of sync. Recommended deferral until Phase 8 reports work; #22 stays open as the holding pen.
+
+### P3.6 — CLI read+edit completeness — queued (#54)
+
+Pure CLI work against endpoints that already exist on the API: `tulip transactions list` / `show` (against `GET /v1/transactions` and `GET /v1/transactions/{id}`), `tulip accounts edit` (against `PATCH /v1/accounts/{id}`, including `--parent` reparent — parent validation already landed with #42.a), and `tulip accounts deactivate` (against `DELETE /v1/accounts/{id}`). Closes the "you can write but can't read your own data via CLI" gap before Phase 4. Transaction edit/delete/void deliberately *not* in scope — see #55.
+
+### Transaction void / PENDING-only edit — deferred to Phase 5 (#55)
+
+The API has no PATCH or DELETE for transactions, and adding them naively is the wrong shape for double-entry accounting (POSTED transactions should void via reversal, not edit-in-place). The semantics are inseparable from the un-reconcile flow that lands in Phase 5, so this issue is the holding pen for the Phase 5 work — it captures the domain model decision (status enum vs `voided_by_transaction_id` link), the API surface (`PATCH` PENDING-only, `POST /v1/transactions/{id}/void`, `DELETE` PENDING-only), and the period / reconciled-source interaction rules.
 
 ---
 
