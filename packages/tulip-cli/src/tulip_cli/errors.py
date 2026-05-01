@@ -80,23 +80,27 @@ def _request_path(response: httpx.Response) -> str:
         return ""
 
 
-def _looks_like_tulip_api_body(content_type: str) -> bool:
-    """A Tulip API always speaks JSON. HTML/text/etc. mean we're talking to the wrong server."""
+def _is_json_body(content_type: str) -> bool:
+    """Return whether the response body claims to be JSON of any flavor."""
     return "json" in content_type.lower()
 
 
 def parse_problem_response(response: httpx.Response) -> dict[str, Any]:
     """Parse an ``httpx.Response`` into a Problem Details dict.
 
-    Three cases:
+    Decision order (status first, content-type second):
 
-    1. ``application/problem+json`` — pass through.
-    2. ``application/json`` (or similar) but not problem-shaped — synthesize
-       a ``server.unexpected_response`` problem; the API is real but
-       speaking a non-RFC-9457 dialect, which is a server bug.
-    3. Anything else (HTML, plaintext) — synthesize a
-       ``config.not_a_tulip_api`` problem. The URL is pointing at something
-       that isn't a Tulip API, which is a configuration error on our side.
+    1. ``application/problem+json`` → pass through.
+    2. **5xx**, regardless of content-type → ``server.unexpected_response``.
+       A 500 ``text/plain`` is what Starlette emits when an unhandled
+       exception escapes the Problem Details handler — telling the user
+       they're misconfigured in that case is wrong and unhelpful.
+    3. **4xx with JSON** but not problem-shaped → ``server.unexpected_response``.
+       The API is real but speaking a non-RFC-9457 dialect, which is a
+       server bug.
+    4. **4xx with non-JSON** (HTML, plaintext, etc.) → ``config.not_a_tulip_api``.
+       Misconfigured DNS, wrong port, or a reverse proxy returning its own
+       404 HTML page. Exit ``5`` so the user fixes their config.
     """
     content_type = response.headers.get("content-type", "")
     if PROBLEM_CONTENT_TYPE in content_type:
@@ -108,7 +112,7 @@ def parse_problem_response(response: httpx.Response) -> dict[str, Any]:
             return data
 
     instance = _request_path(response)
-    if _looks_like_tulip_api_body(content_type):
+    if response.status_code >= 500 or _is_json_body(content_type):
         return {
             "type": "/.well-known/errors/server.unexpected_response",
             "title": "Unexpected response from the API",

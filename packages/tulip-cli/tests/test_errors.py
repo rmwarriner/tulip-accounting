@@ -81,8 +81,8 @@ def test_parse_problem_response_with_problem_json() -> None:
     assert parsed == body
 
 
-def test_parse_problem_response_html_body_treated_as_wrong_server() -> None:
-    """HTML 4xx/5xx → not a Tulip API; map to a config-level problem (exit 5)."""
+def test_parse_problem_response_html_4xx_treated_as_wrong_server() -> None:
+    """4xx + non-JSON body → wrong host. Misconfigured DNS / wrong port returns 404 HTML."""
     request = httpx.Request("GET", "https://example.com/health")
     response = httpx.Response(
         404,
@@ -95,6 +95,28 @@ def test_parse_problem_response_html_body_treated_as_wrong_server() -> None:
     assert parsed["code"] == "config.not_a_tulip_api"
     assert "Tulip" in parsed["title"]
     assert str(request.url) in parsed["detail"]
+
+
+def test_parse_problem_response_text_5xx_is_server_bug_not_wrong_server() -> None:
+    """5xx + non-JSON body → real API crashed, not wrong-host.
+
+    A 500 with text/plain is what Starlette emits when an unhandled
+    exception escapes before the Problem Details handler can wrap it.
+    Telling the user "you've got the wrong URL" in that case is wrong
+    and unhelpful — they want to know the server crashed.
+    """
+    request = httpx.Request("POST", "http://127.0.0.1:8000/v1/auth/register")
+    response = httpx.Response(
+        500,
+        content=b"Internal Server Error",
+        headers={"content-type": "text/plain; charset=utf-8"},
+        request=request,
+    )
+    parsed = parse_problem_response(response)
+    assert parsed["status"] == 500
+    assert parsed["code"] == "server.unexpected_response"
+    err = CliError(problem=parsed, as_json=False)
+    assert err.exit_code == EXIT_SERVER
 
 
 def test_html_response_yields_exit_config_when_wrapped_in_clierror() -> None:
@@ -126,12 +148,12 @@ def test_parse_problem_response_json_but_not_problem_body_keeps_unexpected() -> 
 def test_parse_problem_response_falls_back_for_request_less_response() -> None:
     """Synthesized responses with no request attached still produce a problem dict."""
     response = httpx.Response(
-        500,
-        content=b"<html>boom</html>",
+        404,
+        content=b"<html>not found</html>",
         headers={"content-type": "text/html"},
     )
     parsed = parse_problem_response(response)
-    assert parsed["status"] == 500
+    assert parsed["status"] == 404
     assert parsed["code"] == "config.not_a_tulip_api"
     assert "title" in parsed
     assert "detail" in parsed
