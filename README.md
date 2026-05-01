@@ -2,7 +2,7 @@
 
 Household-focused, double-entry accounting system with first-class envelope budgeting and sinking-fund support.
 
-> **Status:** Pre-alpha — Phases 0, 1, and 2 complete (project bootstrap, storage + accounting engine, API surface for auth + accounts + transactions). See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for current progress and the queued Phase 2.x work, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+> **Status:** Pre-alpha — Phases 0–3 complete (project bootstrap, storage + accounting engine, API surface for auth/accounts/transactions/balance, scriptable CLI client). Phase 4 (envelopes + sinking funds) not yet started. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ---
 
@@ -56,7 +56,7 @@ git clone https://github.com/<your-org>/tulip-accounting
 cd tulip-accounting
 uv sync                          # installs all workspace packages + dev deps
 uv run pre-commit install        # enable pre-commit hooks
-uv run pytest                    # confirm tests pass (184 tests, ~5s)
+uv run pytest                    # confirm tests pass (460 tests, ~90s)
 ```
 
 > **Note for committers:** `main` is branch-protected and **requires every commit to be signed**. Configure SSH or GPG commit signing before your first push (`git config --global commit.gpgsign true` plus a signing key); see [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection-on-main) for the details, the most common failure modes, and the diagnostic checklist if a push is rejected as unsigned.
@@ -91,21 +91,28 @@ TULIP_JWT_SECRET="$(uv run python -c 'import secrets; print(secrets.token_urlsaf
 
 Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Available endpoints:
 
-- `POST /v1/auth/{register,login,refresh,logout}`
-- `GET/POST/PATCH/DELETE /v1/accounts[/{id}]`
+- `POST /v1/auth/{register,login,login/mfa,login/recover,refresh,logout}`
+- `POST /v1/auth/mfa/{enroll,verify,recovery-codes/regenerate}` · `GET /v1/auth/mfa/recovery-codes/status`
+- `GET/POST/PATCH/DELETE /v1/accounts[/{id}]` · `GET /v1/accounts/{id}/balance`
 - `GET/POST /v1/transactions[/{id}]`
+- `GET /v1/reports/trial-balance`
 
-In production, supply `TULIP_JWT_SECRET` from a secret store rather than generating fresh on every start (existing tokens won't validate after a restart with a new secret).
+Every non-2xx response is `application/problem+json` per RFC 9457. In production, supply `TULIP_JWT_SECRET` and `TULIP_MASTER_KEY` from a secret store rather than generating fresh on every start (existing tokens and field-encrypted columns won't validate after a restart with new secrets).
 
-### Running the CLI (once Phase 3 lands)
+### Running the CLI
 
 ```bash
-uv run tulip auth login
-uv run tulip accounts list
-uv run tulip add 2026-04-29 'Grocery store' \
-  --debit 'Expenses:Food:Groceries' 87.42 \
-  --credit 'Assets:Checking' 87.42
+uv run tulip register --email me@example.com --display-name Me --household Mine
+uv run tulip auth login --email me@example.com
+uv run tulip accounts add --name Checking --type asset --currency USD --code assets:checking
+uv run tulip accounts add --name Food --type expense --currency USD --code expenses:food
+uv run tulip add --date 2026-04-29 --description 'Grocery store' \
+  --post expenses:food=87.42 \
+  --post assets:checking=-87.42
+uv run tulip balance
 ```
+
+`tulip add --edit` opens `$EDITOR` with a hledger-style template instead of taking flags. `tulip accounts list` renders a Rich tree when nesting exists, a flat table otherwise (`--flat` to force the table for scripting). Tokens persist in the OS keyring; the CLI exit-code map and full RFC 9457 error rendering are documented in [docs/ARCHITECTURE.md §7.8.5](docs/ARCHITECTURE.md).
 
 ## Development discipline
 
