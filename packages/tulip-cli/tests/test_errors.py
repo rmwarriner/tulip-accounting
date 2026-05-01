@@ -94,7 +94,7 @@ def test_parse_problem_response_html_body_treated_as_wrong_server() -> None:
     assert parsed["status"] == 404
     assert parsed["code"] == "config.not_a_tulip_api"
     assert "Tulip" in parsed["title"]
-    assert "https://example.com" in parsed["detail"]
+    assert str(request.url) in parsed["detail"]
 
 
 def test_html_response_yields_exit_config_when_wrapped_in_clierror() -> None:
