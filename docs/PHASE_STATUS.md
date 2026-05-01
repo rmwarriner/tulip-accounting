@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-01 · `main` @ `39e1498`
+**Last updated:** 2026-05-01 · `main` @ `0ab586c`
 
 ---
 
@@ -12,12 +12,12 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 1:** ✅ complete
 - **Phase 2 (core API surface):** ✅ complete
 - **Phase 2.x (cleanup before Phase 3):** ✅ complete (P2.x.1 – P2.x.4)
-- **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
+- **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
-- **Queued before Phase 4:** P3.6 — CLI read+edit completeness (#54); threat-model checkpoint (#56). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
+- **Queued before Phase 4:** threat-model checkpoint (#56). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** not started
 
-**Tests:** 460 passing · **CI:** green on `main`
+**Tests:** 496 passing · **CI:** green on `main`
 
 ---
 
@@ -235,9 +235,17 @@ Closes #21.
 
 Phase 3 originally included a print-stylesheet skeleton, but with no reports to render against, the invariants are easy to drift out of sync. Recommended deferral until Phase 8 reports work; #22 stays open as the holding pen.
 
-### P3.6 — CLI read+edit completeness — queued (#54)
+### P3.6 — CLI read+edit completeness — ✅ *(2026-05-01)*
 
-Pure CLI work against endpoints that already exist on the API: `tulip transactions list` / `show` (against `GET /v1/transactions` and `GET /v1/transactions/{id}`), `tulip accounts edit` (against `PATCH /v1/accounts/{id}`, including `--parent` reparent — parent validation already landed with #42.a), and `tulip accounts deactivate` (against `DELETE /v1/accounts/{id}`). Closes the "you can write but can't read your own data via CLI" gap before Phase 4. Transaction edit/delete/void deliberately *not* in scope — see #55.
+Closes #54. Filled the "you can write but can't read your own data via CLI" gap before Phase 4 starts. Originally scoped as pure CLI work; the `GET /v1/transactions` endpoint had no filter params, so the slice grew a small repo + API extension as well.
+
+- **Storage**: new `TransactionRepository.list_headers(account_id, from_date, to_date, status, limit)` replaces the inline SQL the API router used to do. Filters AND together; `account_id` matches any transaction with at least one posting on that account; date range is inclusive; ordered date desc, created_at desc.
+- **API**: `GET /v1/transactions` learns `account_id` / `from` / `to` / `status` / `limit` query params. `status` is regex-validated to `pending|posted|reconciled`, `limit` is bounded to 1-1000 — both surface as `validation.failed` (422) on bad input. The router now delegates to `list_headers` rather than inlining its own query.
+- **CLI**: new `tulip transactions list` (with `--account` code-or-UUID, `--from`, `--to`, `--status`, `--limit`, plus `--json` passthrough) and `tulip transactions show TXID` (header + posting table). New `tulip accounts edit ACCOUNT` — only sends explicitly-passed fields; supports `--name` / `--code` / `--subtype` / `--visibility` / `--parent` (the last one re-uses the parent-validation rules from #42.a). New `tulip accounts deactivate ACCOUNT` — confirmation prompt by default, `--yes` to skip.
+- **HTTP**: `TulipClient` learned `patch()` and `delete()` for the new account flows.
+- 36 new tests (5 storage, 7 API, 24 CLI E2E across all four commands incl. happy / filter combos / error paths / `--json` / unauthenticated). Project test count: 496 passing.
+
+Transaction edit / delete / void deliberately not in scope — see #55, deferred to Phase 5 alongside reconciliation.
 
 ### Transaction void / PENDING-only edit — deferred to Phase 5 (#55)
 

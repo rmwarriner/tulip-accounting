@@ -188,3 +188,139 @@ class TestReadTransactions:
             )
         rows = client.get("/v1/transactions", headers=auth_h).json()
         assert len(rows) == 3
+
+
+class TestListTransactionsFilters:
+    """`GET /v1/transactions` filter query params (P3.6)."""
+
+    @pytest.fixture
+    def seeded(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        cash_and_food: tuple[str, str],
+    ) -> tuple[str, str, str]:
+        """Seed three transactions across different dates and a third account.
+
+        Returns ``(cash_id, food_id, rent_id)``.
+        """
+        cash, food = cash_and_food
+        rent = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Rent", "type": "expense", "currency": "USD", "code": "5200"},
+        ).json()["id"]
+
+        for tx_date, desc, debit_account, amount in [
+            (date(date.today().year, 1, 15), "lunch-jan", food, "10.00"),
+            (date(date.today().year, 6, 15), "rent-jun", rent, "1500.00"),
+            (date(date.today().year, 11, 15), "lunch-nov", food, "12.00"),
+        ]:
+            r = client.post(
+                "/v1/transactions",
+                headers=auth_h,
+                json={
+                    "date": tx_date.isoformat(),
+                    "description": desc,
+                    "postings": [
+                        {"account_id": debit_account, "amount": amount, "currency": "USD"},
+                        {"account_id": cash, "amount": f"-{amount}", "currency": "USD"},
+                    ],
+                },
+            )
+            assert r.status_code == 201, r.text
+
+        return cash, food, rent
+
+    def test_filter_by_account(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        _cash, food, rent = seeded
+        food_rows = client.get(
+            "/v1/transactions", headers=auth_h, params={"account_id": food}
+        ).json()
+        assert {r["description"] for r in food_rows} == {"lunch-jan", "lunch-nov"}
+        rent_rows = client.get(
+            "/v1/transactions", headers=auth_h, params={"account_id": rent}
+        ).json()
+        assert {r["description"] for r in rent_rows} == {"rent-jun"}
+
+    def test_filter_by_date_range(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        year = date.today().year
+        rows = client.get(
+            "/v1/transactions",
+            headers=auth_h,
+            params={"from": f"{year}-06-01", "to": f"{year}-06-30"},
+        ).json()
+        assert {r["description"] for r in rows} == {"rent-jun"}
+
+    def test_filter_by_status(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        # All seeded transactions land as POSTED, so 'posted' returns three
+        # and 'pending' / 'reconciled' return none.
+        posted = client.get("/v1/transactions", headers=auth_h, params={"status": "posted"}).json()
+        assert len(posted) == 3
+        pending = client.get(
+            "/v1/transactions", headers=auth_h, params={"status": "pending"}
+        ).json()
+        assert pending == []
+
+    def test_invalid_status_rejected_with_validation_failed(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        r = client.get("/v1/transactions", headers=auth_h, params={"status": "bogus"})
+        assert_problem(r, code="validation.failed", status=422)
+
+    def test_limit_caps_results(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        rows = client.get("/v1/transactions", headers=auth_h, params={"limit": 2}).json()
+        assert len(rows) == 2
+        # Newest first, so the November lunch and June rent.
+        assert {r["description"] for r in rows} == {"lunch-nov", "rent-jun"}
+
+    def test_limit_out_of_range_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        r = client.get("/v1/transactions", headers=auth_h, params={"limit": 0})
+        assert_problem(r, code="validation.failed", status=422)
+        r = client.get("/v1/transactions", headers=auth_h, params={"limit": 99999})
+        assert_problem(r, code="validation.failed", status=422)
+
+    def test_filters_compose(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        _cash, food, _rent = seeded
+        year = date.today().year
+        rows = client.get(
+            "/v1/transactions",
+            headers=auth_h,
+            params={
+                "account_id": food,
+                "from": f"{year}-10-01",
+                "status": "posted",
+            },
+        ).json()
+        assert {r["description"] for r in rows} == {"lunch-nov"}

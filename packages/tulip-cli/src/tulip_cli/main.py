@@ -19,6 +19,7 @@ from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.balance import balance as balance_command
 from tulip_cli.commands.register import register as register_command
 from tulip_cli.commands.transactions import add as add_command
+from tulip_cli.commands.transactions import transactions_app
 from tulip_cli.config import Config, load_config
 from tulip_cli.errors import EXIT_OK, CliError
 from tulip_cli.http import TulipClient
@@ -91,6 +92,7 @@ app.command("balance")(balance_command)
 app.command("add")(add_command)
 app.add_typer(auth_app, name="auth")
 app.add_typer(accounts_app, name="accounts")
+app.add_typer(transactions_app, name="transactions")
 
 
 if __name__ == "__main__":

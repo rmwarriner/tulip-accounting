@@ -1,6 +1,6 @@
-"""``tulip add`` — create a balanced transaction.
+"""``tulip add`` (transaction create) and ``tulip transactions`` (read).
 
-Two input modes:
+Two input modes for creation:
 
 * **Flag mode** (the original P3.4 surface) — repeated
   ``--post account=amount[@CURRENCY]`` flags. Scriptable, unambiguous.
@@ -14,6 +14,11 @@ Why ``account=amount`` and not space-separated parts in flag mode:
 codes contain colons (e.g. ``assets:checking``), so a colon-delimited
 ``account:amount`` syntax is ambiguous. ``=`` is unambiguous and we
 ``rsplit`` on it so codes-with-colons round-trip.
+
+Read commands (``tulip transactions list`` / ``show``) consume
+``GET /v1/transactions`` (with the filter query params landed in P3.6)
+and ``GET /v1/transactions/{id}``. ``list`` renders a Rich table by
+default; ``show`` renders header-plus-postings.
 """
 
 from __future__ import annotations
@@ -24,8 +29,11 @@ from dataclasses import dataclass
 from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
+from uuid import UUID
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._editor import edit_buffer
@@ -345,3 +353,198 @@ def _with_banner(prior: str, message: str) -> str:
         and not line.startswith("# Fix the lines below")
     )
     return banner + body
+
+
+# ---- read commands: tulip transactions list / show -------------------------
+
+
+transactions_app = typer.Typer(
+    name="transactions",
+    help="List and inspect existing transactions.",
+    no_args_is_help=True,
+)
+
+
+def _validate_iso_date(value: str | None, *, flag: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        date_type.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"{flag} must be YYYY-MM-DD") from exc
+    return value
+
+
+_VALID_STATUSES = ("pending", "posted", "reconciled")
+
+
+def _resolve_account_id_for_filter(client: TulipClient, identifier: str) -> str:
+    """Resolve ``--account`` to a UUID string via the shared resolver."""
+    resolved = _resolve_account(client, identifier)
+    return str(resolved["id"])
+
+
+def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
+    table = Table(show_header=True, show_lines=False)
+    table.add_column("date")
+    table.add_column("description")
+    table.add_column("reference")
+    table.add_column("status")
+    table.add_column("postings")
+    for row in rows:
+        postings = row.get("postings") or []
+        summary_parts = []
+        for p in postings:
+            amount = p.get("amount", "")
+            currency = p.get("currency", "")
+            account = p.get("account_id", "")
+            short = str(account)[:8] if account else "—"
+            summary_parts.append(f"{short} {amount} {currency}")
+        summary = "\n".join(summary_parts)
+        table.add_row(
+            str(row.get("date") or ""),
+            row.get("description") or "",
+            row.get("reference") or "—",
+            row.get("status") or "",
+            summary,
+        )
+    Console().print(table)
+
+
+def _render_tx_detail(tx: dict[str, Any]) -> None:
+    typer.echo(f"id:           {tx.get('id', '')}")
+    typer.echo(f"date:         {tx.get('date', '')}")
+    typer.echo(f"description:  {tx.get('description', '')}")
+    typer.echo(f"reference:    {tx.get('reference') or '—'}")
+    typer.echo(f"status:       {tx.get('status', '')}")
+    typer.echo("postings:")
+    table = Table(show_header=True, show_lines=False)
+    table.add_column("account_id")
+    table.add_column("amount", justify="right")
+    table.add_column("currency")
+    table.add_column("memo")
+    for p in tx.get("postings") or []:
+        table.add_row(
+            str(p.get("account_id", "")),
+            str(p.get("amount", "")),
+            str(p.get("currency", "")),
+            str(p.get("memo") or ""),
+        )
+    Console().print(table)
+
+
+@transactions_app.command("list")
+def list_transactions(
+    ctx: typer.Context,
+    account: Annotated[
+        str | None,
+        typer.Option(
+            "--account",
+            help=(
+                "Filter to transactions touching this account (code or UUID). "
+                "Resolved via the same UUID-or-code lookup as `accounts show`."
+            ),
+        ),
+    ] = None,
+    from_date: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="Inclusive lower bound on transaction date (YYYY-MM-DD).",
+        ),
+    ] = None,
+    to_date: Annotated[
+        str | None,
+        typer.Option(
+            "--to",
+            help="Inclusive upper bound on transaction date (YYYY-MM-DD).",
+        ),
+    ] = None,
+    status_: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="One of: pending, posted, reconciled.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on rows returned (1-1000). Omit for no limit.",
+            min=1,
+            max=1000,
+        ),
+    ] = None,
+) -> None:
+    """List transactions, newest first. All filters are optional and AND together."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    _validate_iso_date(from_date, flag="--from")
+    _validate_iso_date(to_date, flag="--to")
+    if status_ is not None and status_ not in _VALID_STATUSES:
+        raise typer.BadParameter(
+            f"--status must be one of {', '.join(_VALID_STATUSES)} (got {status_!r})"
+        )
+
+    params: dict[str, str] = {}
+    try:
+        with _client(config, as_json=as_json) as client:
+            if account is not None:
+                params["account_id"] = _resolve_account_id_for_filter(client, account)
+            if from_date is not None:
+                params["from"] = from_date
+            if to_date is not None:
+                params["to"] = to_date
+            if status_ is not None:
+                params["status"] = status_
+            if limit is not None:
+                params["limit"] = str(limit)
+            response = client.get("/v1/transactions", authenticated=True, params=params)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    rows = response.json()
+    if not rows:
+        typer.echo("No transactions match.")
+        return
+    _render_tx_list_table(rows)
+
+
+@transactions_app.command("show")
+def show_transaction(
+    ctx: typer.Context,
+    tx_id: Annotated[
+        str,
+        typer.Argument(
+            help="Transaction UUID.",
+            metavar="TXID",
+        ),
+    ],
+) -> None:
+    """Show one transaction (header + postings) by UUID."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        UUID(tx_id)
+    except ValueError as exc:
+        raise typer.BadParameter("TXID must be a UUID") from exc
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(f"/v1/transactions/{tx_id}", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    _render_tx_detail(response.json())
