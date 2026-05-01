@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 
 from tulip_cli import __version__
+from tulip_cli.commands.accounts import accounts_app
 from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.register import register as register_command
 from tulip_cli.config import Config, load_config
@@ -85,6 +86,7 @@ def ping(ctx: typer.Context) -> None:
 
 app.command("register")(register_command)
 app.add_typer(auth_app, name="auth")
+app.add_typer(accounts_app, name="accounts")
 
 
 if __name__ == "__main__":
