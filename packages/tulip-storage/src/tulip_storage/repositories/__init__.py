@@ -12,11 +12,12 @@ higher layers (the API) call it on every business mutation.
 from tulip_storage.repositories.account import AccountRepository
 from tulip_storage.repositories.audit_log import AuditLogWriter
 from tulip_storage.repositories.period import PeriodRepository
-from tulip_storage.repositories.transaction import TransactionRepository
+from tulip_storage.repositories.transaction import TransactionRepository, TrialBalanceRow
 
 __all__ = [
     "AccountRepository",
     "AuditLogWriter",
     "PeriodRepository",
     "TransactionRepository",
+    "TrialBalanceRow",
 ]
