@@ -65,6 +65,43 @@ class TransactionRepository:
             )
         ).scalar_one_or_none()
 
+    def list_headers(
+        self,
+        *,
+        account_id: UUID | None = None,
+        from_date: date_type | None = None,
+        to_date: date_type | None = None,
+        status: TransactionStatus | None = None,
+        limit: int | None = None,
+    ) -> list[Transaction]:
+        """List transaction headers in this household, newest first.
+
+        Filters compose with AND. ``account_id`` matches any transaction
+        with at least one posting on that account (any currency). Date
+        filters are inclusive on both ends. ``limit`` caps the number of
+        rows returned; ``None`` means no cap.
+        """
+        query = select(Transaction).where(Transaction.household_id == self._household_id)
+        if account_id is not None:
+            query = query.where(
+                Transaction.id.in_(
+                    select(Posting.transaction_id).where(
+                        Posting.household_id == self._household_id,
+                        Posting.account_id == account_id,
+                    )
+                )
+            )
+        if from_date is not None:
+            query = query.where(Transaction.date >= from_date)
+        if to_date is not None:
+            query = query.where(Transaction.date <= to_date)
+        if status is not None:
+            query = query.where(Transaction.status == status)
+        query = query.order_by(Transaction.date.desc(), Transaction.created_at.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return list(self._session.execute(query).scalars().all())
+
     def list_postings(self, tx_id: UUID) -> list[Posting]:
         """Return all postings belonging to a transaction."""
         return list(

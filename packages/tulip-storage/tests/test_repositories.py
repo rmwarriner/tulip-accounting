@@ -487,6 +487,208 @@ class TestTransactionRepository:
         assert early[food.id] == Decimal("5.00")
         assert late[food.id] == Decimal("12.00")
 
+    def test_list_headers_orders_by_date_desc(self, session: Session, household: Household):
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        for tx_date, amount in [
+            (date(2026, 1, 5), Decimal("1.00")),
+            (date(2026, 6, 1), Decimal("2.00")),
+            (date(2026, 3, 15), Decimal("3.00")),
+        ]:
+            self._post_tx(
+                session,
+                household,
+                tx_date=tx_date,
+                debit_account=food,
+                credit_account=cash,
+                amount=amount,
+            )
+
+        headers = TransactionRepository(session, household.id).list_headers()
+        assert [h.date for h in headers] == [
+            date(2026, 6, 1),
+            date(2026, 3, 15),
+            date(2026, 1, 5),
+        ]
+
+    def test_list_headers_filters_by_account(self, session: Session, household: Household):
+        repo_a = AccountRepository(session, household.id)
+        cash = repo_a.create(code="1110", name="Cash", type=AccountType.ASSET, currency="USD")
+        food = repo_a.create(code="5100", name="Food", type=AccountType.EXPENSE, currency="USD")
+        rent = repo_a.create(code="5200", name="Rent", type=AccountType.EXPENSE, currency="USD")
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 1),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("12.50"),
+        )
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 2),
+            debit_account=rent,
+            credit_account=cash,
+            amount=Decimal("1500.00"),
+        )
+
+        repo = TransactionRepository(session, household.id)
+        # Cash sits on both → both transactions returned.
+        assert len(repo.list_headers(account_id=cash.id)) == 2
+        # Food only on the lunch one.
+        food_only = repo.list_headers(account_id=food.id)
+        assert len(food_only) == 1
+        assert food_only[0].description.startswith("12.50")
+        # Rent only on the rent one.
+        rent_only = repo.list_headers(account_id=rent.id)
+        assert len(rent_only) == 1
+        assert rent_only[0].description.startswith("1500.00")
+
+    def test_list_headers_filters_by_date_range(self, session: Session, household: Household):
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        for tx_date in [date(2026, 1, 15), date(2026, 6, 15), date(2026, 11, 15)]:
+            self._post_tx(
+                session,
+                household,
+                tx_date=tx_date,
+                debit_account=food,
+                credit_account=cash,
+                amount=Decimal("10.00"),
+            )
+
+        repo = TransactionRepository(session, household.id)
+        from_only = repo.list_headers(from_date=date(2026, 6, 1))
+        assert {h.date for h in from_only} == {date(2026, 6, 15), date(2026, 11, 15)}
+        to_only = repo.list_headers(to_date=date(2026, 6, 30))
+        assert {h.date for h in to_only} == {date(2026, 1, 15), date(2026, 6, 15)}
+        ranged = repo.list_headers(from_date=date(2026, 6, 1), to_date=date(2026, 6, 30))
+        assert {h.date for h in ranged} == {date(2026, 6, 15)}
+
+    def test_list_headers_filters_by_status(self, session: Session, household: Household):
+        from tulip_storage.models import TransactionStatus
+
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 1),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("10.00"),
+            status=DomainTxStatus.POSTED,
+        )
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 2),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("99.00"),
+            status=DomainTxStatus.PENDING,
+        )
+
+        repo = TransactionRepository(session, household.id)
+        posted = repo.list_headers(status=TransactionStatus.POSTED)
+        pending = repo.list_headers(status=TransactionStatus.PENDING)
+        assert len(posted) == 1 and posted[0].status is TransactionStatus.POSTED
+        assert len(pending) == 1 and pending[0].status is TransactionStatus.PENDING
+
+    def test_list_headers_respects_limit(self, session: Session, household: Household):
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        for day in (1, 2, 3, 4, 5):
+            self._post_tx(
+                session,
+                household,
+                tx_date=date(2026, 6, day),
+                debit_account=food,
+                credit_account=cash,
+                amount=Decimal("1.00"),
+            )
+
+        repo = TransactionRepository(session, household.id)
+        # Limit returns the newest N (date desc).
+        top_two = repo.list_headers(limit=2)
+        assert [h.date for h in top_two] == [date(2026, 6, 5), date(2026, 6, 4)]
+
+    def test_list_headers_excludes_other_households(self, session: Session, household: Household):
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 1),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("10.00"),
+        )
+
+        # A second household with its own accounts and transaction.
+        other = Household(id=uuid4(), name="Jones", base_currency="USD")
+        session.add(other)
+        session.commit()
+        other_repo = AccountRepository(session, other.id)
+        other_cash = other_repo.create(
+            code="1110", name="Cash", type=AccountType.ASSET, currency="USD"
+        )
+        other_food = other_repo.create(
+            code="5100", name="Food", type=AccountType.EXPENSE, currency="USD"
+        )
+        PeriodRepository(session, other.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        self._post_tx(
+            session,
+            other,
+            tx_date=date(2026, 6, 1),
+            debit_account=other_food,
+            credit_account=other_cash,
+            amount=Decimal("99.99"),
+        )
+
+        ours = TransactionRepository(session, household.id).list_headers()
+        theirs = TransactionRepository(session, other.id).list_headers()
+        assert len(ours) == 1
+        assert len(theirs) == 1
+        assert ours[0].id != theirs[0].id
+
     def test_save_unbalanced_posted_aborts_via_trigger(
         self, session: Session, household: Household
     ):

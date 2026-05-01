@@ -310,6 +310,134 @@ def add_account(
     _render_account(payload)
 
 
+@accounts_app.command("edit")
+def edit_account(
+    ctx: typer.Context,
+    identifier: Annotated[
+        str,
+        typer.Argument(
+            help="Account code (e.g. assets:checking) or UUID.",
+            metavar="ACCOUNT",
+        ),
+    ],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="New display name."),
+    ] = None,
+    code: Annotated[
+        str | None,
+        typer.Option("--code", help="New short code."),
+    ] = None,
+    subtype: Annotated[
+        str | None,
+        typer.Option("--subtype", help="New subtype label."),
+    ] = None,
+    visibility: Annotated[
+        str | None,
+        typer.Option("--visibility", help="'shared' or 'private'."),
+    ] = None,
+    parent: Annotated[
+        str | None,
+        typer.Option(
+            "--parent",
+            help=(
+                "New parent account (code or UUID). The same parent-validation "
+                "rules from `accounts add` apply (type/currency match, "
+                "visibility, no cycles)."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Update mutable fields on an existing account.
+
+    Only flags that are explicitly passed are sent — PATCH semantics, so
+    omitted fields stay as-is. Resolves the target via the same UUID-or-
+    code lookup as ``show``.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if code is not None:
+        body["code"] = code
+    if subtype is not None:
+        body["subtype"] = subtype
+    if visibility is not None:
+        body["visibility"] = visibility
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            target = _resolve_account(client, identifier)
+            if parent is not None:
+                resolved_parent = _resolve_account(client, parent)
+                body["parent_account_id"] = resolved_parent["id"]
+            response = client.patch(f"/v1/accounts/{target['id']}", json=body, authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    payload = response.json()
+    typer.echo(f"Updated account {payload.get('id', '')}")
+    _render_account(payload)
+
+
+@accounts_app.command("deactivate")
+def deactivate_account(
+    ctx: typer.Context,
+    identifier: Annotated[
+        str,
+        typer.Argument(
+            help="Account code (e.g. assets:checking) or UUID.",
+            metavar="ACCOUNT",
+        ),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip the interactive confirmation prompt.",
+        ),
+    ] = False,
+) -> None:
+    """Soft-delete (deactivate) an account.
+
+    The account stays in the database (audit trail) but disappears from
+    ``accounts list``. Admin-only on the API side. By default prompts for
+    confirmation; ``--yes`` skips for scripts.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            target = _resolve_account(client, identifier)
+            if not yes:
+                label = target.get("code") or target.get("name") or str(target["id"])
+                if not typer.confirm(
+                    f"Deactivate account {label}? It will disappear from `accounts list`.",
+                    default=False,
+                ):
+                    typer.echo("Aborted; no changes made.")
+                    return
+            client.delete(f"/v1/accounts/{target['id']}", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        # The API returns 204 No Content; emit an explicit body for scripts.
+        sys.stdout.write(json.dumps({"deactivated": str(target["id"])}) + "\n")
+        return
+    typer.echo(f"Deactivated account {target.get('code') or target['id']}.")
+
+
 @accounts_app.command("show")
 def show_account(
     ctx: typer.Context,

@@ -151,6 +151,27 @@ class TulipClient:
         """``POST path`` against the configured API."""
         return self.request("POST", path, authenticated=authenticated, json=json, headers=headers)
 
+    def patch(
+        self,
+        path: str,
+        *,
+        authenticated: bool = False,
+        json: object = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """``PATCH path`` against the configured API."""
+        return self.request("PATCH", path, authenticated=authenticated, json=json, headers=headers)
+
+    def delete(
+        self,
+        path: str,
+        *,
+        authenticated: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """``DELETE path`` against the configured API."""
+        return self.request("DELETE", path, authenticated=authenticated, headers=headers)
+
     def _access_token(self) -> str:
         store = self._token_store
         if store is None:

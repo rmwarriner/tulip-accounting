@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date as date_type
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
@@ -40,6 +41,7 @@ from tulip_core.transactions import (
 from tulip_core.transactions import (
     TransactionStatus as DomainTxStatus,
 )
+from tulip_storage.models import TransactionStatus as StorageTxStatus
 from tulip_storage.repositories import (
     AccountRepository,
     AuditLogWriter,
@@ -161,25 +163,58 @@ def get_transaction(
 @router.get(
     "",
     response_model=list[TransactionRead],
-    responses={401: problem_response("auth.unauthorized")},
+    responses={
+        401: problem_response("auth.unauthorized"),
+        422: problem_response("validation.failed"),
+    },
 )
 def list_transactions(
+    account_id: UUID | None = Query(  # noqa: B008
+        default=None,
+        description=(
+            "Restrict to transactions with at least one posting on this account (any currency)."
+        ),
+    ),
+    from_date: date_type | None = Query(  # noqa: B008
+        default=None,
+        alias="from",
+        description="Inclusive lower bound on transaction date (YYYY-MM-DD).",
+    ),
+    to_date: date_type | None = Query(  # noqa: B008
+        default=None,
+        alias="to",
+        description="Inclusive upper bound on transaction date (YYYY-MM-DD).",
+    ),
+    status_: str | None = Query(
+        default=None,
+        alias="status",
+        description="One of 'pending', 'posted', 'reconciled'.",
+        pattern="^(pending|posted|reconciled)$",
+    ),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=1000,
+        description="Cap on rows returned (1-1000). Omit for no limit.",
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> list[TransactionRead]:
-    """List all transactions in the caller's household, newest first."""
-    from sqlalchemy import select
+    """List transactions in the caller's household, newest first.
 
-    from tulip_storage.models import Transaction as TxModel
-
-    rows = list(
-        session.execute(
-            select(TxModel)
-            .where(TxModel.household_id == claims.household_id)
-            .order_by(TxModel.date.desc(), TxModel.created_at.desc())
-        )
-        .scalars()
-        .all()
+    All filter params are optional and AND together. ``account_id`` is
+    a UUID. Date params use the ``from`` / ``to`` query keys (inclusive
+    on both ends). ``status`` is one of the lifecycle states.
+    """
+    storage_status: StorageTxStatus | None = (
+        StorageTxStatus(status_) if status_ is not None else None
+    )
+    rows = TransactionRepository(session, claims.household_id).list_headers(
+        account_id=account_id,
+        from_date=from_date,
+        to_date=to_date,
+        status=storage_status,
+        limit=limit,
     )
     return [_read_response(t.id, claims.household_id, session) for t in rows]
 
