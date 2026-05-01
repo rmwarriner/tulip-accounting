@@ -161,7 +161,24 @@ Issue #18. Foundation slice — no domain commands yet, just plumbing every late
 - Architecture test (`test_architecture.py`): AST scan over `tulip_cli/src/` rejects imports of `tulip_api`, `tulip_storage`, `sqlalchemy`, FastAPI, etc. — keeps the CLI a pure network client.
 - 17 new tests; project total now 304 passing.
 
-### P3.2 — Auth (`register`, `login`, `logout`, `status`) — queued (#19)
+### P3.2 — Auth (`register`, `login`, `logout`, `status`) — in flight (#19)
+
+Split into two PRs against the same umbrella issue.
+
+#### P3.2.a — `register` command + spawn-uvicorn E2E fixture — ✅ *(2026-05-01)*
+
+- New `live_api` pytest fixture in `packages/tulip-cli/tests/conftest.py` migrates a fresh SQLite DB, spawns `uvicorn` against `tulip_api.main:create_app` on an ephemeral port, polls `/health`, and tears the subprocess down on test exit. Per-test scope; ~1s overhead is fine at the current test count.
+- `tulip register` (in `tulip_cli.commands.register`) prompts for email / display name / household / password (with confirmation) and `POST`s `/v1/auth/register`. `--password-stdin` skips the prompt for scripts and CI.
+- 5 new E2E tests cover happy path, short-password validation failure (`validation.failed` 422), `--json` success body, `--json` problem body on validation failure, and the documented per-household uniqueness contract (same email across two households both succeed).
+- Note: `auth.duplicate_email` (409) is unreachable through `register` alone because each call mints a new household, so `(household_id, email)` is unique by construction. Rejection coverage for that code will land when there's an "invite user to existing household" endpoint.
+- Project test count: 314 passing.
+
+#### P3.2.b — `login` (with MFA + recovery), `logout`, `status`, transparent refresh — queued
+
+- Keyring-backed token storage primitive.
+- Login handles all three documented outcomes: tokens, `auth.mfa_required` (prompt for TOTP), `auth.mfa_enrollment_required`. `--recovery` alt path via `/v1/auth/login/recover`.
+- `logout` revokes the refresh token; `status` decodes the access-token payload locally for now (full validation lands when `GET /v1/auth/me` ships — tracked as #24).
+- `TulipClient` gains transparent refresh on access-token expiry.
 
 ### P3.3 — Read flows (`accounts`, `balance`) — queued (#20)
 

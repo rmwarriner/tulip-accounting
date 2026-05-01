@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 
 from tulip_cli import __version__
+from tulip_cli.commands.register import register as register_command
 from tulip_cli.config import Config, load_config
 from tulip_cli.errors import EXIT_OK, CliError
 from tulip_cli.http import TulipClient
@@ -79,6 +80,9 @@ def ping(ctx: typer.Context) -> None:
         sys.stdout.write(response.text + "\n")
         return
     typer.echo(f"OK ({response.status_code}) — {config.api_url}")
+
+
+app.command("register")(register_command)
 
 
 if __name__ == "__main__":
