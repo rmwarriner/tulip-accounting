@@ -352,6 +352,89 @@ class AccountNotFoundError(TulipProblem):
         )
 
 
+class AccountParentNotFoundError(TulipProblem):
+    """The proposed parent account doesn't exist, isn't visible, or is inactive."""
+
+    def __init__(self) -> None:
+        """Build the account.parent_not_found problem."""
+        super().__init__(
+            code="account.parent_not_found",
+            title="Parent account not found",
+            status=404,
+            detail=(
+                "The parent_account_id either doesn't exist in this household, "
+                "isn't visible to you, or has been deactivated."
+            ),
+        )
+
+
+class AccountParentTypeMismatchError(TulipProblem):
+    """A child account's type must match its parent's."""
+
+    def __init__(self, *, child_type: str, parent_type: str) -> None:
+        """Build the account.parent_type_mismatch problem."""
+        super().__init__(
+            code="account.parent_type_mismatch",
+            title="Parent account type does not match",
+            status=400,
+            detail=(
+                f"This account is a {child_type}; its parent is a {parent_type}. "
+                "Children must share the parent's type. Pick a parent of the "
+                "same type, or change this account's type before reparenting."
+            ),
+        )
+
+
+class AccountParentCurrencyMismatchError(TulipProblem):
+    """A child account's currency must match its parent's (#42; relaxation tracked in #44)."""
+
+    def __init__(self, *, child_currency: str, parent_currency: str) -> None:
+        """Build the account.parent_currency_mismatch problem."""
+        super().__init__(
+            code="account.parent_currency_mismatch",
+            title="Parent account currency does not match",
+            status=400,
+            detail=(
+                f"This account is denominated in {child_currency}; its parent "
+                f"is in {parent_currency}. Children must share the parent's "
+                "currency. Multi-currency hierarchies are tracked separately."
+            ),
+        )
+
+
+class AccountParentVisibilityViolationError(TulipProblem):
+    """A shared child cannot live under a private parent."""
+
+    def __init__(self) -> None:
+        """Build the account.parent_visibility_violation problem."""
+        super().__init__(
+            code="account.parent_visibility_violation",
+            title="Parent visibility forbids this child",
+            status=400,
+            detail=(
+                "A shared account cannot be a child of a private one — the "
+                "child would be visible while its parent is hidden. Either "
+                "make this account private, or pick a shared parent."
+            ),
+        )
+
+
+class AccountParentCycleError(TulipProblem):
+    """Reparenting would create a cycle (parent is a descendant of this account)."""
+
+    def __init__(self) -> None:
+        """Build the account.parent_cycle problem."""
+        super().__init__(
+            code="account.parent_cycle",
+            title="Parent change would create a cycle",
+            status=400,
+            detail=(
+                "The proposed parent is a descendant of this account; "
+                "applying the change would create a cycle in the account tree."
+            ),
+        )
+
+
 class AccountUnknownError(TulipProblem):
     """A transaction posting referenced an account that doesn't exist in this household."""
 

@@ -32,6 +32,11 @@ router = APIRouter(prefix="/.well-known/errors", tags=["docs"])
 _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     "MfaRequiredError": {"mfa_token": "<mfa-challenge-jwt>", "expires_in": 300},
     "AccountUnknownError": {"account_id": "<account-uuid>"},
+    "AccountParentTypeMismatchError": {"child_type": "expense", "parent_type": "asset"},
+    "AccountParentCurrencyMismatchError": {
+        "child_currency": "EUR",
+        "parent_currency": "USD",
+    },
     "TransactionInvalidError": {"reason": "<domain-validation-message>"},
     "TransactionUnbalancedError": {
         "reason": "Transaction does not balance: USD postings sum to 1.00 instead of 0."
