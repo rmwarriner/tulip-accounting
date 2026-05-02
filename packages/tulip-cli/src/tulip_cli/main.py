@@ -27,6 +27,7 @@ from tulip_cli.commands.pool_actions import (
 from tulip_cli.commands.pool_actions import (
     transfer as transfer_command,
 )
+from tulip_cli.commands.refills import refills_app
 from tulip_cli.commands.register import register as register_command
 from tulip_cli.commands.sinking_funds import sinking_funds_app
 from tulip_cli.commands.transactions import add as add_command
@@ -109,6 +110,7 @@ app.add_typer(accounts_app, name="accounts")
 app.add_typer(transactions_app, name="transactions")
 app.add_typer(envelopes_app, name="envelopes")
 app.add_typer(sinking_funds_app, name="sinking-funds")
+app.add_typer(refills_app, name="refills")
 
 
 if __name__ == "__main__":

@@ -83,6 +83,18 @@ def app(session_maker: sessionmaker[Session], settings: Settings) -> Iterator[Fa
 
     a.dependency_overrides[get_session] = _override_session
     a.dependency_overrides[get_settings] = lambda: settings
+
+    # P4.3.c: routes that depend on the runner pull it from
+    # ``app.state.runner``. With ``enable_runner=False`` the lifespan
+    # hook doesn't set it, so attach a runner bound to the test session
+    # factory. The runner is constructed but never started — tests call
+    # ``runner.run_once()`` (or ``runner.schedule_recurring(...)``)
+    # directly. Importing here avoids a top-level cycle if storage tests
+    # don't need the API.
+    from tulip_storage.runner import Runner
+
+    a.state.runner = Runner(session_maker)
+
     yield a
     a.dependency_overrides.clear()
 

@@ -56,6 +56,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "PoolTransferSystemPoolForbiddenError": {"role": "source"},
     "PoolInflowCurrencyUnknownError": {"currency": "ZZZ"},
+    "RefillScheduleInvalidRRuleError": {"reason": "<dateutil parser error>"},
     "ValidationFailedError": {
         "errors": [
             {

@@ -14,6 +14,7 @@ from tulip_storage.repositories.allocation_pool import AllocationPoolRepository
 from tulip_storage.repositories.audit_log import AuditLogWriter
 from tulip_storage.repositories.envelope import EnvelopeRepository
 from tulip_storage.repositories.period import PeriodRepository
+from tulip_storage.repositories.scheduled_job import ScheduledJobRepository
 from tulip_storage.repositories.shadow_transaction import ShadowTransactionRepository
 from tulip_storage.repositories.sinking_fund import SinkingFundRepository
 from tulip_storage.repositories.transaction import TransactionRepository, TrialBalanceRow
@@ -24,6 +25,7 @@ __all__ = [
     "AuditLogWriter",
     "EnvelopeRepository",
     "PeriodRepository",
+    "ScheduledJobRepository",
     "ShadowTransactionRepository",
     "SinkingFundRepository",
     "TransactionRepository",
