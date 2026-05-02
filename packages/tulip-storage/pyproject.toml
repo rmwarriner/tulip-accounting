@@ -8,6 +8,8 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "cryptography>=42.0",
+    "python-dateutil>=2.9",
+    "types-python-dateutil>=2.9",
 ]
 
 [tool.uv.sources]

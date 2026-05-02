@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2
+**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/budget-inflow endpoints) shipped 2026-05-02 (#63); P4.2 (CLI commands) shipped 2026-05-02 (#66); P4.3 (refill rules execution + scheduled-tx runner) queued.
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66) shipped 2026-05-02. P4.3 split a/b/c — P4.3.a (scheduler runner primitive per [ADR-0002](adrs/0002-scheduler-primitive.md), closes #7) shipped 2026-05-02 (#68); P4.3.b (refill engine + handler, #69), P4.3.c (API + CLI for refill schedules, #70) queued.
 
-**Tests:** 702 passing · **CI:** green on `main`
+**Tests:** 713 passing · **CI:** green on `main`
 
 ---
 
@@ -340,9 +340,22 @@ Closes #66. Surfaces P4.1.b's API endpoints through the `tulip` CLI. Mirrors the
 - **Refill-rule editing** intentionally not in P4.2; the structured-only constraint from ADR-0001 needs an editor flow that lands as a follow-up.
 - **Tests**: 34 new E2E (15 envelope, 8 sinking-fund, 11 pool-action). Project total: **702 passing** (up from 668).
 
+### P4.3.a — Scheduler runner primitive + ADR-0002 — ✅ *(2026-05-02)*
+
+Closes #68 + #7. Implements the in-process scheduler that the rest of P4.3 (refill rules execution) sits on top of. Per [ADR-0002](adrs/0002-scheduler-primitive.md).
+
+- **ADR-0002**: records 8 design decisions — simple async loop in FastAPI lifespan (rejected apscheduler / rq / celery / cron); 4-method runner surface (`register_handler`, `schedule_one`, `schedule_recurring`, `cancel`) with idempotency keys from day one; two tables (`scheduled_jobs` + `scheduled_job_runs`, distinct from `audit_log`); single generic `scheduled_jobs` reconciles the architecture's `scheduled_transactions` sketch with #7's proposal; RRULE via `python-dateutil`; `Clock` injection (no `freezegun`); 1m / 5m / 30m retry then dead-letter; **single-worker assumption** documented loudly for v1.
+- **Schema**: new migration `b8a91c2f3d44` adding `scheduled_jobs` + `scheduled_job_runs`. `scheduled_jobs` has `dtstart` (RRULE anchor — needed so COUNT/UNTIL stays stable as `next_run_at` advances) + `next_run_at` (indexed) + `idempotency_key` (unique partial index per `(household_id, kind)`).
+- **Code** (new `tulip_storage/runner/` module): `Runner` class with the 4-method surface + the async poll loop; `Clock` type alias + default; `compute_next_fire` wrapper around `dateutil.rrule.rrulestr`. ~250 LOC core.
+- **FastAPI lifespan hook** in `create_app(enable_runner=True)` boots the runner on startup, drains it on shutdown. Tests pass `enable_runner=False` to skip the runner (their overridden `get_session` doesn't reach the runner's session factory).
+- **Architecture test** (`test_architecture_no_direct_scheduled_job_writes`): only `tulip_storage.runner.runner` may import the storage-layer `ScheduledJob` model. Mirrors P4.0's shadow-table guard.
+- **Tests**: 11 new in `tulip-storage` (TDD entry — schedule_one/run, schedule_recurring + advance, idempotency happy + cross-kind, cancel happy + unknown, retry + dead-letter, no-handler, RRULE-with-COUNT exhaustion, full async start/stop lifecycle). Project total: **713 passing** (up from 702).
+- **New deps**: `python-dateutil>=2.9` + `types-python-dateutil>=2.9` (added to `tulip-storage`).
+
 ### Phase 4 deferred to later slices
 
-- **P4.3 — Refill rules execution** + scheduled-tx runner.
+- **P4.3.b — Refill engine + handler** (#69): pure `evaluate_refill_rule` + `envelope_refill` runner consumer.
+- **P4.3.c — API + CLI for refill schedules** (#70).
 - **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author RefillRule structures interactively.
 
 ---
