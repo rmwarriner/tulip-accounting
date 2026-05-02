@@ -68,6 +68,43 @@ class TestRegister:
         )
         assert r.status_code == 422
 
+    def test_register_seeds_system_pools_for_base_currency(self, client, session_maker):
+        # ADR-0001: Inflow / Unallocated / Spent per (household, currency)
+        # are auto-created at household creation for the base currency.
+        r = client.post(
+            "/v1/auth/register",
+            json={
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "display_name": "Alice",
+                "household_name": "Smith",
+            },
+        )
+        assert r.status_code == 201
+        household_id = r.json()["household_id"]
+
+        from uuid import UUID
+
+        from tulip_storage.models import AllocationPool, PoolType
+
+        with session_maker() as s:
+            from sqlalchemy import select
+
+            rows = list(
+                s.execute(
+                    select(AllocationPool).where(
+                        AllocationPool.household_id == UUID(household_id),
+                        AllocationPool.is_system.is_(True),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            types = {p.pool_type for p in rows}
+            assert types == {PoolType.INFLOW, PoolType.UNALLOCATED, PoolType.SPENT}
+            assert all(p.currency == "USD" for p in rows)
+            assert all(p.is_active for p in rows)
+
 
 class TestLogin:
     def test_returns_access_and_refresh(self, client: TestClient, registered: dict[str, str]):

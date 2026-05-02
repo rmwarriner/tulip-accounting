@@ -77,7 +77,11 @@ from tulip_api.schemas.auth import (
 )
 from tulip_storage.models import Household, MfaPolicy, MfaRecoveryCode, User, UserRole
 from tulip_storage.models import Session as SessionRow
-from tulip_storage.repositories import AuditLogWriter, PeriodRepository
+from tulip_storage.repositories import (
+    AllocationPoolRepository,
+    AuditLogWriter,
+    PeriodRepository,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -134,6 +138,13 @@ def register(
     PeriodRepository(session, household.id).create(
         start_date=date(today.year, 1, 1),
         end_date=date(today.year, 12, 31),
+    )
+
+    # Seed the three system pools (Inflow / Unallocated / Spent) for the
+    # household's base currency. Other currencies are created lazily on
+    # first use; see ADR-0001.
+    AllocationPoolRepository(session, household.id).get_or_create_system_pools(
+        currency=household.base_currency,
     )
 
     AuditLogWriter(session, household.id).write(

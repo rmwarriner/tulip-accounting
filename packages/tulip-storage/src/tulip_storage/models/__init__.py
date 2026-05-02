@@ -12,28 +12,48 @@ architecture test in tulip-core enforces this.
 """
 
 from tulip_storage.models.account import Account, AccountType
+from tulip_storage.models.allocation_pool import AllocationPool, PoolType
 from tulip_storage.models.audit_log import AuditLog
 from tulip_storage.models.base import Base
+from tulip_storage.models.envelope import BudgetPeriod, Envelope, RolloverPolicy
 from tulip_storage.models.household import Household, MfaPolicy
 from tulip_storage.models.mfa_recovery_code import MfaRecoveryCode
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
 from tulip_storage.models.session import Session
+from tulip_storage.models.shadow_posting import ShadowPosting
+from tulip_storage.models.shadow_transaction import (
+    ShadowTransaction,
+    ShadowTxReason,
+    ShadowTxStatus,
+)
+from tulip_storage.models.sinking_fund import ContributionStrategy, SinkingFund
 from tulip_storage.models.transaction import Transaction, TransactionStatus
 from tulip_storage.models.user import User, UserRole
 
 __all__ = [
     "Account",
     "AccountType",
+    "AllocationPool",
     "AuditLog",
     "Base",
+    "BudgetPeriod",
+    "ContributionStrategy",
+    "Envelope",
     "Household",
     "MfaPolicy",
     "MfaRecoveryCode",
     "Period",
     "PeriodStatus",
+    "PoolType",
     "Posting",
+    "RolloverPolicy",
     "Session",
+    "ShadowPosting",
+    "ShadowTransaction",
+    "ShadowTxReason",
+    "ShadowTxStatus",
+    "SinkingFund",
     "Transaction",
     "TransactionStatus",
     "User",
