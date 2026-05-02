@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-01 · `main` @ `7e724a6`
+**Last updated:** 2026-05-02 · `main` @ `24353dd`
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** not started
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 (API endpoints), P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
 
-**Tests:** 496 passing · **CI:** green on `main`
+**Tests:** 580 passing · **CI:** green on `main`
 
 ---
 
@@ -281,6 +281,31 @@ PR #48. Editor-driven transaction entry as an alternative to the flag mode.
 
 ---
 
+## Phase 4 — Envelopes + sinking funds — in flight
+
+Per [ADR-0001](adrs/0001-envelope-shadow-ledger.md). Envelope and sinking-fund balances are tracked through a parallel double-entry **shadow ledger** whose accounts are `allocation_pools`. Spending against an envelope = a main-ledger posting carrying `pool_id`, which auto-pairs a shadow transaction at write time. Refills, transfers, rollovers, and ad-hoc allocations are user-initiated shadow transactions. Pool balances are derived from `sum(shadow_postings)` — never stored.
+
+### P4.0 — Storage + domain layer — ✅ *(2026-05-02)*
+
+Closes #60. Pure storage + domain slice; no API, no CLI, no refill execution. Migration + value objects + engine + repositories + system-pool auto-creation + architecture test.
+
+- **Migration** (`a3f4d8e91b22`): new tables `allocation_pools`, `envelopes`, `sinking_funds`, `shadow_transactions`, `shadow_postings`. Four shadow-ledger balance triggers mirror the main-ledger triggers from migration 0001 — sum-to-zero per `(shadow_transaction_id, currency)` is enforced on transitions into `posted` and on `INSERT` / `UPDATE` / `DELETE` of postings while a shadow tx is `posted`. The long-deferred FK on `postings.pool_id → allocation_pools` lands here too (the column has existed since the initial schema as a nullable BLOB without referential integrity).
+- **Domain types** (`tulip_core.allocation`): `Pool` (frozen value object, equality by id), `PoolType` (5 values: `envelope`, `sinking_fund`, `inflow`, `unallocated`, `spent`), `Envelope` (with `BudgetPeriod` and `RolloverPolicy`), `SinkingFund` (with `ContributionStrategy`), `ShadowPosting`, `ShadowTransaction` (sum-to-zero invariant on POSTED, multi-currency segregated), `ShadowTxReason` (6 values), `ShadowTxStatus` (`pending` / `posted` / `voided`), `RefillRule` value object (3 strategies, structured shape, JSON round-trip — no expression eval).
+- **Engine** (`tulip_core.allocation.engine.post_shadow_transaction`): validates pool existence + tenant scope + active flag + currency match + balance, then promotes to POSTED. Idempotent on already-POSTED; rejects re-post of VOIDED. Period validation deliberately deferred to P4.1 — shadow tx record intent and the period gate is enforced where the main tx that triggered them lives.
+- **Repositories** (`tulip-storage`): `AllocationPoolRepository` (CRUD + `get_or_create_system_pools(currency)` resolver, idempotent, system pools rejected from `deactivate`); `ShadowTransactionRepository.save_balanced` (PENDING-then-UPDATE-to-POSTED save flow, trigger fires on the UPDATE) + `balance_for_pool(pool_id, *, currency=None, as_of=None)` returning `{currency: net amount}`; pending and voided shadow txs excluded from balance sums.
+- **System-pool auto-creation**: `Inflow` / `Unallocated` / `Spent` per `(household, currency)`, eagerly created on `POST /v1/auth/register` for the household's `base_currency`. The resolver is idempotent so lazy creation in P4.1's API layer (on first use of a new currency) Just Works.
+- **Architecture test** (`test_architecture_no_direct_shadow_writes.py`): AST scan rejecting imports of the storage-layer `ShadowTransaction` / `ShadowPosting` model classes outside `repositories/shadow_transaction.py`. Domain-layer value objects of the same name are deliberately not banned — that's the type the rest of the codebase uses to *describe* a shadow tx before handing it to the repo.
+- **Doc updates**: ARCHITECTURE.md §5.3 refill_rule JSON shape brought in line with the structured `RefillRule` value object (`fixed_amount` / `fill_to_amount` / `percentage_of_income`). ADR-0001 status flipped to Accepted.
+- **Tests**: 84 new tests (49 core, 23 storage, 1 API). Project total: 580 passing.
+
+### Phase 4 deferred to later slices
+
+- **P4.1 — API endpoints** (`POST /v1/envelopes`, `POST /v1/sinking-funds`, refill, transfer, balance) and the writer chokepoint that auto-pairs a shadow tx whenever a main-ledger posting carries `pool_id`.
+- **P4.2 — CLI** (`tulip envelopes …`, `tulip sinking-funds …`).
+- **P4.3 — Refill rules execution** + scheduled-tx runner.
+
+---
+
 ## Other shipped fixes
 
 ### P2.x.4 — catch-all unhandled-exception handler — ✅ *(2026-05-01)*
@@ -291,4 +316,4 @@ PR #30. Closed #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL p
 
 ## Reference: full phase roadmap
 
-See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 4 through 9 (envelopes, importers, AI, reports, ops, pre-cloud) are not in flight.
+See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 5 through 9 (importers, AI, reports, ops, pre-cloud) are not in flight.

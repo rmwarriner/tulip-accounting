@@ -1,6 +1,6 @@
 # ADR 0001 — Envelope and sinking-fund tracking via shadow ledger
 
-**Status:** Proposed (2026-05-01) — pending user sign-off, then becomes Accepted on P4.0 merge.
+**Status:** Accepted (2026-05-02) — adopted on P4.0 merge.
 **Phase:** 4 (Envelopes + sinking funds).
 **Supersedes:** None.
 
@@ -337,3 +337,4 @@ P4.0 explicitly does **not** ship the API endpoints, CLI, refill rules execution
 | 2026-05-01 | Decided: 3 system pool types (Inflow, Unallocated, Spent), per-currency. | P4 kickoff Q1+Q2 |
 | 2026-05-01 | Decided: auto-pairing on every main posting with `pool_id`. | P4 kickoff Q3 |
 | 2026-05-01 | Pairing rule: one main-ledger tx → at most one paired shadow tx (composite, multi-leg as needed). Worked examples added. | clarifying question on multi-envelope paychecks |
+| 2026-05-02 | Accepted on P4.0 merge (#60). Refill-rule JSON shape finalized as `fixed_amount` / `fill_to_amount` / `percentage_of_income` to match the structured value object. | P4.0 implementation |

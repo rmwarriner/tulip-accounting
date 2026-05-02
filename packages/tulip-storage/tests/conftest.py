@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from tulip_storage.migrations._triggers import INITIAL_TRIGGERS
+from tulip_storage.migrations._triggers import INITIAL_TRIGGERS, P4_0_SHADOW_TRIGGERS
 from tulip_storage.models import Base
 
 
@@ -31,6 +31,8 @@ def engine() -> Iterator[Engine]:
     Base.metadata.create_all(eng)
     with eng.begin() as conn:
         for ddl in INITIAL_TRIGGERS:
+            conn.execute(text(ddl))
+        for ddl in P4_0_SHADOW_TRIGGERS:
             conn.execute(text(ddl))
     yield eng
     eng.dispose()

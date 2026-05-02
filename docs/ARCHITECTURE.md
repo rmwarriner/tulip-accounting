@@ -392,20 +392,21 @@ Standard double-entry. The accounting engine module (`tulip.core.accounting`) is
 
 ### 5.3 Refill Rules (envelope `refill_rule` JSON)
 
-Three supported strategies:
+Three supported strategies, persisted as structured JSON only (no expression
+language, no string-to-eval — see [docs/THREAT_MODEL.md §5.1](THREAT_MODEL.md)).
+The shape is round-trippable through `tulip_core.allocation.RefillRule.{to,from}_dict`:
 
 ```json
-{ "strategy": "fixed", "amount": "500.00", "currency": "USD" }
+{ "strategy": "fixed_amount", "amount": "500.00", "currency": "USD" }
 
-{ "strategy": "percentage_of_income",
-  "percentage": "10.0",
-  "income_account_id": "...",
-  "lookback_period": "month" }
+{ "strategy": "fill_to_amount", "amount": "500.00", "currency": "USD" }
 
-{ "strategy": "fill_to_target",
-  "target_balance": "500.00",
-  "currency": "USD" }
+{ "strategy": "percentage_of_income", "percentage": "0.10" }
 ```
+
+`fixed_amount` contributes `amount` per period. `fill_to_amount` tops the
+envelope up to `amount` per period. `percentage_of_income` contributes
+`percentage` (a fraction in (0, 1]) of the next inflow.
 
 ### 5.4 Sinking Funds
 
