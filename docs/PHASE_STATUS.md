@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b
+**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/budget-inflow endpoints) shipped 2026-05-02 (#63); P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/budget-inflow endpoints) shipped 2026-05-02 (#63); P4.2 (CLI commands) shipped 2026-05-02 (#66); P4.3 (refill rules execution + scheduled-tx runner) queued.
 
-**Tests:** 668 passing · **CI:** green on `main`
+**Tests:** 702 passing · **CI:** green on `main`
 
 ---
 
@@ -328,10 +328,22 @@ Closes #63. Three new routers (`/v1/envelopes`, `/v1/sinking-funds`, `/v1/pools`
 - **Decimal-safe validation rendering**: fixed a latent bug where `RequestValidationError` with `Decimal` constraint contexts (`ge=0`, `gt=0`) couldn't serialize to JSON. Added `_sanitize_for_json` recursive coercion in the validation handler.
 - **Tests**: 63 new (23 envelope endpoint tests, 13 sinking-fund, 27 pool). Project total: **668 passing** (up from 605).
 
+### P4.2 — CLI commands for envelopes / sinking-funds / refill / transfer / budget-inflow — ✅ *(2026-05-02)*
+
+Closes #66. Surfaces P4.1.b's API endpoints through the `tulip` CLI. Mirrors the patterns from `tulip accounts` (CRUD subgroups) and `tulip add` (top-level action commands).
+
+- **`tulip envelopes`** subgroup: `list`, `show`, `add`, `edit`, `deactivate`. Resolver falls back to `name` (envelopes have no code field), with `envelope.ambiguous_name` raised on duplicates rather than silent first-match.
+- **`tulip sinking-funds`** subgroup: same shape, mirror of envelopes minus refill. Field set: `--target-amount`, `--target-date`, `--contribution-strategy`, `--contribution-amount`.
+- **Top-level action commands**: `tulip refill ENVELOPE`, `tulip transfer --from POOL --to POOL`, `tulip budget-inflow`. The transfer resolver looks across both envelope and sinking-fund lists; cross-type name collisions raise `pool.ambiguous_name`.
+- **Output formats**: Rich tables for list (no per-row balance fetch — avoids N+1); key:value plus a separate `balance:` line for `show`; "Refilled X by AMT; new balance: BAL" / "Transferred AMT from SRC to DEST; new destination balance: BAL" / "Declared inflow of AMT CCY; new Unallocated balance: BAL" for actions. `--json` passes through the raw API response on every command.
+- **Helper module** `commands/_pools.py`: `_resolve_envelope`, `_resolve_sinking_fund`, `_resolve_pool` plus typed Problem Details builders (`*.not_found`, `*.ambiguous_name`).
+- **Refill-rule editing** intentionally not in P4.2; the structured-only constraint from ADR-0001 needs an editor flow that lands as a follow-up.
+- **Tests**: 34 new E2E (15 envelope, 8 sinking-fund, 11 pool-action). Project total: **702 passing** (up from 668).
+
 ### Phase 4 deferred to later slices
 
-- **P4.2 — CLI** (`tulip envelopes …`, `tulip sinking-funds …`, `tulip refill`, `tulip transfer`, `tulip budget-inflow`).
 - **P4.3 — Refill rules execution** + scheduled-tx runner.
+- **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author RefillRule structures interactively.
 
 ---
 
