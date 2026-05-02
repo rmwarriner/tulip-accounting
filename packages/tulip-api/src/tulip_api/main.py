@@ -12,7 +12,17 @@ from fastapi import FastAPI
 from tulip_api.errors import install_problem_handlers
 from tulip_api.logging_config import configure_logging
 from tulip_api.middleware import RequestIdMiddleware
-from tulip_api.routers import accounts, auth, health, reports, transactions, well_known_errors
+from tulip_api.routers import (
+    accounts,
+    auth,
+    envelopes,
+    health,
+    pools,
+    reports,
+    sinking_funds,
+    transactions,
+    well_known_errors,
+)
 
 API_VERSION = "v1"
 API_TITLE = "Tulip Accounting API"
@@ -43,6 +53,9 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(accounts.router)
     app.include_router(transactions.router)
+    app.include_router(envelopes.router)
+    app.include_router(sinking_funds.router)
+    app.include_router(pools.router)
     app.include_router(reports.router)
 
     return app

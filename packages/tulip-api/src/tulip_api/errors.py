@@ -609,6 +609,110 @@ class ShadowLedgerInternalError(TulipProblem):
         )
 
 
+class EnvelopeNotFoundError(TulipProblem):
+    """An envelope lookup either missed or hit a row not visible in this household."""
+
+    def __init__(self) -> None:
+        """Build the envelope.not_found problem."""
+        super().__init__(
+            code="envelope.not_found",
+            title="Envelope not found",
+            status=404,
+            detail="No envelope with that ID exists in this household.",
+        )
+
+
+class SinkingFundNotFoundError(TulipProblem):
+    """A sinking-fund lookup either missed or hit a row not visible in this household."""
+
+    def __init__(self) -> None:
+        """Build the sinking_fund.not_found problem."""
+        super().__init__(
+            code="sinking_fund.not_found",
+            title="Sinking fund not found",
+            status=404,
+            detail="No sinking fund with that ID exists in this household.",
+        )
+
+
+class PoolTransferSamePoolError(TulipProblem):
+    """A transfer was requested with identical source and destination pools."""
+
+    def __init__(self) -> None:
+        """Build the pool.transfer_same_pool problem."""
+        super().__init__(
+            code="pool.transfer_same_pool",
+            title="Source and destination pools must differ",
+            status=400,
+            detail=(
+                "A pool-to-pool transfer needs two distinct pools. "
+                "Pick a different destination and resubmit."
+            ),
+        )
+
+
+class PoolTransferCurrencyMismatchError(TulipProblem):
+    """A transfer was requested across pools of different currencies."""
+
+    def __init__(self, *, src_currency: str, dest_currency: str) -> None:
+        """Build the pool.transfer_currency_mismatch problem."""
+        super().__init__(
+            code="pool.transfer_currency_mismatch",
+            title="Pool currencies must match for a transfer",
+            status=400,
+            detail=(
+                f"Source pool is {src_currency}; destination is {dest_currency}. "
+                "Cross-currency pool transfers are not supported in v1; use "
+                "a budget-inflow declaration in the destination's currency "
+                "instead."
+            ),
+        )
+
+
+class PoolTransferSystemPoolForbiddenError(TulipProblem):
+    """A transfer was requested with a system pool as source or destination.
+
+    System pools (Inflow / Unallocated / Spent) are plumbing for the
+    shadow ledger; users move money in via ``budget-inflow`` and out via
+    ``refill``. Direct transfers to/from system pools would skip the
+    intent-recording semantics those endpoints provide.
+    """
+
+    def __init__(self, *, role: str) -> None:
+        """Build the pool.transfer_system_pool_forbidden problem.
+
+        ``role`` is "source" or "destination" — surfaced as an extension
+        so clients can localize the message and highlight the right field.
+        """
+        super().__init__(
+            code="pool.transfer_system_pool_forbidden",
+            title="System pools cannot be transferred to or from",
+            status=400,
+            detail=(
+                f"The {role} pool is a system pool. Use budget-inflow to add "
+                "money to your budget and refill to fund an envelope; pool-to-pool "
+                "transfers operate between user pools only."
+            ),
+            extensions={"role": role},
+        )
+
+
+class PoolInflowCurrencyUnknownError(TulipProblem):
+    """A budget-inflow request named a currency not in ISO 4217."""
+
+    def __init__(self, *, currency: str) -> None:
+        """Build the pool.inflow_currency_unknown problem."""
+        super().__init__(
+            code="pool.inflow_currency_unknown",
+            title="Unknown currency for budget inflow",
+            status=400,
+            detail=(
+                f"Currency {currency!r} is not a recognized ISO 4217 code. "
+                "Check the currency code and resubmit."
+            ),
+        )
+
+
 class ValidationFailedError(TulipProblem):
     """FastAPI / Pydantic input validation rejected the request body or params."""
 
@@ -626,6 +730,26 @@ class ValidationFailedError(TulipProblem):
             detail="One or more fields in the request body or query parameters are invalid.",
             extensions={"errors": errors},
         )
+
+
+def _sanitize_for_json(value: Any) -> Any:  # noqa: ANN401 — Pydantic errors are heterogeneous
+    """Recursively coerce values to JSON-safe primitives.
+
+    Pydantic's error contexts include ``Decimal`` values for numeric
+    constraints. Bytes occasionally show up in URL parsing errors. Coerce
+    both to strings so the validation 422 response can render.
+    """
+    from decimal import Decimal as _Dec  # local to avoid top-of-file import bloat
+
+    if isinstance(value, dict):
+        return {k: _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, _Dec):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def problem_response(*codes: str) -> dict[str, Any]:
@@ -721,7 +845,11 @@ def install_problem_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     def _handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
-        return _render(request, ValidationFailedError(errors=list(exc.errors())))
+        # Pydantic's error structure can contain Decimal values (e.g. inside
+        # ``ctx`` for ``ge`` / ``gt`` / ``le`` / ``lt`` constraints) that
+        # JSONResponse can't serialize. Coerce them to strings recursively.
+        sanitized = [_sanitize_for_json(e) for e in exc.errors()]
+        return _render(request, ValidationFailedError(errors=sanitized))
 
     @app.exception_handler(Exception)
     def _handle_unhandled(request: Request, exc: Exception) -> JSONResponse:

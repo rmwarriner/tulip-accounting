@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a
+**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/balance endpoints, #63), P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/budget-inflow endpoints) shipped 2026-05-02 (#63); P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
 
-**Tests:** 605 passing · **CI:** green on `main`
+**Tests:** 668 passing · **CI:** green on `main`
 
 ---
 
@@ -312,10 +312,25 @@ Closes #62. Extends `POST /v1/transactions`: when any posting carries `pool_id`,
 - **New error codes**: `pool.not_found`, `pool.inactive`, `pool.currency_mismatch`, `pool.invalid_account_type_pairing` (400) and `pool.shadow_unbalanced` (500, defense in depth — only fires on a Tulip bug).
 - **Tests**: 25 new (8 engine unit + 17 API integration). Project total: **605 passing** (up from 580).
 
+### P4.1.b — Envelope / sinking-fund / refill / transfer / budget-inflow endpoints — ✅ *(2026-05-02)*
+
+Closes #63. Three new routers (`/v1/envelopes`, `/v1/sinking-funds`, `/v1/pools`) sitting on top of P4.0's storage layer and P4.1.a's writer chokepoint.
+
+- **Envelopes** (`/v1/envelopes`): CRUD (list / create / get / patch / delete) + `GET /{id}/balance` + `POST /{id}/refill`. Refill posts a 2-leg shadow transaction (`Unallocated -X` / envelope `+X`) with reason `REFILL`; lazy-creates the household's `Unallocated` system pool for the envelope's currency if missing. Permissive on Unallocated going negative — that's intent, not money. Visibility / role rules mirror accounts: shared visible to all; private visible only to creator + admins; member can't edit / refill private pools they didn't create.
+- **Sinking funds** (`/v1/sinking-funds`): CRUD + `GET /{id}/balance`, mirror of envelopes. Field set: `target_amount`, `target_date`, `contribution_strategy` (`manual` / `even_split` / `percentage_of_income`), optional `contribution_amount`. Currency immutable.
+- **Pools** (`/v1/pools`): `POST /{src}/transfer` and `POST /budget-inflow`. Transfer requires both pools active, same household, same currency, both **user pools** (system-pool source/dest rejected with `pool.transfer_system_pool_forbidden` carrying `extensions.role`). Budget-inflow declares "I have $X to budget", lazy-creates the household's three system pools for the currency if any are missing. Pre-flight rejects same-pool transfers (`pool.transfer_same_pool`), currency mismatches (`pool.transfer_currency_mismatch`), and unknown ISO codes (`pool.inflow_currency_unknown`).
+- **Schemas**: shared `PoolBalanceRead` (envelopes + sinking-funds use it), structured `RefillRuleSchema` matching `RefillRule.to_dict()`. The router round-trips through `RefillRule.from_dict()` at the boundary so the no-eval guarantee holds — `refill_rule_json` storage is always written via `RefillRule.to_dict()`.
+- **Repositories**: new `EnvelopeRepository` and `SinkingFundRepository` wrap the two-table inserts (`allocation_pools` + the joined detail row) behind a single `create / get / list_active / update_fields` interface. Soft-delete continues to go through `AllocationPoolRepository.deactivate`.
+- **Helper module** `routers/_pool_helpers.py`: `filter_for_role`, `require_visibility_or_forbid`, `resolve_or_lazy_create_system_pool`, and `post_user_initiated_shadow_tx` — the last is the load-bearing one used by refill, transfer, and budget-inflow. Builds the domain `ShadowTransaction`, validates via the engine, persists via `ShadowTransactionRepository.save_balanced`, and writes one audit row with `entity_type="shadow_transaction"`.
+- **Audit log**: every CRUD action (envelope / sinking_fund) writes `entity_type="envelope" | "sinking_fund"` rows; every refill / transfer / budget-inflow writes `entity_type="shadow_transaction"` with `reason` and `description` in `after_snapshot`. One user action = one audit row.
+- **New error codes**: `envelope.not_found`, `sinking_fund.not_found`, `pool.transfer_same_pool`, `pool.transfer_currency_mismatch`, `pool.transfer_system_pool_forbidden`, `pool.inflow_currency_unknown`. Reuses `pool.not_found` / `pool.inactive` from P4.1.a.
+- **No period gate** on user-initiated shadow tx (refill, transfer, budget-inflow) in v1 — these record intent, not money movement. Period enforcement remains exclusively on main-ledger writes.
+- **Decimal-safe validation rendering**: fixed a latent bug where `RequestValidationError` with `Decimal` constraint contexts (`ge=0`, `gt=0`) couldn't serialize to JSON. Added `_sanitize_for_json` recursive coercion in the validation handler.
+- **Tests**: 63 new (23 envelope endpoint tests, 13 sinking-fund, 27 pool). Project total: **668 passing** (up from 605).
+
 ### Phase 4 deferred to later slices
 
-- **P4.1.b — API endpoints** (`/v1/envelopes` CRUD, `/v1/sinking-funds` CRUD, refill / transfer / balance) — tracked as #63.
-- **P4.2 — CLI** (`tulip envelopes …`, `tulip sinking-funds …`).
+- **P4.2 — CLI** (`tulip envelopes …`, `tulip sinking-funds …`, `tulip refill`, `tulip transfer`, `tulip budget-inflow`).
 - **P4.3 — Refill rules execution** + scheduled-tx runner.
 
 ---
