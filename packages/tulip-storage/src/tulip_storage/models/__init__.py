@@ -20,6 +20,11 @@ from tulip_storage.models.household import Household, MfaPolicy
 from tulip_storage.models.mfa_recovery_code import MfaRecoveryCode
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
+from tulip_storage.models.scheduled_job import (
+    ScheduledJob,
+    ScheduledJobRun,
+    ScheduledJobRunStatus,
+)
 from tulip_storage.models.session import Session
 from tulip_storage.models.shadow_posting import ShadowPosting
 from tulip_storage.models.shadow_transaction import (
@@ -48,6 +53,9 @@ __all__ = [
     "PoolType",
     "Posting",
     "RolloverPolicy",
+    "ScheduledJob",
+    "ScheduledJobRun",
+    "ScheduledJobRunStatus",
     "Session",
     "ShadowPosting",
     "ShadowTransaction",

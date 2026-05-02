@@ -71,7 +71,11 @@ def settings() -> Settings:
 
 @pytest.fixture
 def app(session_maker: sessionmaker[Session], settings: Settings) -> Iterator[FastAPI]:
-    a = create_app()
+    # Disable the scheduler runner per ADR-0002; tests run synchronously
+    # against TestClient and the runner's own session factory won't see
+    # the per-test overridden DB. Runner-specific tests opt back in via
+    # a separate fixture.
+    a = create_app(enable_runner=False)
 
     def _override_session() -> Iterator[Session]:
         with session_maker() as s:
