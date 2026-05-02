@@ -59,6 +59,20 @@ class ShadowTransactionRepository:
             )
         ).scalar_one_or_none()
 
+    def get_paired_id_for_main_tx(self, main_tx_id: UUID) -> UUID | None:
+        """Return the id of the shadow tx paired to ``main_tx_id``, or None.
+
+        Lookup keyed on ``paired_main_tx_id``. The pairing rule (ADR-0001)
+        guarantees at most one row per main tx, so ``scalar_one_or_none``
+        is the right shape.
+        """
+        return self._session.execute(
+            select(ShadowTransaction.id).where(
+                ShadowTransaction.household_id == self._household_id,
+                ShadowTransaction.paired_main_tx_id == main_tx_id,
+            )
+        ).scalar_one_or_none()
+
     def list_postings(self, tx_id: UUID) -> list[ShadowPosting]:
         """Return all shadow postings belonging to a shadow transaction."""
         return list(

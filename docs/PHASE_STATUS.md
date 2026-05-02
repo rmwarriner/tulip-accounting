@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ `24353dd`
+**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 (API endpoints), P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (storage + domain layer per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)) shipped 2026-05-02 (#60); P4.1 split a/b — P4.1.a (writer chokepoint) shipped 2026-05-02 (#62); P4.1.b (envelope/sinking-fund/refill/transfer/balance endpoints, #63), P4.2 (CLI), P4.3 (refill rules + scheduled-tx runner) queued.
 
-**Tests:** 580 passing · **CI:** green on `main`
+**Tests:** 605 passing · **CI:** green on `main`
 
 ---
 
@@ -298,9 +298,23 @@ Closes #60. Pure storage + domain slice; no API, no CLI, no refill execution. Mi
 - **Doc updates**: ARCHITECTURE.md §5.3 refill_rule JSON shape brought in line with the structured `RefillRule` value object (`fixed_amount` / `fill_to_amount` / `percentage_of_income`). ADR-0001 status flipped to Accepted.
 - **Tests**: 84 new tests (49 core, 23 storage, 1 API). Project total: 580 passing.
 
+### P4.1.a — Writer chokepoint (auto-pair shadow tx on pool_id postings) — ✅ *(2026-05-02)*
+
+Closes #62. Extends `POST /v1/transactions`: when any posting carries `pool_id`, the handler atomically writes a paired shadow-ledger transaction in the same `session.commit()` per ADR-0001's pairing rule.
+
+- **Schema**: `PostingCreate` learns optional `pool_id: UUID | None`; `PostingRead` and `TransactionRead` surface it (plus `paired_shadow_tx_id` on the response).
+- **Pre-flight validation** (in this order, before any DB write): pool exists in household → pool active → account type permits pool-tagging (**EXPENSE only in v1**) → pool currency matches posting currency. Each maps to a typed Problem Details code: `pool.not_found`, `pool.inactive`, `pool.invalid_account_type_pairing`, `pool.currency_mismatch` (all 400). Cross-tenant pool refs surface as `pool.not_found`.
+- **Lazy system-pool creation**: for each distinct currency among pool-tagged postings, the handler calls `AllocationPoolRepository.get_or_create_system_pools(currency=...)` before either ledger writes. Idempotent. No separate audit row — system pools are plumbing.
+- **Auto-pairing engine**: new `tulip_core.allocation.engine.derive_paired_shadow_tx(main_tx, *, account_types_by_id, spent_pool_by_currency)` returning `ShadowTransaction | None`. Sign rule for v1: `EXPENSE → +1`. One absorbing leg in the household's `Spent` system pool of the appropriate currency. Multi-currency pool-tags within one main tx → `MultiCurrencyPoolTaggingError` (rejected in v1). Refund-shaped (positive net pool effect) → `UnsupportedRefundShapedShadowTxError` (rejected in v1; needs an ADR amendment to add a `REFUND` reason).
+- **Atomic rollback**: existing handler boundary handles it — both `save_balanced` calls + the audit write share one session, one commit. If anything raises, FastAPI's request lifecycle rolls back the session via `get_session` and neither ledger persists.
+- **Audit log**: extended the main tx's `after_snapshot` with `paired_shadow_tx_id` when present. One user action = one audit row; the shadow row is queryable via `paired_main_tx_id`.
+- **GET / list endpoints** also surface `paired_shadow_tx_id` via a new `ShadowTransactionRepository.get_paired_id_for_main_tx`. Architecture test (P4.0) still bans direct shadow-table writes outside the repo.
+- **New error codes**: `pool.not_found`, `pool.inactive`, `pool.currency_mismatch`, `pool.invalid_account_type_pairing` (400) and `pool.shadow_unbalanced` (500, defense in depth — only fires on a Tulip bug).
+- **Tests**: 25 new (8 engine unit + 17 API integration). Project total: **605 passing** (up from 580).
+
 ### Phase 4 deferred to later slices
 
-- **P4.1 — API endpoints** (`POST /v1/envelopes`, `POST /v1/sinking-funds`, refill, transfer, balance) and the writer chokepoint that auto-pairs a shadow tx whenever a main-ledger posting carries `pool_id`.
+- **P4.1.b — API endpoints** (`/v1/envelopes` CRUD, `/v1/sinking-funds` CRUD, refill / transfer / balance) — tracked as #63.
 - **P4.2 — CLI** (`tulip envelopes …`, `tulip sinking-funds …`).
 - **P4.3 — Refill rules execution** + scheduled-tx runner.
 
