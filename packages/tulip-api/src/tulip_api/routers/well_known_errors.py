@@ -50,6 +50,12 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "posting_currency": "EUR",
     },
     "PoolInvalidAccountTypePairingError": {"account_type": "asset"},
+    "PoolTransferCurrencyMismatchError": {
+        "src_currency": "USD",
+        "dest_currency": "EUR",
+    },
+    "PoolTransferSystemPoolForbiddenError": {"role": "source"},
+    "PoolInflowCurrencyUnknownError": {"currency": "ZZZ"},
     "ValidationFailedError": {
         "errors": [
             {
