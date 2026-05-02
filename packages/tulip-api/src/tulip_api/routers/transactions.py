@@ -14,6 +14,11 @@ from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountUnknownError,
     PeriodClosedError,
+    PoolCurrencyMismatchError,
+    PoolInactiveError,
+    PoolInvalidAccountTypePairingError,
+    PoolNotFoundError,
+    ShadowLedgerInternalError,
     TransactionInvalidError,
     TransactionNotFoundError,
     TransactionUnbalancedError,
@@ -24,10 +29,17 @@ from tulip_api.schemas.transaction import (
     TransactionCreate,
     TransactionRead,
 )
+from tulip_core.account import AccountType as DomainAccountType
 from tulip_core.accounting import (
     ClosedPeriodError,
     UnbalancedTransactionError,
     post_transaction,
+)
+from tulip_core.allocation import (
+    InvalidAccountTypePairingError,
+    MultiCurrencyPoolTaggingError,
+    UnsupportedRefundShapedShadowTxError,
+    derive_paired_shadow_tx,
 )
 from tulip_core.money import Money
 from tulip_core.periods import Period as DomainPeriod
@@ -41,11 +53,14 @@ from tulip_core.transactions import (
 from tulip_core.transactions import (
     TransactionStatus as DomainTxStatus,
 )
+from tulip_storage.models import PoolType as StoragePoolType
 from tulip_storage.models import TransactionStatus as StorageTxStatus
 from tulip_storage.repositories import (
     AccountRepository,
+    AllocationPoolRepository,
     AuditLogWriter,
     PeriodRepository,
+    ShadowTransactionRepository,
     TransactionRepository,
 )
 
@@ -69,11 +84,16 @@ log = structlog.get_logger("tulip_api.transactions")
             "transaction.invalid",
             "transaction.unbalanced",
             "period.closed",
+            "pool.not_found",
+            "pool.inactive",
+            "pool.currency_mismatch",
+            "pool.invalid_account_type_pairing",
             "request.body_invalid",
         ),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         422: problem_response("validation.failed"),
+        500: problem_response("pool.shadow_unbalanced"),
     },
 )
 def create_transaction(
@@ -82,18 +102,63 @@ def create_transaction(
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> TransactionRead:
-    """Build a domain Transaction, post it through the engine, persist."""
-    accounts_repo = AccountRepository(session, claims.household_id)
-    for p in body.postings:
-        if accounts_repo.get(p.account_id) is None:
-            raise AccountUnknownError(account_id=str(p.account_id))
+    """Build a domain Transaction, post it through the engine, persist.
 
+    When any posting carries ``pool_id``, this handler also writes a
+    paired shadow-ledger transaction in the same session per ADR-0001.
+    Both ledgers commit atomically — the shadow side rolls back the main
+    tx if it fails an invariant.
+    """
+    accounts_repo = AccountRepository(session, claims.household_id)
+    accounts_by_id = {}
+    for p in body.postings:
+        a = accounts_repo.get(p.account_id)
+        if a is None:
+            raise AccountUnknownError(account_id=str(p.account_id))
+        accounts_by_id[p.account_id] = a
+
+    # ---- Pool pre-flight checks ------------------------------------
+    # Order: not_found → inactive → invalid_account_type → currency_mismatch.
+    # All four run before any DB write so a malformed request can't
+    # leave an orphan main-ledger row.
+    pool_repo = AllocationPoolRepository(session, claims.household_id)
+    pool_tagged_currencies: set[str] = set()
+    for p in body.postings:
+        if p.pool_id is None:
+            continue
+        pool = pool_repo.get(p.pool_id)
+        if pool is None:
+            raise PoolNotFoundError(pool_id=str(p.pool_id))
+        if not pool.is_active:
+            raise PoolInactiveError(pool_id=str(p.pool_id))
+        account = accounts_by_id[p.account_id]
+        if account.type.value != "expense":
+            raise PoolInvalidAccountTypePairingError(account_type=account.type.value)
+        if pool.currency != p.currency:
+            raise PoolCurrencyMismatchError(
+                pool_id=str(p.pool_id),
+                pool_currency=pool.currency,
+                posting_currency=p.currency,
+            )
+        pool_tagged_currencies.add(p.currency)
+
+    # ---- Lazy system-pool creation ---------------------------------
+    # For each currency that touches a pool-tagged posting, ensure the
+    # household has its three system pools. The resolver is idempotent
+    # (P4.0); calling it for an already-materialized currency is a noop.
+    spent_pool_by_currency: dict[str, UUID] = {}
+    for ccy in pool_tagged_currencies:
+        sys_pools = pool_repo.get_or_create_system_pools(currency=ccy)
+        spent_pool_by_currency[ccy] = sys_pools[StoragePoolType.SPENT].id
+
+    # ---- Domain construction ---------------------------------------
     domain_postings: tuple[DomainPosting, ...] = tuple(
         DomainPosting(
             id=uuid4(),
             account_id=p.account_id,
             amount=Money(p.amount, p.currency),
             memo=p.memo,
+            pool_id=p.pool_id,
         )
         for p in body.postings
     )
@@ -123,8 +188,50 @@ def create_transaction(
     except ClosedPeriodError as exc:
         raise PeriodClosedError(reason=str(exc)) from exc
 
+    # ---- Auto-pair shadow tx ---------------------------------------
+    # derive_paired_shadow_tx returns None when no posting carries pool_id.
+    # InvalidAccountTypePairingError + MultiCurrencyPoolTaggingError +
+    # UnsupportedRefundShapedShadowTxError all map to user-facing 400s.
+    # Other engine errors (no Spent pool, balance check) are bugs → 500.
+    account_types_by_id = {
+        aid: DomainAccountType(a.type.value) for aid, a in accounts_by_id.items()
+    }
+    try:
+        shadow_tx = derive_paired_shadow_tx(
+            posted,
+            account_types_by_id=account_types_by_id,
+            spent_pool_by_currency=spent_pool_by_currency,
+        )
+    except InvalidAccountTypePairingError as exc:
+        # Pre-flight should already have caught this, but keep the
+        # mapping so the engine remains a complete contract.
+        raise PoolInvalidAccountTypePairingError(
+            account_type="non-expense",
+        ) from exc
+    except MultiCurrencyPoolTaggingError as exc:
+        raise TransactionInvalidError(reason=str(exc)) from exc
+    except UnsupportedRefundShapedShadowTxError as exc:
+        raise TransactionInvalidError(reason=str(exc)) from exc
+    except ValueError as exc:
+        # Engine raised a non-typed error: missing system pool, internal
+        # invariant. Always a Tulip bug, not user input.
+        raise ShadowLedgerInternalError() from exc
+
     tx_repo = TransactionRepository(session, claims.household_id)
     saved = tx_repo.save_balanced(posted)
+
+    paired_shadow_tx_id: UUID | None = None
+    if shadow_tx is not None:
+        shadow_repo = ShadowTransactionRepository(session, claims.household_id)
+        saved_shadow = shadow_repo.save_balanced(shadow_tx)
+        paired_shadow_tx_id = saved_shadow.id
+
+    audit_after: dict[str, str] = {
+        "description": saved.description,
+        "date": saved.date.isoformat(),
+    }
+    if paired_shadow_tx_id is not None:
+        audit_after["paired_shadow_tx_id"] = str(paired_shadow_tx_id)
 
     AuditLogWriter(session, claims.household_id).write(
         action="create",
@@ -132,12 +239,21 @@ def create_transaction(
         actor_user_id=claims.user_id,
         entity_type="transaction",
         entity_id=saved.id,
-        after={"description": saved.description, "date": saved.date.isoformat()},
+        after=audit_after,
         request_id=_request_uuid(request),
     )
     session.commit()
-    log.info("transaction.created", tx_id=str(saved.id))
-    return _read_response(saved.id, claims.household_id, session)
+    log.info(
+        "transaction.created",
+        tx_id=str(saved.id),
+        paired_shadow_tx_id=str(paired_shadow_tx_id) if paired_shadow_tx_id else None,
+    )
+    return _read_response(
+        saved.id,
+        claims.household_id,
+        session,
+        paired_shadow_tx_id=paired_shadow_tx_id,
+    )
 
 
 @router.get(
@@ -236,11 +352,22 @@ def _domain_periods(repo: PeriodRepository) -> list[DomainPeriod]:
     ]
 
 
-def _read_response(tx_id: UUID, household_id: UUID, session: Session) -> TransactionRead:
+def _read_response(
+    tx_id: UUID,
+    household_id: UUID,
+    session: Session,
+    *,
+    paired_shadow_tx_id: UUID | None = None,
+) -> TransactionRead:
     repo = TransactionRepository(session, household_id)
     header = repo.get(tx_id)
     assert header is not None  # caller verifies before invoking  # noqa: S101
     postings = repo.list_postings(tx_id)
+    if paired_shadow_tx_id is None:
+        # GET / list paths don't have it pre-resolved; look it up.
+        paired_shadow_tx_id = ShadowTransactionRepository(
+            session, household_id
+        ).get_paired_id_for_main_tx(tx_id)
     return TransactionRead(
         id=header.id,
         date=header.date,
@@ -254,9 +381,11 @@ def _read_response(tx_id: UUID, household_id: UUID, session: Session) -> Transac
                 amount=p.amount,
                 currency=p.currency,
                 memo=p.memo,
+                pool_id=p.pool_id,
             )
             for p in postings
         ],
+        paired_shadow_tx_id=paired_shadow_tx_id,
     )
 
 

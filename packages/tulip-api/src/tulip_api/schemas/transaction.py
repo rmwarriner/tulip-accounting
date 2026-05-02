@@ -16,6 +16,13 @@ class PostingCreate(BaseModel):
     amount: Decimal
     currency: str = Field(min_length=3, max_length=3)
     memo: str | None = Field(default=None, max_length=500)
+    pool_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Optional allocation pool (envelope or sinking fund). When set, "
+            "the server auto-pairs a shadow-ledger transaction; see ADR-0001."
+        ),
+    )
 
 
 class TransactionCreate(BaseModel):
@@ -35,6 +42,7 @@ class PostingRead(BaseModel):
     amount: Decimal
     currency: str
     memo: str | None
+    pool_id: UUID | None = None
 
 
 class TransactionRead(BaseModel):
@@ -46,3 +54,4 @@ class TransactionRead(BaseModel):
     reference: str | None
     status: str
     postings: list[PostingRead]
+    paired_shadow_tx_id: UUID | None = None

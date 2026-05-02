@@ -511,6 +511,104 @@ class TransactionNotFoundError(TulipProblem):
         )
 
 
+class PoolNotFoundError(TulipProblem):
+    """A posting carries a pool_id that doesn't exist in this household."""
+
+    def __init__(self, pool_id: str) -> None:
+        """Build the pool.not_found problem.
+
+        ``pool_id`` is included in ``detail`` so the user can identify the
+        offending posting. Visibility is uniform across all household pools
+        for now — there's no information leak from echoing the bad UUID.
+        """
+        super().__init__(
+            code="pool.not_found",
+            title="Unknown pool in posting",
+            status=400,
+            detail=(
+                f"Posting references pool {pool_id}, which does not exist "
+                "in this household. Check the pool ID and resubmit."
+            ),
+        )
+
+
+class PoolInactiveError(TulipProblem):
+    """A posting's pool_id resolves to a deactivated pool."""
+
+    def __init__(self, pool_id: str) -> None:
+        """Build the pool.inactive problem."""
+        super().__init__(
+            code="pool.inactive",
+            title="Pool is deactivated",
+            status=400,
+            detail=(
+                f"Pool {pool_id} is deactivated and cannot accept new "
+                "postings. Reactivate it or remove the pool_id from the "
+                "posting and resubmit."
+            ),
+        )
+
+
+class PoolCurrencyMismatchError(TulipProblem):
+    """A posting's currency does not match its pool's currency."""
+
+    def __init__(self, *, pool_id: str, pool_currency: str, posting_currency: str) -> None:
+        """Build the pool.currency_mismatch problem."""
+        super().__init__(
+            code="pool.currency_mismatch",
+            title="Pool currency does not match posting currency",
+            status=400,
+            detail=(
+                f"Pool {pool_id} is denominated in {pool_currency}, but the "
+                f"posting is in {posting_currency}. Pool tagging requires "
+                "the pool and the posting to share a currency."
+            ),
+        )
+
+
+class PoolInvalidAccountTypePairingError(TulipProblem):
+    """A posting carries pool_id but its account type forbids pairing.
+
+    v1 permits pool-tagging on EXPENSE accounts only.
+    """
+
+    def __init__(self, *, account_type: str) -> None:
+        """Build the pool.invalid_account_type_pairing problem."""
+        super().__init__(
+            code="pool.invalid_account_type_pairing",
+            title="Pool tagging not permitted for this account type",
+            status=400,
+            detail=(
+                f"This posting is on a {account_type} account; only EXPENSE "
+                "accounts may carry pool_id in v1. Remove the pool_id and "
+                "resubmit, or move the posting to an expense account."
+            ),
+        )
+
+
+class ShadowLedgerInternalError(TulipProblem):
+    """The auto-paired shadow tx failed an internal invariant.
+
+    Defense-in-depth: the engine's checks should catch every malformed
+    pairing case before it gets here. Reaching this branch indicates a
+    Tulip bug, not a user error. The body deliberately surfaces no
+    detail beyond a request-id correlation hint.
+    """
+
+    def __init__(self) -> None:
+        """Build the pool.shadow_unbalanced problem."""
+        super().__init__(
+            code="pool.shadow_unbalanced",
+            title="Shadow-ledger pairing failed",
+            status=500,
+            detail=(
+                "The server could not derive a valid shadow-ledger "
+                "transaction for this main transaction. Please report "
+                "this incident with the request_id."
+            ),
+        )
+
+
 class ValidationFailedError(TulipProblem):
     """FastAPI / Pydantic input validation rejected the request body or params."""
 

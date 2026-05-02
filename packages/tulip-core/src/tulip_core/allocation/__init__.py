@@ -8,9 +8,13 @@ holds the pure-domain types. Persistence and repositories live in
 
 from tulip_core.allocation.engine import (
     InactivePoolError,
+    InvalidAccountTypePairingError,
+    MultiCurrencyPoolTaggingError,
     PoolCurrencyMismatchError,
     UnbalancedShadowTransactionError,
     UnknownPoolError,
+    UnsupportedRefundShapedShadowTxError,
+    derive_paired_shadow_tx,
     post_shadow_transaction,
 )
 from tulip_core.allocation.envelope import BudgetPeriod, Envelope, RolloverPolicy
@@ -29,6 +33,8 @@ __all__ = [
     "ContributionStrategy",
     "Envelope",
     "InactivePoolError",
+    "InvalidAccountTypePairingError",
+    "MultiCurrencyPoolTaggingError",
     "Pool",
     "PoolCurrencyMismatchError",
     "PoolType",
@@ -42,5 +48,7 @@ __all__ = [
     "SinkingFund",
     "UnbalancedShadowTransactionError",
     "UnknownPoolError",
+    "UnsupportedRefundShapedShadowTxError",
+    "derive_paired_shadow_tx",
     "post_shadow_transaction",
 ]
