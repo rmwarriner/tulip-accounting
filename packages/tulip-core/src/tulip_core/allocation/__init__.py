@@ -19,6 +19,7 @@ from tulip_core.allocation.engine import (
 )
 from tulip_core.allocation.envelope import BudgetPeriod, Envelope, RolloverPolicy
 from tulip_core.allocation.pool import Pool, PoolType
+from tulip_core.allocation.refill_engine import evaluate_refill_rule
 from tulip_core.allocation.refill_rule import RefillRule, RefillStrategy
 from tulip_core.allocation.shadow_posting import ShadowPosting
 from tulip_core.allocation.shadow_transaction import (
@@ -50,5 +51,6 @@ __all__ = [
     "UnknownPoolError",
     "UnsupportedRefundShapedShadowTxError",
     "derive_paired_shadow_tx",
+    "evaluate_refill_rule",
     "post_shadow_transaction",
 ]

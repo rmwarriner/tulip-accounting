@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a
+**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a + P4.3.b
 
 ---
 
@@ -15,9 +15,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66) shipped 2026-05-02. P4.3 split a/b/c — P4.3.a (scheduler runner primitive per [ADR-0002](adrs/0002-scheduler-primitive.md), closes #7) shipped 2026-05-02 (#68); P4.3.b (refill engine + handler, #69), P4.3.c (API + CLI for refill schedules, #70) queued.
+- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66) shipped 2026-05-02. P4.3 split a/b/c — P4.3.a (scheduler runner primitive per [ADR-0002](adrs/0002-scheduler-primitive.md), closes #7) shipped 2026-05-02 (#68); P4.3.b (refill engine + envelope_refill handler) shipped 2026-05-02 (#69); P4.3.c (API + CLI for refill schedules, #70) queued.
 
-**Tests:** 713 passing · **CI:** green on `main`
+**Tests:** 739 passing · **CI:** green on `main`
 
 ---
 
@@ -352,9 +352,20 @@ Closes #68 + #7. Implements the in-process scheduler that the rest of P4.3 (refi
 - **Tests**: 11 new in `tulip-storage` (TDD entry — schedule_one/run, schedule_recurring + advance, idempotency happy + cross-kind, cancel happy + unknown, retry + dead-letter, no-handler, RRULE-with-COUNT exhaustion, full async start/stop lifecycle). Project total: **713 passing** (up from 702).
 - **New deps**: `python-dateutil>=2.9` + `types-python-dateutil>=2.9` (added to `tulip-storage`).
 
+### P4.3.b — Refill-rule evaluation engine + envelope_refill handler — ✅ *(2026-05-02)*
+
+Closes #69. Sits on top of P4.3.a's runner primitive and P4.1.b's API surface; consumes the storage layer P4.0 shipped.
+
+- **Pure engine** (`tulip_core.allocation.evaluate_refill_rule`): given a `RefillRule`, the envelope's `current_balance`, and (for `PERCENTAGE_OF_INCOME`) the household's `recent_inflow`, returns the `Money` amount to contribute. Always non-negative; returns `Money.zero(...)` when the rule produces no contribution (e.g., `FILL_TO_AMOUNT` already at target, no recent inflow). Raises `CurrencyMismatchError` on cross-currency inputs.
+- **`envelope_refill` runner handler** (`tulip_storage.runner.handlers.envelope_refill`): factory pattern — `make_envelope_refill_handler(session_maker)` returns the `(job, clock) -> None` callback that the runner registers. Handler loads envelope → lazy-creates `Unallocated` system pool for envelope's currency → computes `current_balance` via `ShadowTransactionRepository.balance_for_pool` → for `PERCENTAGE_OF_INCOME`, sums `BUDGET_INFLOW` shadow tx since `last_run_at` (or 30 days for first fire) → calls the engine → posts a 2-leg `REFILL` shadow tx if amount > 0 → writes audit row with `actor_kind="system"`.
+- **Inactive envelope / no-rule envelope** are silent no-ops (don't error → don't retry; the schedule remains active in case the envelope reactivates).
+- **Unknown envelope** raises `EnvelopeRefillError` → runner marks the run failed and retries per the backoff policy.
+- **New repo method** `ShadowTransactionRepository.inflow_since(currency, since)` — sums positive `Unallocated` postings where `reason=BUDGET_INFLOW` and date ≥ since. Used by the handler; refactored out of the handler to keep the architecture-test boundary clean (handlers don't directly query shadow_transactions).
+- **Architecture test** (P4.0's no-direct-shadow-writes) still passes — the handler routes all shadow access through the repo. The P4.3.a no-direct-scheduled-job-writes allowlist gets one new entry for the handler module (it has a TYPE_CHECKING-only `ScheduledJob` import for typing).
+- **Tests**: 26 new (14 engine pure-function tests + 12 handler integration tests covering FIXED_AMOUNT happy path, FILL_TO_AMOUNT with gap and at-target, PERCENTAGE_OF_INCOME with and without inflow, no-rule no-op, inactive-envelope no-op, unknown-envelope error, payload-missing-key error, audit row shape with `actor_kind="system"`, recurring monthly schedule with two fires, full async start/stop pipeline). Project total: **739 passing** (up from 713).
+
 ### Phase 4 deferred to later slices
 
-- **P4.3.b — Refill engine + handler** (#69): pure `evaluate_refill_rule` + `envelope_refill` runner consumer.
 - **P4.3.c — API + CLI for refill schedules** (#70).
 - **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author RefillRule structures interactively.
 

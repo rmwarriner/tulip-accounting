@@ -40,6 +40,9 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # The runner — only legitimate writer.
         "tulip-storage/src/tulip_storage/runner/runner.py",
         "tulip-storage/src/tulip_storage/runner/__init__.py",
+        # First-party handlers — receive ScheduledJob instances from the
+        # runner; the type-only import is required for typing.
+        "tulip-storage/src/tulip_storage/runner/handlers/envelope_refill.py",
     }
 )
 

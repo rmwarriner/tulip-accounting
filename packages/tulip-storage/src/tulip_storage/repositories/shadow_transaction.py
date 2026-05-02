@@ -59,6 +59,45 @@ class ShadowTransactionRepository:
             )
         ).scalar_one_or_none()
 
+    def inflow_since(
+        self,
+        *,
+        currency: str,
+        since: date_type,
+    ) -> Decimal:
+        """Sum POSTED ``BUDGET_INFLOW`` shadow tx for ``currency`` since ``since``.
+
+        Used by the envelope-refill handler (P4.3.b) to compute
+        ``recent_inflow`` for ``PERCENTAGE_OF_INCOME`` rules. Sums the
+        positive (Unallocated) leg of every BUDGET_INFLOW shadow tx
+        whose date is on or after ``since``. Pending and voided shadow
+        txs don't contribute.
+
+        Returns 0 if no inflow has been declared in the window.
+        """
+        from tulip_storage.models import (
+            ShadowPosting,
+            ShadowTxReason,
+        )
+
+        query = (
+            select(func.coalesce(func.sum(ShadowPosting.amount), 0))
+            .join(
+                ShadowTransaction,
+                ShadowTransaction.id == ShadowPosting.shadow_transaction_id,
+            )
+            .where(
+                ShadowPosting.household_id == self._household_id,
+                ShadowPosting.currency == currency,
+                ShadowPosting.amount > 0,  # Unallocated leg
+                ShadowTransaction.reason == ShadowTxReason.BUDGET_INFLOW,
+                ShadowTransaction.status.in_(_BALANCE_STATUSES),
+                ShadowTransaction.date >= since,
+            )
+        )
+        result = self._session.execute(query).scalar_one()
+        return Decimal(str(result))
+
     def get_paired_id_for_main_tx(self, main_tx_id: UUID) -> UUID | None:
         """Return the id of the shadow tx paired to ``main_tx_id``, or None.
 
