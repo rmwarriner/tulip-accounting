@@ -17,7 +17,18 @@ from tulip_cli import __version__
 from tulip_cli.commands.accounts import accounts_app
 from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.balance import balance as balance_command
+from tulip_cli.commands.envelopes import envelopes_app
+from tulip_cli.commands.pool_actions import (
+    budget_inflow as budget_inflow_command,
+)
+from tulip_cli.commands.pool_actions import (
+    refill as refill_command,
+)
+from tulip_cli.commands.pool_actions import (
+    transfer as transfer_command,
+)
 from tulip_cli.commands.register import register as register_command
+from tulip_cli.commands.sinking_funds import sinking_funds_app
 from tulip_cli.commands.transactions import add as add_command
 from tulip_cli.commands.transactions import transactions_app
 from tulip_cli.config import Config, load_config
@@ -90,9 +101,14 @@ def ping(ctx: typer.Context) -> None:
 app.command("register")(register_command)
 app.command("balance")(balance_command)
 app.command("add")(add_command)
+app.command("refill")(refill_command)
+app.command("transfer")(transfer_command)
+app.command("budget-inflow")(budget_inflow_command)
 app.add_typer(auth_app, name="auth")
 app.add_typer(accounts_app, name="accounts")
 app.add_typer(transactions_app, name="transactions")
+app.add_typer(envelopes_app, name="envelopes")
+app.add_typer(sinking_funds_app, name="sinking-funds")
 
 
 if __name__ == "__main__":
