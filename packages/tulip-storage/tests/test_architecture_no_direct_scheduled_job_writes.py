@@ -43,6 +43,15 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # First-party handlers — receive ScheduledJob instances from the
         # runner; the type-only import is required for typing.
         "tulip-storage/src/tulip_storage/runner/handlers/envelope_refill.py",
+        # Read-only repository for the API to query schedules. Writes
+        # still go through the Runner (the architecture test's actual
+        # invariant). The class doesn't construct or mutate ScheduledJob
+        # rows — only selects.
+        "tulip-storage/src/tulip_storage/repositories/scheduled_job.py",
+        # API router for refill schedules — TYPE_CHECKING-only import for
+        # the helper function's annotation. Doesn't construct rows;
+        # writes still route through the Runner via runner.schedule_*.
+        "tulip-api/src/tulip_api/routers/refill_schedules.py",
     }
 )
 

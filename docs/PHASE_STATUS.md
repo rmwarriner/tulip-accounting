@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a + P4.3.b
+**Last updated:** 2026-05-02 · `main` @ **Phase 4 complete** (P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a + P4.3.b + P4.3.c)
 
 ---
 
@@ -15,9 +15,10 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 3 (CLI):** ✅ complete — P3.1 through P3.4 + P3.6 shipped; P3.5 (toner-friendly print stylesheet) deferred to Phase 8 alongside the actual reports (#22)
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
-- **Phase 4 (envelopes + sinking funds):** in flight — P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66) shipped 2026-05-02. P4.3 split a/b/c — P4.3.a (scheduler runner primitive per [ADR-0002](adrs/0002-scheduler-primitive.md), closes #7) shipped 2026-05-02 (#68); P4.3.b (refill engine + envelope_refill handler) shipped 2026-05-02 (#69); P4.3.c (API + CLI for refill schedules, #70) queued.
+- **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
+- **Phase 5 (importers + reconciliation):** not started.
 
-**Tests:** 739 passing · **CI:** green on `main`
+**Tests:** 772 passing · **CI:** green on `main`
 
 ---
 
@@ -364,10 +365,27 @@ Closes #69. Sits on top of P4.3.a's runner primitive and P4.1.b's API surface; c
 - **Architecture test** (P4.0's no-direct-shadow-writes) still passes — the handler routes all shadow access through the repo. The P4.3.a no-direct-scheduled-job-writes allowlist gets one new entry for the handler module (it has a TYPE_CHECKING-only `ScheduledJob` import for typing).
 - **Tests**: 26 new (14 engine pure-function tests + 12 handler integration tests covering FIXED_AMOUNT happy path, FILL_TO_AMOUNT with gap and at-target, PERCENTAGE_OF_INCOME with and without inflow, no-rule no-op, inactive-envelope no-op, unknown-envelope error, payload-missing-key error, audit row shape with `actor_kind="system"`, recurring monthly schedule with two fires, full async start/stop pipeline). Project total: **739 passing** (up from 713).
 
-### Phase 4 deferred to later slices
+### P4.3.c — API + CLI surface for refill schedules — ✅ *(2026-05-02)*
 
-- **P4.3.c — API + CLI for refill schedules** (#70).
-- **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author RefillRule structures interactively.
+Closes #70. **Final Phase 4 slice.** Wires the user-facing surface for managing recurring refills on top of the runner primitive (P4.3.a) and the refill handler (P4.3.b).
+
+- **API** — five endpoints in `routers/refill_schedules.py`:
+  - `POST /v1/envelopes/{id}/refill-schedule` — register a recurring auto-refill. Body: `{rrule, start_at}`. Idempotency key = `str(envelope_id)`, so duplicates surface as `refill_schedule.already_exists` (409).
+  - `GET /v1/envelopes/{id}/refill-schedule` — fetch the active schedule, 404 if none.
+  - `DELETE /v1/envelopes/{id}/refill-schedule` — cancel (flips `is_active=false`).
+  - `GET /v1/scheduled-jobs` — admin / ops view, cross-kind list of all active schedules in the household.
+  - `POST /v1/scheduled-jobs/run-due` — admin: force a poll tick for testing + manual catch-up.
+- **CLI** — new `tulip refills` subgroup: `schedule ENVELOPE --rrule … --start …`, `list` (Rich table + `--json`), `show ENVELOPE`, `cancel ENVELOPE [--yes]`, `run-due`. Mirrors the `tulip envelopes` resolver pattern (UUID-or-name, ambiguous-name detection).
+- **New `ScheduledJobRepository`** (read-only) — household-scoped queries: `get`, `get_by_idempotency_key`, `list_active`, `list_runs`. Architecture-test allowlist updated to permit it (writes still route through the runner).
+- **Runner dependency** — `get_runner(request)` resolves `app.state.runner`. The FastAPI lifespan hook attaches it in production; tests' conftest attaches a runner bound to the per-test session factory.
+- **New error codes**: `refill_schedule.not_found` (404), `refill_schedule.envelope_has_no_refill_rule` (400), `refill_schedule.invalid_rrule` (400), `refill_schedule.already_exists` (409). RRULE strings are validated server-side via `python-dateutil`.
+- **Pre-flight checks** at schedule creation: envelope exists + visible, envelope has a `refill_rule`, RRULE parses and yields at least one occurrence at-or-after `start_at`. All three before the runner-side write.
+- **Tests**: 28 new (16 API + 12 CLI E2E). Coverage includes happy paths for every endpoint/verb, every error code, idempotency rejection, cancel-then-show round-trip, JSON passthrough, unauthenticated rejection, and the full `run-due` end-to-end pipeline (envelope → schedule → run-due → balance grew).
+- **Project total**: **772 passing** (up from 739).
+
+### Phase 4 follow-ups
+
+- **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author `RefillRule` structures interactively. (No issue filed; deliberate deferral from P4.2.)
 
 ---
 

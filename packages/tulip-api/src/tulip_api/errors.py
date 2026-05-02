@@ -697,6 +697,79 @@ class PoolTransferSystemPoolForbiddenError(TulipProblem):
         )
 
 
+class RefillScheduleNotFoundError(TulipProblem):
+    """The envelope has no active refill schedule."""
+
+    def __init__(self) -> None:
+        """Build the refill_schedule.not_found problem."""
+        super().__init__(
+            code="refill_schedule.not_found",
+            title="Refill schedule not found",
+            status=404,
+            detail=(
+                "This envelope has no active refill schedule. POST a "
+                "schedule to /v1/envelopes/{id}/refill-schedule first."
+            ),
+        )
+
+
+class RefillScheduleEnvelopeHasNoRefillRuleError(TulipProblem):
+    """Schedule was requested for an envelope without a refill_rule.
+
+    A scheduled refill needs a rule to evaluate at fire time. Set the
+    envelope's ``refill_rule`` via PATCH first, then schedule.
+    """
+
+    def __init__(self) -> None:
+        """Build the refill_schedule.envelope_has_no_refill_rule problem."""
+        super().__init__(
+            code="refill_schedule.envelope_has_no_refill_rule",
+            title="Envelope has no refill rule to schedule",
+            status=400,
+            detail=(
+                "Set the envelope's refill_rule via "
+                "PATCH /v1/envelopes/{id} before scheduling refills."
+            ),
+        )
+
+
+class RefillScheduleInvalidRRuleError(TulipProblem):
+    """The RRULE string couldn't be parsed by python-dateutil."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the refill_schedule.invalid_rrule problem."""
+        super().__init__(
+            code="refill_schedule.invalid_rrule",
+            title="Invalid RRULE",
+            status=400,
+            detail=(
+                f"Could not parse the RRULE string: {reason}. "
+                "Use RFC 5545 syntax, e.g. 'FREQ=MONTHLY;BYMONTHDAY=1'."
+            ),
+        )
+
+
+class RefillScheduleAlreadyExistsError(TulipProblem):
+    """A schedule already exists for this envelope.
+
+    The unique partial index on ``(household_id, kind, idempotency_key)``
+    enforces one schedule per envelope. DELETE the existing one before
+    creating a replacement.
+    """
+
+    def __init__(self) -> None:
+        """Build the refill_schedule.already_exists problem."""
+        super().__init__(
+            code="refill_schedule.already_exists",
+            title="Refill schedule already exists for this envelope",
+            status=409,
+            detail=(
+                "DELETE /v1/envelopes/{id}/refill-schedule first, then "
+                "POST a new schedule. v1 supports one schedule per envelope."
+            ),
+        )
+
+
 class PoolInflowCurrencyUnknownError(TulipProblem):
     """A budget-inflow request named a currency not in ISO 4217."""
 
