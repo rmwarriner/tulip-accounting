@@ -1,0 +1,32 @@
+# Auto-apply `area:*` labels to PRs based on changed paths.
+#
+# Uses `pull_request_target` so the action has write access to apply
+# labels (the standard `pull_request` trigger doesn't on PRs from forks).
+# This is safe because the action only reads paths from the diff and
+# applies labels — it doesn't execute PR code, doesn't run `run:` blocks
+# with PR-controlled input, and doesn't check out the PR's source.
+#
+# Labels and path mapping live in `.github/labeler.yml`. The labels
+# themselves must exist on the repo (created once via `gh label create`)
+# or the action silently skips missing ones.
+
+name: Labeler
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Apply area labels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5

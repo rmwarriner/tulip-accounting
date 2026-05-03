@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest something new or an enhancement to an existing feature.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests should describe the **use case**, not just the proposed solution. "I want to track shared expenses with a roommate without merging households" is more useful than "add expense splitting" — it lets us think about the right shape of the solution.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What are you trying to accomplish? What's the workflow?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach (optional)
+      description: If you have a concrete suggestion, describe it. Otherwise leave blank — discussion may surface a better one.
+
+  - type: textarea
+    id: scope-thoughts
+    attributes:
+      label: Scope considerations
+      description: |
+        How does this fit (or not) with the v1 scope in [`docs/ARCHITECTURE.md` §1.2](../blob/main/docs/ARCHITECTURE.md)? Aware of which phase it might belong to per [`docs/PHASE_STATUS.md`](../blob/main/docs/PHASE_STATUS.md)?

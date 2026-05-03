@@ -1,0 +1,53 @@
+name: Bug report
+description: Something isn't working as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Small details ("worked yesterday", a stack trace, the exact command) often unblock the fix in one round of back-and-forth.
+
+  - type: textarea
+    id: what-you-did
+    attributes:
+      label: What you did
+      description: Minimal commands or steps to reproduce.
+      placeholder: |
+        ```
+        uv run tulip add 'rent' ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Error message, unexpected output, anything you observed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        OS, Python (`python --version`), uv (`uv --version`), Tulip commit (`git rev-parse --short HEAD`).
+      placeholder: |
+        macOS 15.4, Python 3.12.3, uv 0.5.0, commit abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Tulip emits structured JSON logs. Redact any sensitive data before pasting.
+      render: shell
