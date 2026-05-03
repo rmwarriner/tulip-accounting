@@ -197,13 +197,59 @@ jobs:
           uv run pip-audit --skip-editable "${IGNORES[@]}"
 
   # ---------------------------------------------------------------------------
+  # Performance benchmarks — wall-clock budgets on hot ledger paths. Sequential
+  # (pytest-benchmark is incompatible with xdist). The benchmark suite is
+  # excluded from the default test loop via the `not benchmark` marker filter
+  # in `pyproject.toml [tool.pytest.ini_options].addopts`, so this is the only
+  # job that exercises it.
+  # ---------------------------------------------------------------------------
+  benchmarks:
+    name: Performance benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache apt packages (SQLCipher)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-sqlcipher-${{ runner.os }}-v1
+
+      - name: Install SQLCipher headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev sqlcipher
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: Run benchmarks
+        run: |
+          uv run pytest -m benchmark --benchmark-only \
+            --benchmark-json=benchmark-results.json
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: benchmark-results.json
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
   # Single gate to require in branch protection — adding new jobs above does
   # not require updating the branch protection rule, only this `needs:` list.
   # ---------------------------------------------------------------------------
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [lint, type-check, test, secrets-scan, dependency-audit]
+    needs: [lint, type-check, test, secrets-scan, dependency-audit, benchmarks]
     if: always()
     steps:
       - name: Verify all required jobs succeeded
@@ -212,7 +258,8 @@ jobs:
                 "${{ needs.type-check.result }}"       != "success" || \
                 "${{ needs.test.result }}"             != "success" || \
                 "${{ needs.secrets-scan.result }}"     != "success" || \
-                "${{ needs.dependency-audit.result }}" != "success" ]]; then
+                "${{ needs.dependency-audit.result }}" != "success" || \
+                "${{ needs.benchmarks.result }}"       != "success" ]]; then
             echo "::error::One or more required checks failed"
             exit 1
           fi
