@@ -34,6 +34,8 @@ uv run pre-commit install
 uv run pytest                    # confirm green
 ```
 
+A [`justfile`](./justfile) wraps the common workflows so you don't have to remember each `uv run …` invocation. `just` (no args) lists the recipes; `just ci` reproduces locally what CI runs on every PR. The recipes mirror `.github/workflows/ci.yml` and should be kept in sync with it.
+
 SQLCipher development headers are *only* required once full-DB SQLCipher encryption lands (Phase 1.x). The current Phase 1 / Phase 2 codebase uses field-level AES-256-GCM (via the pure-Python `cryptography` library) and needs no native sqlcipher install to develop or test against.
 
 ## Project conventions
@@ -101,7 +103,7 @@ If your change involves a non-trivial architectural decision — choosing betwee
 
 1. Fork the repo and create a feature branch from `main`.
 2. Make your changes following the conventions above. Commit incrementally.
-3. Ensure `uv run pytest`, `uv run ruff check`, `uv run mypy`, and `uv run pre-commit run --all-files` all pass locally.
+3. Ensure `just ci` (or the underlying `uv run pytest`, `uv run ruff check`, `uv run mypy`, and `uv run pre-commit run --all-files`) all pass locally.
 4. Push to your fork and open a PR against `main`.
 5. The PR description should:
    - Reference any related issue(s).
