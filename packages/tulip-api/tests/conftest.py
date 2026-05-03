@@ -48,7 +48,11 @@ def db_url(tmp_path: Path) -> str:
 
 
 @pytest.fixture
-def session_maker(db_url: str) -> sessionmaker[Session]:
+def session_maker(db_url: str) -> Iterator[sessionmaker[Session]]:
+    # Yield + dispose so every test's engine has its connection pool
+    # explicitly closed at teardown. Without this, ~200 API tests each
+    # leave a 5-connection pool open until process exit, exhausting the
+    # macOS 256-fd default soft limit under xdist parallelism. See #90.
     eng = create_engine(db_url, future=True)
 
     @event.listens_for(eng, "connect")
@@ -57,7 +61,10 @@ def session_maker(db_url: str) -> sessionmaker[Session]:
         c.execute("PRAGMA foreign_keys=ON")
         c.close()
 
-    return sessionmaker(eng, expire_on_commit=False)
+    try:
+        yield sessionmaker(eng, expire_on_commit=False)
+    finally:
+        eng.dispose()
 
 
 @pytest.fixture

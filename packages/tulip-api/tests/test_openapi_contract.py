@@ -70,6 +70,7 @@ def _build_app():
     from alembic.config import Config
     from sqlalchemy import create_engine, event
     from sqlalchemy.orm import Session, sessionmaker
+    from sqlalchemy.pool import NullPool
 
     db_path = Path(tempfile.gettempdir()) / f"tulip-schemathesis-{os.getpid()}.db"
     db_path.unlink(missing_ok=True)
@@ -84,7 +85,11 @@ def _build_app():
     )
     upgrade(cfg, "head")
 
-    engine = create_engine(db_url, future=True)
+    # NullPool: this engine lives at module scope (until process exit),
+    # so a normal QueuePool would retain up to 5 connections per xdist
+    # worker for the full test run. NullPool closes each connection
+    # when it's checked back in, eliminating the FD residency. See #90.
+    engine = create_engine(db_url, future=True, poolclass=NullPool)
 
     @event.listens_for(engine, "connect")
     def _enable_fk(dc, _r):  # type: ignore[no-untyped-def]
