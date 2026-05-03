@@ -58,8 +58,10 @@ def _build_app():
     """
     # Per-process DB so the contract test is hermetic — schemathesis
     # generates random inputs and we don't want it to touch any other
-    # test's state. ``tempfile`` ensures the path is unique per run and
-    # respects $TMPDIR rather than hard-coding /tmp.
+    # test's state. The PID suffix makes the path unique per xdist worker;
+    # without it, parallel collection races on the same file and yields
+    # "Different tests were collected between gw0 and gwN" errors.
+    import os
     import tempfile
     from collections.abc import Iterator
     from pathlib import Path
@@ -69,7 +71,7 @@ def _build_app():
     from sqlalchemy import create_engine, event
     from sqlalchemy.orm import Session, sessionmaker
 
-    db_path = Path(tempfile.gettempdir()) / "tulip-schemathesis.db"
+    db_path = Path(tempfile.gettempdir()) / f"tulip-schemathesis-{os.getpid()}.db"
     db_path.unlink(missing_ok=True)
     db_url = f"sqlite:///{db_path}"
 

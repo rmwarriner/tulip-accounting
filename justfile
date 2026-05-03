@@ -28,17 +28,17 @@ precommit-install:
 # Tests
 # ---------------------------------------------------------------------------
 
-# Run the full test suite (matches CI's default loop).
+# Run the full test suite, parallelised via pytest-xdist (matches CI).
 test:
-    uv run pytest
+    uv run pytest -n auto
 
 # Fast loop — skip slow / integration markers for quick local feedback.
 test-fast:
-    uv run pytest -m "not slow and not integration"
+    uv run pytest -n auto -m "not slow and not integration"
 
 # Run tests with coverage and the 85% gate (mirrors CI exactly).
 coverage:
-    uv run pytest \
+    uv run pytest -n auto \
         --cov \
         --cov-report=term \
         --cov-report=html \
