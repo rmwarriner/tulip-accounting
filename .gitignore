@@ -21,6 +21,9 @@ env/
 .pytest_cache/
 .hypothesis/
 
+# Mutation testing scratch dir (mutmut copies the workspace into ./mutants/)
+mutants/
+
 # Coverage
 htmlcov/
 .coverage

@@ -78,6 +78,16 @@ audit:
 bench:
     uv run pytest -m benchmark --benchmark-only
 
+# Run mutation testing on tulip-core. SLOW — expect roughly an hour of
+# wall-clock on a default machine. Don't run this in the inner dev loop;
+# CI fires it weekly via .github/workflows/mutation.yml.
+mutate:
+    uv run mutmut run
+
+# Show mutation testing results (run after `just mutate` completes).
+mutate-results:
+    uv run mutmut results
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------

@@ -1,0 +1,113 @@
+# Tulip Accounting — Mutation testing (weekly)
+#
+# Runs `mutmut` against `tulip-core` to validate that the test suite actually
+# constrains behavior, not just exercises it. The workflow is scheduled weekly
+# (and runnable on demand) rather than per-PR because a full mutation run
+# takes 1-2 hours on a default GitHub runner and would dominate CI minutes.
+#
+# Output goes to (a) a workflow artifact and (b) a comment on the tracking
+# issue (or a new tracking issue if none exists). Surviving mutants don't
+# fail the workflow — they're a maintenance signal, not a release blocker.
+
+name: Mutation testing
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'  # 06:00 UTC every Sunday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  TRACKING_ISSUE_TITLE: "Mutation testing — surviving mutants"
+
+jobs:
+  mutmut:
+    name: mutmut on tulip-core
+    runs-on: ubuntu-latest
+    # Hard cap. A full run on tulip-core (~440 mutants) takes ~1-2h with
+    # `--max-children 4` on a default 4-vCPU runner; bump if/when the
+    # mutated surface grows.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache apt packages (SQLCipher)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-sqlcipher-${{ runner.os }}-v1
+
+      - name: Install SQLCipher headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev sqlcipher
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: latest
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: Run mutmut
+        # Surviving mutants exit non-zero. We don't want that to fail the
+        # job — the goal is to report, not gate.
+        continue-on-error: true
+        run: uv run mutmut run --max-children "$(nproc)"
+
+      - name: Generate report
+        if: always()
+        run: |
+          {
+            echo "## Results"
+            echo ""
+            echo '```'
+            uv run mutmut results || true
+            echo '```'
+            echo ""
+            echo "## CI/CD stats"
+            echo ""
+            echo '```'
+            uv run mutmut export-cicd-stats || true
+            echo '```'
+          } > mutmut-report.md
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutmut-report
+          path: mutmut-report.md
+          if-no-files-found: warn
+
+      - name: Comment on (or open) tracking issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ env.TRACKING_ISSUE_TITLE }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          BODY_FILE=$(mktemp)
+          {
+            echo "Mutation test run: $RUN_URL"
+            echo ""
+            cat mutmut-report.md
+          } > "$BODY_FILE"
+
+          ISSUE_NUM=$(gh issue list --state open --search "in:title \"$TITLE\"" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+
+          if [ -n "${ISSUE_NUM:-}" ]; then
+            echo "Updating existing tracking issue #$ISSUE_NUM."
+            gh issue comment "$ISSUE_NUM" --body-file "$BODY_FILE"
+          else
+            echo "Opening new tracking issue."
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
