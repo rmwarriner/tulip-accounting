@@ -23,6 +23,7 @@ dev = [
     "schemathesis>=3.30",
     "pytest-xdist>=3.8.0",
     "pip-audit>=2.10.0",
+    "pytest-benchmark>=5.2.3",
 ]
 
 # ---------------------------------------------------------------------------
@@ -119,11 +120,12 @@ testpaths = ["packages/tulip-core/tests", "packages/tulip-storage/tests", "packa
 # without colliding with sibling packages' tests/ (mypy module-pattern
 # overrides need the __init__.py; pytest's default 'prepend' mode would
 # load both as 'tests', which raises ImportError).
-addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -m 'not benchmark'"
 markers = [
     "property: hypothesis property-based tests",
     "integration: integration tests (DB / network / spawned process)",
     "slow: slow tests (excluded from the default fast loop)",
+    "benchmark: pytest-benchmark performance baselines (excluded from the default loop; run with `just bench` or `pytest -m benchmark`)",
 ]
 
 # ---------------------------------------------------------------------------

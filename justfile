@@ -73,6 +73,11 @@ precommit:
 audit:
     uv run pip-audit --skip-editable
 
+# Run pytest-benchmark performance baselines (excluded from default test loop).
+# Sequential — pytest-benchmark is incompatible with xdist parallelism.
+bench:
+    uv run pytest -m benchmark --benchmark-only
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
