@@ -8,15 +8,6 @@
 
 set shell := ["bash", "-cu"]
 
-# Raise the file-descriptor soft limit before running pytest. Default macOS
-# soft limit is 256, which is too low for parallel xdist + per-test
-# SQLAlchemy engine pools across 700+ tests; symptom is `OSError: [Errno
-# 24] Too many open files` mid-run. CI Linux runners default to 1024+ and
-# don't need this. The redirect silences the error if the platform's hard
-# limit caps below our request — tests still run with whatever soft limit
-# was in place. See #90 for the underlying engine-disposal cleanup.
-fd_bump := "ulimit -n 8192 2>/dev/null || true"
-
 # Default recipe: list everything available.
 default:
     @just --list
@@ -39,15 +30,15 @@ precommit-install:
 
 # Run the full test suite, parallelised via pytest-xdist (matches CI).
 test:
-    {{fd_bump}}; uv run pytest -n auto
+    uv run pytest -n auto
 
 # Fast loop — skip slow / integration markers for quick local feedback.
 test-fast:
-    {{fd_bump}}; uv run pytest -n auto -m "not slow and not integration"
+    uv run pytest -n auto -m "not slow and not integration"
 
 # Run tests with coverage and the 85% gate (mirrors CI exactly).
 coverage:
-    {{fd_bump}}; uv run pytest -n auto \
+    uv run pytest -n auto \
         --cov \
         --cov-report=term \
         --cov-report=html \
@@ -85,7 +76,7 @@ audit:
 # Run pytest-benchmark performance baselines (excluded from default test loop).
 # Sequential — pytest-benchmark is incompatible with xdist parallelism.
 bench:
-    {{fd_bump}}; uv run pytest -m benchmark --benchmark-only
+    uv run pytest -m benchmark --benchmark-only
 
 # Run mutation testing on tulip-core. SLOW — expect roughly an hour of
 # wall-clock on a default machine. Don't run this in the inner dev loop;
