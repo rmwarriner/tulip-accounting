@@ -32,6 +32,42 @@ env:
 jobs:
 
   # ---------------------------------------------------------------------------
+  # Path-filter — compute which job groups need to run for this PR.
+  #
+  # The expensive jobs (test, benchmarks, dependency-audit, type-check) gate
+  # on these outputs so docs- and tooling-only PRs don't pay full CI runtime.
+  # `lint` and `secrets-scan` always run because they're cheap and catch
+  # regressions in any file (markdown links, accidentally-committed secrets).
+  #
+  # The conditional only applies on `pull_request`; on `push` to `main`
+  # (post-merge) the downstream jobs always run as a final verification gate.
+  # See #92 for the rationale.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      deps: ${{ steps.filter.outputs.deps }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            python:
+              - 'packages/**/*.py'
+              - 'packages/**/*.ini'   # alembic.ini etc.
+              - 'pyproject.toml'
+              - 'uv.lock'
+            deps:
+              - 'pyproject.toml'
+              - 'uv.lock'
+            ci:
+              - '.github/workflows/**'
+
+  # ---------------------------------------------------------------------------
   # Lint & format check (ruff replaces flake8/isort/black with a single fast tool)
   # ---------------------------------------------------------------------------
   lint:
@@ -60,6 +96,8 @@ jobs:
   # ---------------------------------------------------------------------------
   type-check:
     name: Type check (mypy --strict)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -81,6 +119,8 @@ jobs:
   # ---------------------------------------------------------------------------
   test:
     name: Test (pytest + coverage)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -174,6 +214,8 @@ jobs:
   # ---------------------------------------------------------------------------
   dependency-audit:
     name: Dependency audit (pip-audit)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.deps == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -205,6 +247,8 @@ jobs:
   # ---------------------------------------------------------------------------
   benchmarks:
     name: Performance benchmarks
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -249,21 +293,35 @@ jobs:
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [lint, type-check, test, secrets-scan, dependency-audit, benchmarks]
+    needs: [changes, lint, type-check, test, secrets-scan, dependency-audit, benchmarks]
     if: always()
     steps:
-      - name: Verify all required jobs succeeded
+      - name: Verify all required jobs succeeded or were correctly skipped
+        # Conditional jobs (test, benchmarks, etc.) report `skipped` when
+        # their path filter says they didn't need to run. That's a pass.
+        # Only `failure` / `cancelled` should fail this gate.
         run: |
-          if [[ "${{ needs.lint.result }}"             != "success" || \
-                "${{ needs.type-check.result }}"       != "success" || \
-                "${{ needs.test.result }}"             != "success" || \
-                "${{ needs.secrets-scan.result }}"     != "success" || \
-                "${{ needs.dependency-audit.result }}" != "success" || \
-                "${{ needs.benchmarks.result }}"       != "success" ]]; then
-            echo "::error::One or more required checks failed"
-            exit 1
+          fail=0
+          # `changes` itself must succeed — if its outputs are missing the
+          # gated jobs below would skip silently regardless of intent.
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "::error::changes job reported '${{ needs.changes.result }}'"
+            fail=1
           fi
-          echo "All required checks passed."
+          for r in \
+              "${{ needs.lint.result }}" \
+              "${{ needs.type-check.result }}" \
+              "${{ needs.test.result }}" \
+              "${{ needs.secrets-scan.result }}" \
+              "${{ needs.dependency-audit.result }}" \
+              "${{ needs.benchmarks.result }}"; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::Required check reported '$r'"; fail=1 ;;
+            esac
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "All required checks passed (or were correctly skipped)."
 
 # -----------------------------------------------------------------------------
 # Future additions (track via ADR before adding):
