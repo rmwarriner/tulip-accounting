@@ -24,6 +24,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pip-audit>=2.10.0",
     "pytest-benchmark>=5.2.3",
+    "mutmut>=3.5.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -143,4 +144,40 @@ exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "\\.\\.\\.",
+]
+
+# ---------------------------------------------------------------------------
+# Mutation testing — configured for `tulip-core` and `tulip-storage`, the
+# packages where math/posting correctness is load-bearing. The other packages
+# (api, cli, ai, importers, reports) return less leverage per minute of
+# runtime and are excluded from mutation testing for now.
+#
+# Run locally with `just mutate` (slow — minutes to tens of minutes per
+# package); on CI it runs weekly via `.github/workflows/mutation.yml`,
+# never per-PR.
+# ---------------------------------------------------------------------------
+[tool.mutmut]
+paths_to_mutate = [
+    "packages/tulip-core/src/",
+]
+tests_dir = [
+    "packages/tulip-core/tests/",
+]
+# mutmut's built-in `also_copy` defaults look for top-level `tests/`/`test/`
+# dirs; this project's tests live under `packages/<pkg>/tests/`, so the
+# corresponding test directory has to be copied explicitly into the
+# `mutants/` workspace.
+also_copy = [
+    "packages/tulip-core/tests/",
+]
+# `testpaths` in [tool.pytest.ini_options] above lists all seven packages,
+# but mutmut only copies the package being mutated — pytest would error on
+# the missing siblings. Override to just the mutated package's tests.
+# Also exclude the `benchmark` marker (timing-sensitive — irrelevant to
+# mutation testing) and pass `--no-header` for cleaner per-mutant output.
+pytest_add_cli_args = [
+    "--override-ini=testpaths=packages/tulip-core/tests",
+    "-m",
+    "not benchmark",
+    "--no-header",
 ]

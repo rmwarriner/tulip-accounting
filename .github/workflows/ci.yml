@@ -275,9 +275,5 @@ jobs:
 #     imports, tulip-cli does not import tulip-storage, etc.). Add when the
 #     boundary surface is large enough to need automated enforcement (Phase 1+).
 #
-#   - mutation tests (mutmut): scheduled weekly run on tulip-core to find
-#     tests that don't actually constrain behavior. Add as a scheduled workflow,
-#     not a per-PR check.
-#
 #   - container image build & scan: when the Dockerfile lands in Phase 8.
 # -----------------------------------------------------------------------------
