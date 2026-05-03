@@ -22,6 +22,10 @@ Good bug reports are gold. A good one includes:
 
 Feature requests should include the use case, not just the proposed solution. "I want to track shared expenses with a roommate without merging households" is more useful than "add expense splitting" because it lets us think about the right shape of the solution.
 
+GitHub form templates are wired up for both kinds of report — the [issue picker](../../issues/new/choose) presents structured forms covering the fields above so you don't have to remember them.
+
+**Security-relevant findings do not go through the normal issue tracker.** See [`SECURITY.md`](SECURITY.md) for the private-advisory channel.
+
 ## Setting up a development environment
 
 See [README.md](README.md) for the standard setup. The short version:
@@ -35,6 +39,14 @@ uv run pytest                    # confirm green
 ```
 
 A [`justfile`](./justfile) wraps the common workflows so you don't have to remember each `uv run …` invocation. `just` (no args) lists the recipes; `just ci` reproduces locally what CI runs on every PR. The recipes mirror `.github/workflows/ci.yml` and should be kept in sync with it.
+
+Recipes worth knowing beyond `just ci`:
+
+- `just bench` — pytest-benchmark performance baselines on hot ledger paths (sequential; xdist-incompatible). Excluded from the default loop.
+- `just audit` — `pip-audit --skip-editable` against the resolved env; flags any installed third-party package with a known PyPA advisory.
+- `just mutate` — `mutmut` against `tulip-core` (slow, ~1-2h locally; CI runs it weekly via `.github/workflows/mutation.yml`). See [ADR-0003](docs/adrs/0003-mutation-testing.md) for the cadence rationale.
+
+The repo's [`.vscode/`](.vscode/) directory is committed: opening the workspace and accepting the recommended-extensions prompt gives you ruff-on-save, mypy-in-editor, pytest discovery, and three debug launch configs without any per-machine setup.
 
 SQLCipher development headers are *only* required once full-DB SQLCipher encryption lands (Phase 1.x). The current Phase 1 / Phase 2 codebase uses field-level AES-256-GCM (via the pure-Python `cryptography` library) and needs no native sqlcipher install to develop or test against.
 
@@ -72,6 +84,25 @@ Always `decimal.Decimal`. Always paired with a currency in the `Money` value obj
 
 When dividing money (e.g., splitting a bill three ways), be explicit about the rounding mode and the residual. Tulip uses banker's rounding (`ROUND_HALF_EVEN`) and assigns any residual cent to a designated party (typically the first posting). Look at `tulip_core.money.split` for the canonical pattern.
 
+### Test fixture hygiene
+
+Fixtures that create a SQLAlchemy `Engine` must dispose it on teardown. Use the yielding pattern:
+
+```python
+@pytest.fixture
+def session_maker(db_url: str) -> Iterator[sessionmaker[Session]]:
+    eng = create_engine(db_url, future=True)
+    # ... event listeners, etc. ...
+    try:
+        yield sessionmaker(eng, expire_on_commit=False)
+    finally:
+        eng.dispose()
+```
+
+For module-level engines that can't easily yield (the OpenAPI contract test is the only example today), pass `poolclass=NullPool` so connections close on check-in instead of pooling.
+
+Without this, the connection pool retains FDs until process exit. Under xdist parallelism on macOS this exhausts the default 256-fd limit mid-suite and produces `OSError: [Errno 24] Too many open files` — see [#90](../../issues/90) for the postmortem.
+
 ### Code style
 
 - Linting and formatting: **ruff** (no debate, no manual formatting). Pre-commit runs it; CI checks it.
@@ -105,8 +136,8 @@ If your change involves a non-trivial architectural decision — choosing betwee
 2. Make your changes following the conventions above. Commit incrementally.
 3. Ensure `just ci` (or the underlying `uv run pytest`, `uv run ruff check`, `uv run mypy`, and `uv run pre-commit run --all-files`) all pass locally.
 4. Push to your fork and open a PR against `main`.
-5. The PR description should:
-   - Reference any related issue(s).
+5. The PR description should follow [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), which is pre-populated when you open a PR through the GitHub UI:
+   - Reference any related issue(s) (`Closes #N` or `Follow-up: #N`).
    - Briefly explain the change and the rationale.
    - Note any user-visible impact.
    - Confirm that tests were written first (the TDD rule).
