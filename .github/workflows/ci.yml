@@ -85,6 +85,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Cache apt packages (SQLCipher)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-sqlcipher-${{ runner.os }}-v1
+
       - name: Install SQLCipher headers
         # tulip-storage links against SQLCipher; required for storage tests.
         # On the macOS/Windows side, contributors install locally; CI is Linux-only.
@@ -104,8 +110,10 @@ jobs:
       - name: Run tests with coverage
         # --cov-fail-under enforces the project floor declared in README.md.
         # Bump this number as coverage improves; never lower it without an ADR.
+        # `-n auto` parallelises test execution across CPU cores via
+        # pytest-xdist; pytest-cov handles coverage aggregation across workers.
         run: |
-          uv run pytest \
+          uv run pytest -n auto \
             --cov \
             --cov-report=term \
             --cov-report=xml \
@@ -122,7 +130,9 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload coverage HTML report
-        if: always()
+        # HTML report is for human inspection on `main` post-merge; PR runs
+        # don't need to upload it (saves ~10-20s and a few MB per PR run).
+        if: always() && github.event_name == 'push'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-html
