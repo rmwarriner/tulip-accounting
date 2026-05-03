@@ -1,0 +1,78 @@
+{
+  // Team-shared VS Code settings for the tulip-accounting workspace.
+  //
+  // Goal: opening this repo and accepting the recommended extensions
+  // (.vscode/extensions.json) gives the same lint / format / type-check
+  // loop that `just ci` runs, without per-contributor setup. Anything
+  // user-specific belongs in your local settings, not here.
+
+  // ---- Python interpreter --------------------------------------------------
+  // Point at the uv-managed venv so pytest/mypy/ruff resolve from there.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.terminal.activateEnvInCurrentTerminal": true,
+
+  // ---- Pytest -------------------------------------------------------------
+  // Match the markers configured in pyproject.toml. The `not benchmark`
+  // selector mirrors the default loop — benchmarks are run via `just bench`.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "-m",
+    "not benchmark"
+  ],
+
+  // ---- Type checking: mypy --strict, not Pylance --------------------------
+  // Pylance handles completion / navigation / symbol search. Type checking
+  // is delegated to the mypy extension so the editor matches CI's mypy --strict.
+  "python.analysis.typeCheckingMode": "off",
+  "mypy-type-checker.preferDaemon": true,
+
+  // ---- Ruff: format on save + organize imports ----------------------------
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    },
+    "editor.rulers": [100]
+  },
+
+  // ---- Other file types ---------------------------------------------------
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  },
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  },
+
+  // GitHub Actions schema for workflow yaml — gives autocomplete and
+  // catches typos in `if:` / `needs:` / `on:` keys.
+  "yaml.schemas": {
+    "https://json.schemastore.org/github-workflow.json": ".github/workflows/*.yml"
+  },
+
+  // ---- Search / file tree noise -------------------------------------------
+  // Hide tooling artefacts from the file explorer and search. These are
+  // rebuilt on demand and you don't want to grep through them.
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/.hypothesis": true,
+    "**/htmlcov": true,
+    "**/*.egg-info": true,
+    "**/mutants": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/uv.lock": true,
+    "**/htmlcov": true,
+    "**/mutants": true,
+    "**/.benchmarks": true
+  }
+}

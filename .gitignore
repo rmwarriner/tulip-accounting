@@ -43,7 +43,14 @@ junit.xml
 *.sqlite3
 
 # IDE / editor
-.vscode/
+# Team-shared VS Code config (extensions, workspace settings, debug
+# launch configs) is committed; everything else under .vscode/ is
+# user-local. Add new shared files to the whitelist.
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 *.swp
 *.swo

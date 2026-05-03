@@ -1,0 +1,23 @@
+{
+  "// ": "Extensions VS Code recommends when this workspace opens. Each one matches a tool already in the project's CI / pre-commit / justfile, so accepting them gives the same lint/format/type-check loop as `just ci` directly in the editor.",
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-python.mypy-type-checker",
+    "tamasfe.even-better-toml",
+    "redhat.vscode-yaml",
+    "editorconfig.editorconfig",
+    "github.vscode-github-actions",
+    "nefrob.vscode-just-syntax",
+    "yzhang.markdown-all-in-one"
+  ],
+  "// unwantedRecommendations": "Tools that overlap with or contradict the project's toolchain. Ruff replaces all of these, so suggesting them would be misleading.",
+  "unwantedRecommendations": [
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.flake8",
+    "ms-python.pylint",
+    "ms-python.autopep8"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  // Debug entry points. Each one matches a workflow developers actually
+  // run; if you find yourself debugging the same scenario three times
+  // through Run Without Debugging, add a config here.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "${file}",
+        "-vv",
+        "-x"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Pytest: full default loop",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-vv",
+        "-m",
+        "not benchmark"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Tulip API (uvicorn, dev)",
+      // Test-only secrets — never use these against a real database.
+      // Same values the CLI integration tests use for live_api.
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "tulip_api.main:create_app",
+        "--factory",
+        "--reload",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--log-level",
+        "debug"
+      ],
+      "env": {
+        "TULIP_DATABASE_URL": "sqlite:///${workspaceFolder}/tulip-dev.db",
+        "TULIP_JWT_SECRET": "dev-secret-32bytes-dev-secret!!!",
+        "TULIP_MASTER_KEY": "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
