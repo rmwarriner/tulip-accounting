@@ -1,0 +1,22 @@
+# Default to LF line endings for all text files. Git's default `autocrlf`
+# setting can cause spurious diffs on Windows; pinning here defends against
+# it without requiring per-contributor git config.
+* text=auto eol=lf
+
+# Lock files: generated, large diffs are noise rather than signal.
+# `linguist-generated` hides them from PR diffs by default and keeps them
+# out of language statistics on the repo page.
+uv.lock              linguist-generated=true
+package-lock.json    linguist-generated=true
+
+# Treat as binary so Git doesn't attempt line-ending or diff manipulation.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.pdf    binary
+*.db     binary
+*.sqlite binary
+*.sqlite3 binary
+*.zip    binary
+*.tar.gz binary

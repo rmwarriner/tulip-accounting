@@ -1,0 +1,63 @@
+# actions/labeler@v5 config — auto-applies area labels to PRs based on
+# changed paths. The label values must exist on the repo (created via
+# `gh label create`) before the action will apply them; missing labels
+# are silently skipped.
+#
+# Keep this file in sync with #92's path-conditional CI filters
+# (`.github/workflows/ci.yml` `changes` job) — same path → same area.
+
+"area:core":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-core/**'
+
+"area:storage":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-storage/**'
+
+"area:api":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-api/**'
+
+"area:cli":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-cli/**'
+
+"area:ai":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-ai/**'
+
+"area:importers":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-importers/**'
+
+"area:reports":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-reports/**'
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/labeler.yml'
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - '*.md'
+          - 'CLAUDE.md'
+
+"area:tooling":
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'justfile'
+          - 'pyproject.toml'
+          - 'uv.lock'
+          - '.vscode/**'
+          - '.mcp.json'
+          - '.gitignore'
+          - '.gitattributes'
+          - '.editorconfig'
+          - '.pre-commit-config.yaml'
+          - '.github/PULL_REQUEST_TEMPLATE.md'
+          - '.github/ISSUE_TEMPLATE/**'
