@@ -69,9 +69,13 @@ typecheck:
 precommit:
     uv run pre-commit run --all-files
 
+# Audit installed third-party deps for known CVEs (mirrors CI).
+audit:
+    uv run pip-audit --skip-editable
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
 
 # Run every check CI runs, in roughly the same order. Use before pushing.
-ci: lint format-check typecheck coverage
+ci: lint format-check typecheck coverage audit

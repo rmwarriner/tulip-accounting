@@ -168,21 +168,51 @@ jobs:
           args: detect --source=/github/workspace --redact --verbose --no-banner
 
   # ---------------------------------------------------------------------------
+  # Dependency audit — fails the build if any non-editable installed package
+  # has a known CVE in the PyPA Advisory Database. Editable workspace packages
+  # (tulip-*) are skipped because they aren't on PyPI.
+  # ---------------------------------------------------------------------------
+  dependency-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: Run pip-audit
+        # Add `--ignore-vuln GHSA-xxxx-xxxx-xxxx` entries below ONLY with a
+        # comment explaining why the advisory is not exploitable in our usage.
+        # Each entry should reference an issue tracking the upstream fix.
+        run: |
+          IGNORES=()
+          # IGNORES+=(--ignore-vuln GHSA-xxxx-xxxx-xxxx)  # reason + tracking issue
+          uv run pip-audit --skip-editable "${IGNORES[@]}"
+
+  # ---------------------------------------------------------------------------
   # Single gate to require in branch protection — adding new jobs above does
   # not require updating the branch protection rule, only this `needs:` list.
   # ---------------------------------------------------------------------------
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [lint, type-check, test, secrets-scan]
+    needs: [lint, type-check, test, secrets-scan, dependency-audit]
     if: always()
     steps:
       - name: Verify all required jobs succeeded
         run: |
-          if [[ "${{ needs.lint.result }}"          != "success" || \
-                "${{ needs.type-check.result }}"    != "success" || \
-                "${{ needs.test.result }}"          != "success" || \
-                "${{ needs.secrets-scan.result }}"  != "success" ]]; then
+          if [[ "${{ needs.lint.result }}"             != "success" || \
+                "${{ needs.type-check.result }}"       != "success" || \
+                "${{ needs.test.result }}"             != "success" || \
+                "${{ needs.secrets-scan.result }}"     != "success" || \
+                "${{ needs.dependency-audit.result }}" != "success" ]]; then
             echo "::error::One or more required checks failed"
             exit 1
           fi
@@ -201,9 +231,6 @@ jobs:
 #   - mutation tests (mutmut): scheduled weekly run on tulip-core to find
 #     tests that don't actually constrain behavior. Add as a scheduled workflow,
 #     not a per-PR check.
-#
-#   - dependency audit (pip-audit / uv tree --audit equivalent): scheduled
-#     weekly to flag known-CVE dependencies.
 #
 #   - container image build & scan: when the Dockerfile lands in Phase 8.
 # -----------------------------------------------------------------------------
