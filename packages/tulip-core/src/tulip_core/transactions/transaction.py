@@ -46,9 +46,10 @@ class Transaction:
     status: TransactionStatus
     reference: str | None = field(default=None)
     created_by_user_id: UUID | None = field(default=None)
+    voided_by_transaction_id: UUID | None = field(default=None)
 
     def __post_init__(self) -> None:
-        """Validate posting count and balance (when status requires it)."""
+        """Validate posting count, balance, and void-link / status coherence."""
         if len(self.postings) < 2:
             raise ValueError(
                 f"transaction must have at least two postings, got {len(self.postings)}"
@@ -58,6 +59,8 @@ class Transaction:
             unbalanced = {ccy: bal for ccy, bal in balances.items() if bal != 0}
             if unbalanced:
                 raise ValueError(f"transaction does not balance per currency: {unbalanced}")
+        if self.status is TransactionStatus.PENDING and self.voided_by_transaction_id is not None:
+            raise ValueError("PENDING transactions cannot be voided; use hard delete")
 
     def balance_per_currency(self) -> dict[str, Decimal]:
         """Return a {currency: net amount} dict over all postings."""

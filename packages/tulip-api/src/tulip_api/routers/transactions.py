@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from datetime import date as date_type
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -19,8 +20,12 @@ from tulip_api.errors import (
     PoolInvalidAccountTypePairingError,
     PoolNotFoundError,
     ShadowLedgerInternalError,
+    TransactionAlreadyVoidedError,
     TransactionInvalidError,
+    TransactionNotDeletableError,
+    TransactionNotEditableError,
     TransactionNotFoundError,
+    TransactionNotVoidableError,
     TransactionUnbalancedError,
     problem_response,
 )
@@ -28,11 +33,15 @@ from tulip_api.schemas.transaction import (
     PostingRead,
     TransactionCreate,
     TransactionRead,
+    TransactionUpdate,
+    TransactionVoidRequest,
+    TransactionVoidResponse,
 )
 from tulip_core.account import AccountType as DomainAccountType
 from tulip_core.accounting import (
     ClosedPeriodError,
     UnbalancedTransactionError,
+    build_reversal,
     post_transaction,
 )
 from tulip_core.allocation import (
@@ -62,6 +71,12 @@ from tulip_storage.repositories import (
     PeriodRepository,
     ShadowTransactionRepository,
     TransactionRepository,
+)
+from tulip_storage.repositories.transaction import (
+    TransactionNotDeletableError as RepoNotDeletableError,
+)
+from tulip_storage.repositories.transaction import (
+    TransactionNotEditableError as RepoNotEditableError,
 )
 
 if TYPE_CHECKING:
@@ -256,6 +271,137 @@ def create_transaction(
     )
 
 
+@router.post(
+    "/{tx_id}/void",
+    response_model=TransactionVoidResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response("period.closed", "transaction.unbalanced"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.already_voided", "transaction.not_voidable"),
+        422: problem_response("validation.failed"),
+    },
+)
+def void_transaction(
+    tx_id: UUID,
+    body: TransactionVoidRequest,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionVoidResponse:
+    """Post a sibling reversal that voids ``tx_id``.
+
+    The reversal is a normal POSTED transaction with sign-flipped postings.
+    Its ``date`` (defaulting to today) is checked against open periods —
+    the source's period being closed is fine because the reversal lives in
+    a different (open) period (per ADR-0004 §"What P5.0 ships").
+
+    When the source carries a paired shadow tx (ADR-0001), the shadow tx
+    is auto-voided (status flip to ``voided``) in the same atomic commit.
+    Pool balances auto-correct because the shadow-balance query excludes
+    voided shadow txs.
+    """
+    tx_repo = TransactionRepository(session, claims.household_id)
+    source_storage = tx_repo.get(tx_id)
+    if source_storage is None:
+        raise TransactionNotFoundError()
+    if source_storage.voided_by_transaction_id is not None:
+        raise TransactionAlreadyVoidedError(
+            voided_by_transaction_id=str(source_storage.voided_by_transaction_id)
+        )
+    if source_storage.status not in (
+        StorageTxStatus.POSTED,
+        StorageTxStatus.RECONCILED,
+    ):
+        raise TransactionNotVoidableError(status=source_storage.status.value)
+
+    # Reconstitute source as a domain Transaction so build_reversal can
+    # sign-flip its postings cleanly.
+    source_postings = tx_repo.list_postings(tx_id)
+    source_domain = DomainTransaction(
+        id=source_storage.id,
+        household_id=source_storage.household_id,
+        date=source_storage.date,
+        description=source_storage.description,
+        reference=source_storage.reference,
+        postings=tuple(
+            DomainPosting(
+                id=p.id,
+                account_id=p.account_id,
+                amount=Money(p.amount, p.currency),
+                memo=p.memo,
+                pool_id=p.pool_id,
+            )
+            for p in source_postings
+        ),
+        status=DomainTxStatus(source_storage.status.value),
+        created_by_user_id=source_storage.created_by_user_id,
+    )
+
+    reversal_date = body.reversal_date or date_type.today()
+    reversal_pending = build_reversal(
+        source_domain,
+        reversal_id=uuid4(),
+        reversal_date=reversal_date,
+        description=f"Reversal of {source_domain.description}: {body.reason}",
+        actor_user_id=claims.user_id,
+    )
+
+    period_repo = PeriodRepository(session, claims.household_id)
+    candidate_periods = _domain_periods(period_repo)
+    try:
+        reversal_posted = post_transaction(reversal_pending, periods=candidate_periods)
+    except ClosedPeriodError as exc:
+        raise PeriodClosedError(reason=str(exc)) from exc
+    except UnbalancedTransactionError as exc:  # defense in depth
+        raise TransactionUnbalancedError(
+            reason=f"Reversal failed to balance (Tulip bug): {exc}"
+        ) from exc
+
+    voided_at = datetime.now(tz=UTC)
+    tx_repo.persist_reversal(tx_id, reversal_posted, voided_at=voided_at)
+
+    # Option (c): if the source had a paired shadow tx, auto-void it in
+    # the same commit. Status flip → balance_for_pool auto-corrects.
+    shadow_repo = ShadowTransactionRepository(session, claims.household_id)
+    paired_shadow_tx_id = shadow_repo.get_paired_id_for_main_tx(tx_id)
+    if paired_shadow_tx_id is not None:
+        shadow_repo.void(paired_shadow_tx_id, voided_at=voided_at)
+
+    audit_after: dict[str, str] = {
+        "reversal_id": str(reversal_posted.id),
+        "reason": body.reason,
+        "reversal_date": reversal_date.isoformat(),
+    }
+    if paired_shadow_tx_id is not None:
+        audit_after["paired_shadow_tx_id_voided"] = str(paired_shadow_tx_id)
+    AuditLogWriter(session, claims.household_id).write(
+        action="void",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before={"voided_by_transaction_id": None},
+        after=audit_after,
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "transaction.voided",
+        source_id=str(tx_id),
+        reversal_id=str(reversal_posted.id),
+        paired_shadow_tx_id_voided=(str(paired_shadow_tx_id) if paired_shadow_tx_id else None),
+    )
+    return TransactionVoidResponse(
+        source_id=tx_id,
+        reversal_id=reversal_posted.id,
+        voided_at=voided_at,
+        paired_shadow_tx_id_voided=paired_shadow_tx_id,
+    )
+
+
 @router.get(
     "/{tx_id}",
     response_model=TransactionRead,
@@ -274,6 +420,147 @@ def get_transaction(
     if repo.get(tx_id) is None:
         raise TransactionNotFoundError()
     return _read_response(tx_id, claims.household_id, session)
+
+
+@router.patch(
+    "/{tx_id}",
+    response_model=TransactionRead,
+    responses={
+        400: problem_response("account.unknown"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.not_editable"),
+        422: problem_response("validation.failed"),
+    },
+)
+def patch_transaction(
+    tx_id: UUID,
+    body: TransactionUpdate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionRead:
+    """Edit a PENDING transaction. POSTED / RECONCILED return 409."""
+    tx_repo = TransactionRepository(session, claims.household_id)
+    existing = tx_repo.get(tx_id)
+    if existing is None:
+        raise TransactionNotFoundError()
+
+    # Merge body into existing values; PATCH semantics — fields omitted from
+    # the body keep their current value.
+    new_date = body.date if body.date is not None else existing.date
+    new_desc = body.description if body.description is not None else existing.description
+    new_ref = body.reference if body.reference is not None else existing.reference
+
+    if body.postings is not None:
+        # Validate account refs before delegating to the repo.
+        accounts_repo = AccountRepository(session, claims.household_id)
+        for p in body.postings:
+            if accounts_repo.get(p.account_id) is None:
+                raise AccountUnknownError(account_id=str(p.account_id))
+        new_postings: tuple[DomainPosting, ...] = tuple(
+            DomainPosting(
+                id=uuid4(),
+                account_id=p.account_id,
+                amount=Money(p.amount, p.currency),
+                memo=p.memo,
+                pool_id=p.pool_id,
+            )
+            for p in body.postings
+        )
+    else:
+        existing_postings = tx_repo.list_postings(tx_id)
+        new_postings = tuple(
+            DomainPosting(
+                id=p.id,
+                account_id=p.account_id,
+                amount=Money(p.amount, p.currency),
+                memo=p.memo,
+                pool_id=p.pool_id,
+            )
+            for p in existing_postings
+        )
+
+    before_snapshot = {
+        "date": existing.date.isoformat(),
+        "description": existing.description,
+        "reference": existing.reference,
+    }
+    try:
+        tx_repo.update_pending(
+            tx_id,
+            date=new_date,
+            description=new_desc,
+            reference=new_ref,
+            postings=new_postings,
+        )
+    except RepoNotEditableError as exc:
+        raise TransactionNotEditableError() from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="update",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before=before_snapshot,
+        after={
+            "date": new_date.isoformat(),
+            "description": new_desc,
+            "reference": new_ref,
+        },
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info("transaction.updated", tx_id=str(tx_id))
+    return _read_response(tx_id, claims.household_id, session)
+
+
+@router.delete(
+    "/{tx_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.not_deletable"),
+    },
+)
+def delete_transaction(
+    tx_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Hard-delete a PENDING transaction. POSTED / RECONCILED return 409."""
+    tx_repo = TransactionRepository(session, claims.household_id)
+    existing = tx_repo.get(tx_id)
+    if existing is None:
+        raise TransactionNotFoundError()
+
+    before_snapshot = {
+        "date": existing.date.isoformat(),
+        "description": existing.description,
+        "reference": existing.reference,
+        "status": existing.status.value,
+    }
+    try:
+        tx_repo.delete_pending(tx_id)
+    except RepoNotDeletableError as exc:
+        raise TransactionNotDeletableError() from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="delete",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before=before_snapshot,
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info("transaction.deleted", tx_id=str(tx_id))
 
 
 @router.get(
@@ -386,6 +673,8 @@ def _read_response(
             for p in postings
         ],
         paired_shadow_tx_id=paired_shadow_tx_id,
+        voided_by_transaction_id=header.voided_by_transaction_id,
+        voided_at=header.voided_at,
     )
 
 

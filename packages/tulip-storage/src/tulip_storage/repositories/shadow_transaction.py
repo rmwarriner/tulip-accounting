@@ -42,6 +42,10 @@ _DOMAIN_TO_STORAGE_STATUS: dict[str, ShadowTxStatus] = {
 _BALANCE_STATUSES = (ShadowTxStatus.POSTED,)
 
 
+class ShadowTxNotVoidableError(ValueError):
+    """Raised when a shadow tx is not in a voidable state (i.e. PENDING)."""
+
+
 class ShadowTransactionRepository:
     """Persists shadow transactions and queries pool balances, scoped to a household."""
 
@@ -164,6 +168,52 @@ class ShadowTransactionRepository:
             query = query.where(ShadowTransaction.date <= as_of)
         rows = self._session.execute(query).all()
         return {ccy: Decimal(str(bal)) for ccy, bal in rows}
+
+    def void(self, shadow_tx_id: UUID, *, voided_at: datetime) -> ShadowTransaction:
+        """Flip a POSTED shadow transaction's status to VOIDED.
+
+        Voided shadow transactions are excluded from ``balance_for_pool`` and
+        ``inflow_since`` so pool balances auto-correct. Idempotent on
+        already-voided rows. Used by the main-tx void chokepoint (ADR-0004
+        §P5.0) to keep the shadow ledger consistent when a pool-tagged main
+        tx is voided.
+
+        The shadow ledger has no period concept and balances are derived,
+        so a status flip is sufficient — no sibling reversal needed. The
+        ``voided_by_shadow_tx_id`` column stays NULL for this path; it's
+        reserved for a future shadow-internal void-via-sibling pattern that
+        we don't need today.
+
+        Raises:
+            LookupError: shadow tx not found in this household.
+            ShadowTxNotVoidableError: shadow tx is PENDING (work-in-progress).
+
+        """
+        existing = self.get(shadow_tx_id)
+        if existing is None:
+            raise LookupError(
+                f"shadow_transaction {shadow_tx_id} not found in household {self._household_id}"
+            )
+        if existing.status is ShadowTxStatus.VOIDED:
+            return existing  # idempotent no-op
+        if existing.status is not ShadowTxStatus.POSTED:
+            raise ShadowTxNotVoidableError(
+                f"shadow_transaction {shadow_tx_id} is {existing.status.value}; "
+                "only POSTED shadow transactions may be voided"
+            )
+        self._session.execute(
+            update(ShadowTransaction)
+            .where(
+                ShadowTransaction.household_id == self._household_id,
+                ShadowTransaction.id == shadow_tx_id,
+            )
+            .values(status=ShadowTxStatus.VOIDED.value, voided_at=voided_at)
+        )
+        # Refresh in-session.
+        self._session.expire(existing)
+        loaded = self.get(shadow_tx_id)
+        assert loaded is not None  # noqa: S101 - just updated above
+        return loaded
 
     def save_balanced(self, domain_tx: DomainShadowTx) -> ShadowTransaction:
         """Persist a balanced domain ShadowTransaction.

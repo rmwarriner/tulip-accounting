@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-04 · `main` @ **Phase 5 kickoff** ([ADR-0004](adrs/0004-reconciliation.md) proposed; no Phase 5 code yet)
+**Last updated:** 2026-05-04 · `main` @ **P5.0 in flight** ([ADR-0004](adrs/0004-reconciliation.md) merged; first implementation slice on transaction void + PENDING-only edit)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — design only. [ADR-0004](adrs/0004-reconciliation.md) (Proposed, 2026-05-04) settles the nine open questions from #101; closes the design phase before any code lands. P5.0 = #55 (transaction void + PENDING-only edit) is the first implementation slice.
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (transaction void + PENDING-only edit, #55) implemented per [ADR-0004](adrs/0004-reconciliation.md). 829 tests passing locally. Next: P5.1 (schema + storage layer for `attachments` / `import_batches` / `reconciliations`).
 
-**Tests:** 772 passing · **CI:** green on `main`
+**Tests:** 829 passing · **CI:** green on `main`
 
 ---
 
@@ -397,13 +397,27 @@ Umbrella issue: #74. Per [ADR-0004](adrs/0004-reconciliation.md). Phase 5 adds s
 
 Closes #101. Pre-code design doc — no implementation lands until reviewed. Settles the nine open questions: match candidates (account + exact amount + ±3 day window + not-already-reconciled); confidence buckets (`high` / `medium` / `low`, rule-based, `rapidfuzz`); partial / split matches via M:N `reconciliation_matches`; manual override on the same row with NULL confidence; unmatched inbox with three actions per side; idempotency on raw-file SHA-256; hybrid state model (separate `reconciliations` table is truth, denorm columns on `transactions`); `StatementLine` common-denominator dataclass in `tulip-core`; three-layer audit (audit_log + match provenance + encrypted file attachment).
 
-### P5.0 — Transaction void / PENDING-only edit — queued (#55)
+### P5.0 — Transaction void / PENDING-only edit — ✅ *(2026-05-04)*
 
-First implementation slice. Adds `transactions.voided_by_transaction_id`, `voided_at`. API: `POST /v1/transactions/{id}/void`, `PATCH /v1/transactions/{id}` (PENDING-only), `DELETE /v1/transactions/{id}` (PENDING-only). CLI: `tulip transactions {edit,void,delete}`. Prerequisite for every later slice's revert / un-reconcile / cleanup paths.
+Closes #55. First Phase 5 implementation slice; prerequisite for every later slice's revert / un-reconcile / cleanup paths.
 
-### P5.1 — P5.4 — queued
+- **Migration** (`e7d2a4f8c1b9`): adds `transactions.voided_by_transaction_id` (composite self-FK with `use_alter=True`) + `voided_at` timestamp. Reuses the trigger drop-and-recreate dance from P4.0's `a3f4d8e91b22` because the main-ledger balance triggers reference `transactions` by name.
+- **Domain layer**: `Transaction` value object learns optional `voided_by_transaction_id`; `__post_init__` rejects the impossible `PENDING + voided_by` state. New `tulip_core.accounting.build_reversal()` helper produces a sign-flipped PENDING reversal sibling; the API handler runs `post_transaction(reversal, periods)` to gate against open periods on the **reversal date**, not the source's date (the void's *own* date is what's checked, per ADR-0004).
+- **Storage repos**: `TransactionRepository` learns `persist_reversal`, `update_pending`, `delete_pending` with typed exceptions (`TransactionAlreadyVoidedError`, `TransactionNotVoidableError`, `TransactionNotEditableError`, `TransactionNotDeletableError`). `ShadowTransactionRepository` learns a `void` chokepoint that flips status `posted → voided` (idempotent on already-voided; rejects PENDING).
+- **API**: three new verbs on `/v1/transactions/{id}`. `POST /void` builds the reversal, persists it, and atomically auto-voids the paired shadow tx if any (option (c) — main-side reversal sibling, shadow-side status flip; balance auto-corrects since `balance_for_pool` already excludes voided shadow txs). `PATCH` and `DELETE` are PENDING-only; POSTED / RECONCILED return 409.
+- **New error codes**: `transaction.not_editable` (409), `transaction.not_deletable` (409), `transaction.already_voided` (409, with `voided_by_transaction_id` extension), `transaction.not_voidable` (409, with `status` extension).
+- **CLI**: new `tulip transactions {void, delete, edit}`. `void` takes `--reason` + optional `--date` + `--yes`; renders "Voided X; reversal posted as Y" and a one-liner when a paired shadow tx was auto-voided. `edit` reuses the `--edit` editor flow from #43, rendering the existing tx into hledger format and PATCH'ing on save.
+- **Audit log**: one row per user action (`transaction_void`, `transaction_update`, `transaction_delete`); `paired_shadow_tx_id_voided` extends the void row's `after_snapshot` when applicable, mirroring P4.1.a's pattern.
+- **Architecture test**: `test_architecture_no_direct_void_link_writes.py` AST scan rejects writes to `transactions.voided_by_transaction_id` outside `TransactionRepository.persist_reversal`, mirroring P4.0's shadow-write guard.
+- **Tests**: 57 new (4 core, 16 storage, 15 API, 8 CLI E2E + arch tests). Project total: **829 passing** (up from 772).
 
-Per ADR-0004 § slice ordering. P5.1 ships schema + storage layer + architecture-test guards; P5.2.{a,b,c} ship the three importers in parallel; P5.3 ships the matcher + categorizer DI seam; P5.4 closes Phase 5 with the API + CLI surface.
+### P5.1 — Schema + storage layer for imports + reconciliations — queued
+
+Per ADR-0004 § slice ordering. Adds `attachments`, `attachment_links`, `import_batches`, `statement_lines`, `reconciliations`, `reconciliation_matches`, `csv_profiles` tables + the §4.1-sketched columns on `transactions` (`cleared_at`, `reconciled_at`, `reconciliation_id`, `imported_from_id`, `carried_forward_from_reconciliation_id`). Architecture-test guards mirror the void-link guard added in P5.0.
+
+### P5.2 — P5.4 — queued
+
+P5.2.{a,b,c} ship the three importers in parallel; P5.3 ships the matcher + categorizer DI seam; P5.4 closes Phase 5 with the API + CLI surface.
 
 ---
 

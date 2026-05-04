@@ -9,6 +9,7 @@ from tulip_core.accounting.engine import (
     ClosedPeriodError,
     UnbalancedTransactionError,
     balance_with_fx_postings,
+    build_reversal,
     post_transaction,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "ClosedPeriodError",
     "UnbalancedTransactionError",
     "balance_with_fx_postings",
+    "build_reversal",
     "post_transaction",
 ]

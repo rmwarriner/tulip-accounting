@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date as date_type
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -55,3 +56,42 @@ class TransactionRead(BaseModel):
     status: str
     postings: list[PostingRead]
     paired_shadow_tx_id: UUID | None = None
+    voided_by_transaction_id: UUID | None = None
+    voided_at: datetime | None = None
+
+
+class TransactionVoidRequest(BaseModel):
+    """Body for POST /v1/transactions/{id}/void (P5.0)."""
+
+    reason: str = Field(min_length=1, max_length=500)
+    reversal_date: date_type | None = Field(
+        default=None,
+        description=(
+            "Date for the reversal sibling. Defaults to today. The reversal "
+            "date — not the source's date — is checked against open periods."
+        ),
+    )
+
+
+class TransactionVoidResponse(BaseModel):
+    """Response for POST /v1/transactions/{id}/void (P5.0)."""
+
+    source_id: UUID
+    reversal_id: UUID
+    voided_at: datetime
+    paired_shadow_tx_id_voided: UUID | None = Field(
+        default=None,
+        description=(
+            "If the source had a paired shadow tx (per ADR-0001), it has "
+            "been auto-voided in the same atomic commit. Null otherwise."
+        ),
+    )
+
+
+class TransactionUpdate(BaseModel):
+    """PATCH /v1/transactions/{id} body — PENDING-only, all fields optional."""
+
+    date: date_type | None = None
+    description: str | None = Field(default=None, min_length=1, max_length=500)
+    reference: str | None = Field(default=None, max_length=200)
+    postings: list[PostingCreate] | None = Field(default=None, min_length=2)

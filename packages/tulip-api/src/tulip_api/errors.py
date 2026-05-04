@@ -511,6 +511,86 @@ class TransactionNotFoundError(TulipProblem):
         )
 
 
+class TransactionNotEditableError(TulipProblem):
+    """PATCH was attempted on a non-PENDING transaction (P5.0)."""
+
+    def __init__(self) -> None:
+        """Build the transaction.not_editable problem."""
+        super().__init__(
+            code="transaction.not_editable",
+            title="Transaction is not editable",
+            status=409,
+            detail=(
+                "Only PENDING transactions can be edited. To change a posted "
+                "transaction, void it (POST /v1/transactions/{id}/void) and "
+                "create a corrected entry."
+            ),
+        )
+
+
+class TransactionNotDeletableError(TulipProblem):
+    """DELETE was attempted on a non-PENDING transaction (P5.0)."""
+
+    def __init__(self) -> None:
+        """Build the transaction.not_deletable problem."""
+        super().__init__(
+            code="transaction.not_deletable",
+            title="Transaction is not deletable",
+            status=409,
+            detail=(
+                "Only PENDING transactions can be hard-deleted. Posted "
+                "transactions must be voided (POST /v1/transactions/{id}/void) "
+                "to preserve the audit trail."
+            ),
+        )
+
+
+class TransactionAlreadyVoidedError(TulipProblem):
+    """A void was attempted on a transaction that is already voided (P5.0)."""
+
+    def __init__(self, voided_by_transaction_id: str) -> None:
+        """Build the transaction.already_voided problem.
+
+        ``voided_by_transaction_id`` is surfaced as a Problem extension so
+        clients can fetch the existing reversal without a second query.
+        """
+        super().__init__(
+            code="transaction.already_voided",
+            title="Transaction already voided",
+            status=409,
+            detail=(
+                "This transaction has already been voided. The reversal "
+                "transaction is referenced via the voided_by_transaction_id "
+                "extension."
+            ),
+            extensions={"voided_by_transaction_id": voided_by_transaction_id},
+        )
+
+
+class TransactionNotVoidableError(TulipProblem):
+    """A void was attempted on a transaction that isn't POSTED / RECONCILED (P5.0)."""
+
+    def __init__(self, status: str) -> None:
+        """Build the transaction.not_voidable problem.
+
+        Surfaces the offending transaction's status as a Problem extension
+        so the client can route to the correct corrective action (DELETE
+        for PENDING, un-reconcile-then-void for RECONCILED in P5.1+).
+        """
+        super().__init__(
+            code="transaction.not_voidable",
+            title="Transaction is not in a voidable state",
+            status=409,
+            detail=(
+                "Only POSTED transactions can be voided in this slice. "
+                "PENDING transactions should be hard-deleted with DELETE; "
+                "RECONCILED transactions need to be un-reconciled first "
+                "(coming in P5.1+)."
+            ),
+            extensions={"status": status},
+        )
+
+
 class PoolNotFoundError(TulipProblem):
     """A posting carries a pool_id that doesn't exist in this household."""
 
