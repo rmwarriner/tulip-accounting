@@ -41,6 +41,8 @@ class Transaction(Base):
     )
     notes_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    voided_by_transaction_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -12,6 +12,7 @@ from tulip_core.accounting import (
     ClosedPeriodError,
     UnbalancedTransactionError,
     balance_with_fx_postings,
+    build_reversal,
     post_transaction,
 )
 from tulip_core.money import Money
@@ -183,3 +184,108 @@ class TestBalanceWithFxPostings:
         assert len(fx_postings) == 2
         # Original postings preserved at the head.
         assert balanced.postings[: len(unbal.postings)] == unbal.postings
+
+
+class TestBuildReversal:
+    def _posted_source(self, when: date = date(2026, 6, 1)) -> Transaction:
+        return Transaction(
+            id=uuid4(),
+            household_id=HOUSEHOLD,
+            date=when,
+            description="Lunch",
+            reference="cc-1234",
+            postings=(
+                Posting(
+                    id=uuid4(),
+                    account_id=uuid4(),
+                    amount=Money(Decimal("12.50"), "USD"),
+                    memo="Sandwich",
+                    pool_id=uuid4(),
+                ),
+                Posting(
+                    id=uuid4(),
+                    account_id=uuid4(),
+                    amount=Money(Decimal("-12.50"), "USD"),
+                ),
+            ),
+            status=TransactionStatus.POSTED,
+        )
+
+    def test_returns_balanced_pending_with_signs_flipped(self):
+        source = self._posted_source()
+        reversal = build_reversal(
+            source,
+            reversal_id=uuid4(),
+            reversal_date=date(2026, 7, 1),
+            description="Reversal of Lunch: duplicate charge",
+        )
+        assert reversal.status is TransactionStatus.PENDING
+        assert reversal.is_balanced() is True
+        assert len(reversal.postings) == len(source.postings)
+        # Each leg's amount is the source's negated amount, same currency.
+        source_amounts = {
+            (p.account_id, p.amount.currency): p.amount.amount for p in source.postings
+        }
+        for r in reversal.postings:
+            key = (r.account_id, r.amount.currency)
+            assert r.amount.amount == -source_amounts[key]
+
+    def test_metadata_carried_or_overridden(self):
+        source = self._posted_source()
+        new_id = uuid4()
+        reversal = build_reversal(
+            source,
+            reversal_id=new_id,
+            reversal_date=date(2026, 7, 1),
+            description="Reversal of Lunch: typo",
+            actor_user_id=uuid4(),
+        )
+        assert reversal.id == new_id
+        assert reversal.household_id == source.household_id
+        assert reversal.date == date(2026, 7, 1)
+        assert reversal.description == "Reversal of Lunch: typo"
+        # Reference defaults to None (the reversal is its own row in the
+        # ledger; the source's reference is not the reversal's reference).
+        assert reversal.reference is None
+        # voided_by_transaction_id is null on the reversal itself.
+        assert reversal.voided_by_transaction_id is None
+
+    def test_postings_get_fresh_uuids(self):
+        source = self._posted_source()
+        reversal = build_reversal(
+            source,
+            reversal_id=uuid4(),
+            reversal_date=date(2026, 7, 1),
+            description="Reversal",
+        )
+        source_ids = {p.id for p in source.postings}
+        reversal_ids = {p.id for p in reversal.postings}
+        assert source_ids.isdisjoint(reversal_ids)
+
+    def test_pool_id_and_memo_preserved(self):
+        # Pool tags survive the sign-flip; the paired-shadow-tx-void chokepoint
+        # in the API handler relies on the reversal carrying the same pool_id.
+        source = self._posted_source()
+        reversal = build_reversal(
+            source,
+            reversal_id=uuid4(),
+            reversal_date=date(2026, 7, 1),
+            description="Reversal",
+        )
+        # Match by account_id, since posting ids differ.
+        source_by_acct = {p.account_id: p for p in source.postings}
+        for r in reversal.postings:
+            s = source_by_acct[r.account_id]
+            assert r.pool_id == s.pool_id
+            assert r.memo == s.memo
+
+    def test_pending_source_rejected(self):
+        # Only POSTED / RECONCILED can be voided.
+        pending = _balanced_pending_tx(date(2026, 6, 1))
+        with pytest.raises(ValueError, match="POSTED"):
+            build_reversal(
+                pending,
+                reversal_id=uuid4(),
+                reversal_date=date(2026, 7, 1),
+                description="Reversal",
+            )

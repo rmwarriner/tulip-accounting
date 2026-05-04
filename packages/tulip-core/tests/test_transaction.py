@@ -105,6 +105,58 @@ class TestTransactionConstruction:
             )
 
 
+class TestVoidedByLink:
+    def test_posted_with_voided_by_id_is_valid(self):
+        tx = Transaction(
+            id=uuid4(),
+            household_id=uuid4(),
+            date=date(2026, 1, 15),
+            description="Voided coffee",
+            postings=_balanced_postings(),
+            status=TransactionStatus.POSTED,
+            voided_by_transaction_id=uuid4(),
+        )
+        assert tx.voided_by_transaction_id is not None
+
+    def test_posted_default_voided_by_id_is_none(self):
+        tx = Transaction(
+            id=uuid4(),
+            household_id=uuid4(),
+            date=date(2026, 1, 15),
+            description="Live coffee",
+            postings=_balanced_postings(),
+            status=TransactionStatus.POSTED,
+        )
+        assert tx.voided_by_transaction_id is None
+
+    def test_reconciled_with_voided_by_id_is_valid(self):
+        tx = Transaction(
+            id=uuid4(),
+            household_id=uuid4(),
+            date=date(2026, 1, 15),
+            description="Reconciled then voided",
+            postings=_balanced_postings(),
+            status=TransactionStatus.RECONCILED,
+            voided_by_transaction_id=uuid4(),
+        )
+        assert tx.status is TransactionStatus.RECONCILED
+        assert tx.voided_by_transaction_id is not None
+
+    def test_pending_with_voided_by_id_raises(self):
+        # PENDING transactions should be hard-deleted, never voided. The
+        # voided_by link only makes sense on POSTED / RECONCILED.
+        with pytest.raises(ValueError, match="voided"):
+            Transaction(
+                id=uuid4(),
+                household_id=uuid4(),
+                date=date(2026, 1, 15),
+                description="Impossible state",
+                postings=_balanced_postings(),
+                status=TransactionStatus.PENDING,
+                voided_by_transaction_id=uuid4(),
+            )
+
+
 class TestBalancePerCurrency:
     def test_single_currency_balance(self):
         tx = Transaction(

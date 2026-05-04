@@ -17,15 +17,34 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from tulip_storage.models import Posting, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.orm import Session
 
+    from tulip_core.transactions import Posting as DomainPosting
     from tulip_core.transactions import Transaction as DomainTransaction
     from tulip_core.transactions import TransactionStatus as DomainTxStatus
+
+
+class TransactionAlreadyVoidedError(ValueError):
+    """Raised when a void is attempted on a transaction that already has a reversal."""
+
+
+class TransactionNotVoidableError(ValueError):
+    """Raised when void is attempted on a transaction that isn't POSTED / RECONCILED."""
+
+
+class TransactionNotEditableError(ValueError):
+    """Raised when PATCH is attempted on a non-PENDING transaction."""
+
+
+class TransactionNotDeletableError(ValueError):
+    """Raised when hard-delete is attempted on a non-PENDING transaction."""
 
 
 _DOMAIN_TO_STORAGE_STATUS: dict[str, TransactionStatus] = {
@@ -243,6 +262,149 @@ class TransactionRepository:
             header.status = target_status
 
         return header
+
+    def persist_reversal(
+        self,
+        source_id: UUID,
+        reversal: DomainTransaction,
+        *,
+        voided_at: datetime,
+    ) -> Transaction:
+        """Persist a reversal sibling and link the source's voided_by_transaction_id.
+
+        The caller is expected to have already constructed ``reversal`` via
+        :func:`tulip_core.accounting.build_reversal` and validated the
+        period gate via :func:`tulip_core.accounting.post_transaction`.
+
+        Raises:
+            LookupError: ``source_id`` does not exist in this household.
+            TransactionAlreadyVoidedError: source is already voided.
+            TransactionNotVoidableError: source is PENDING (not in the ledger).
+
+        """
+        source = self.get(source_id)
+        if source is None:
+            raise LookupError(
+                f"transaction {source_id} not found in household {self._household_id}"
+            )
+        if source.voided_by_transaction_id is not None:
+            raise TransactionAlreadyVoidedError(
+                f"transaction {source_id} already voided by {source.voided_by_transaction_id}"
+            )
+        if source.status not in _LEDGER_STATUSES:
+            raise TransactionNotVoidableError(
+                f"transaction {source_id} is {source.status.value}; "
+                "only POSTED / RECONCILED transactions may be voided"
+            )
+
+        # Persist the reversal sibling. _save handles the PENDING-then-UPDATE
+        # dance the balance trigger requires.
+        target = self._domain_to_storage(reversal.status)
+        self._save(reversal, target)
+
+        # Link the source row.
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.id == source_id,
+            )
+            .values(
+                voided_by_transaction_id=reversal.id,
+                voided_at=voided_at,
+            )
+        )
+        return self._session.get(Transaction, (self._household_id, reversal.id))  # type: ignore[return-value]
+
+    def delete_pending(self, tx_id: UUID) -> None:
+        """Hard-delete a PENDING transaction and its postings.
+
+        Raises:
+            LookupError: ``tx_id`` does not exist in this household.
+            TransactionNotDeletableError: transaction is not PENDING.
+
+        """
+        existing = self.get(tx_id)
+        if existing is None:
+            raise LookupError(f"transaction {tx_id} not found in household {self._household_id}")
+        if existing.status is not TransactionStatus.PENDING:
+            raise TransactionNotDeletableError(
+                f"transaction {tx_id} is {existing.status.value}; "
+                "only PENDING transactions may be hard-deleted (use void otherwise)"
+            )
+        self._session.execute(
+            delete(Posting).where(
+                Posting.household_id == self._household_id,
+                Posting.transaction_id == tx_id,
+            )
+        )
+        self._session.execute(
+            delete(Transaction).where(
+                Transaction.household_id == self._household_id,
+                Transaction.id == tx_id,
+            )
+        )
+
+    def update_pending(
+        self,
+        tx_id: UUID,
+        *,
+        date: date_type,
+        description: str,
+        reference: str | None,
+        postings: tuple[DomainPosting, ...],
+    ) -> Transaction:
+        """Update fields and replace postings on a PENDING transaction.
+
+        Raises:
+            LookupError: ``tx_id`` does not exist in this household.
+            TransactionNotEditableError: transaction is not PENDING.
+
+        """
+        existing = self.get(tx_id)
+        if existing is None:
+            raise LookupError(f"transaction {tx_id} not found in household {self._household_id}")
+        if existing.status is not TransactionStatus.PENDING:
+            raise TransactionNotEditableError(
+                f"transaction {tx_id} is {existing.status.value}; "
+                "only PENDING transactions may be edited (use void otherwise)"
+            )
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.id == tx_id,
+            )
+            .values(date=date, description=description, reference=reference)
+        )
+        # Replace postings wholesale: simpler than diff-merge and the trigger
+        # is a no-op on PENDING transactions.
+        self._session.execute(
+            delete(Posting).where(
+                Posting.household_id == self._household_id,
+                Posting.transaction_id == tx_id,
+            )
+        )
+        for p in postings:
+            self._session.add(
+                Posting(
+                    id=p.id,
+                    household_id=self._household_id,
+                    transaction_id=tx_id,
+                    account_id=p.account_id,
+                    pool_id=p.pool_id,
+                    amount=p.amount.amount,
+                    currency=p.amount.currency,
+                    fx_rate=p.fx_rate,
+                    fx_amount=p.fx_amount.amount if p.fx_amount is not None else None,
+                    fx_currency=(p.fx_amount.currency if p.fx_amount is not None else None),
+                    memo=p.memo,
+                )
+            )
+        self._session.flush()
+        refreshed = self._session.get(Transaction, (self._household_id, tx_id))
+        assert refreshed is not None  # noqa: S101 - existence verified above
+        return refreshed
 
     def _force_post_unbalanced_for_test(self, domain_tx: DomainTransaction) -> Transaction:
         """Force-post a (potentially unbalanced) Domain Transaction.

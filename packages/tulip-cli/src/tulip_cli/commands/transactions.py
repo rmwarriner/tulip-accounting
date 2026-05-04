@@ -548,3 +548,236 @@ def show_transaction(
         sys.stdout.write(response.text + "\n")
         return
     _render_tx_detail(response.json())
+
+
+@transactions_app.command("void")
+def void_transaction(
+    ctx: typer.Context,
+    tx_id: Annotated[
+        str,
+        typer.Argument(help="Transaction UUID to void.", metavar="TXID"),
+    ],
+    reason: Annotated[
+        str,
+        typer.Option(
+            "--reason",
+            "-r",
+            help="Reason for the void; surfaced in the reversal's description.",
+        ),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip confirmation prompt.",
+        ),
+    ] = False,
+    reversal_date: Annotated[
+        str | None,
+        typer.Option(
+            "--date",
+            help=(
+                "Reversal date (YYYY-MM-DD). Defaults to today. The reversal "
+                "date is checked against open periods, not the source's date."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Void a POSTED transaction by posting a sign-flipped sibling reversal."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        UUID(tx_id)
+    except ValueError as exc:
+        raise typer.BadParameter("TXID must be a UUID") from exc
+
+    if reversal_date is not None:
+        _validate_iso_date(reversal_date, flag="--date")
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Void transaction {tx_id}? This posts a reversal sibling.",
+            default=False,
+        )
+        if not confirmed:
+            typer.echo("Aborted; no changes made.")
+            return
+
+    body: dict[str, Any] = {"reason": reason}
+    if reversal_date is not None:
+        body["reversal_date"] = reversal_date
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                f"/v1/transactions/{tx_id}/void",
+                json=body,
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    out = response.json()
+    typer.echo(f"Voided {out['source_id']}; reversal posted as {out['reversal_id']}.")
+    if out.get("paired_shadow_tx_id_voided"):
+        typer.echo(f"  Paired shadow transaction {out['paired_shadow_tx_id_voided']} auto-voided.")
+
+
+@transactions_app.command("delete")
+def delete_transaction(
+    ctx: typer.Context,
+    tx_id: Annotated[
+        str,
+        typer.Argument(help="Transaction UUID to delete.", metavar="TXID"),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip confirmation prompt.",
+        ),
+    ] = False,
+) -> None:
+    """Hard-delete a PENDING transaction. Use ``void`` for POSTED transactions."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        UUID(tx_id)
+    except ValueError as exc:
+        raise typer.BadParameter("TXID must be a UUID") from exc
+
+    if not yes:
+        confirmed = typer.confirm(
+            f"Hard-delete transaction {tx_id}? Only PENDING transactions can be deleted.",
+            default=False,
+        )
+        if not confirmed:
+            typer.echo("Aborted; no changes made.")
+            return
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            client.delete(f"/v1/transactions/{tx_id}", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write('{"deleted": "' + tx_id + '"}\n')
+        return
+    typer.echo(f"Deleted transaction {tx_id}.")
+
+
+@transactions_app.command("edit")
+def edit_transaction(
+    ctx: typer.Context,
+    tx_id: Annotated[
+        str,
+        typer.Argument(help="Transaction UUID to edit.", metavar="TXID"),
+    ],
+) -> None:
+    """Edit a PENDING transaction in ``$EDITOR`` (hledger format).
+
+    POSTED / RECONCILED transactions cannot be edited; use ``void``
+    + create a corrected entry instead.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        UUID(tx_id)
+    except ValueError as exc:
+        raise typer.BadParameter("TXID must be a UUID") from exc
+
+    # Pre-flight: load the existing transaction so we can render it into the
+    # editor buffer and reject early when it's not PENDING.
+    try:
+        with _client(config, as_json=as_json) as client:
+            current = client.get(f"/v1/transactions/{tx_id}", authenticated=True).json()
+            if current.get("status") != "pending":
+                from tulip_cli.errors import CliError as _CliError
+
+                raise _CliError(
+                    problem={
+                        "code": "transaction.not_editable",
+                        "title": "Transaction is not editable",
+                        "status": 409,
+                        "detail": (
+                            "Only PENDING transactions can be edited. Use "
+                            "`tulip transactions void` for posted transactions."
+                        ),
+                    },
+                    as_json=as_json,
+                )
+
+            postings = client.get("/v1/accounts", authenticated=True).json()
+            accounts_by_id = {a["id"]: a for a in postings}
+
+            buffer = _render_tx_for_edit(current, accounts_by_id)
+            while True:
+                edited = edit_buffer(buffer)
+                if _looks_empty(edited):
+                    typer.echo("No changes saved (empty buffer).")
+                    return
+                try:
+                    parsed = parse_ledger_text(edited)
+                except LedgerParseError as exc:
+                    buffer = _with_banner(edited, str(exc))
+                    continue
+                try:
+                    resolved = _resolve_postings(
+                        client,
+                        [ParsedPosting(p.account, p.amount, p.currency) for p in parsed.postings],
+                    )
+                    body = {
+                        "date": parsed.date.isoformat(),
+                        "description": parsed.description,
+                        "postings": resolved,
+                    }
+                    response = client.patch(
+                        f"/v1/transactions/{tx_id}",
+                        json=body,
+                        authenticated=True,
+                    )
+                except CliError as err:
+                    code = str(err.problem.get("code", ""))
+                    if code in _RECOVERABLE_CODES:
+                        detail = str(err.problem.get("detail") or err.problem.get("title"))
+                        buffer = _with_banner(edited, detail)
+                        continue
+                    raise
+
+                if as_json:
+                    sys.stdout.write(response.text + "\n")
+                    return
+                _render_transaction(response.json())
+                return
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+
+def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, Any]]) -> str:
+    """Render an existing transaction back into the hledger-subset format.
+
+    Uses account ``code`` when available; falls back to UUID. Inverse of
+    :func:`tulip_cli.commands._ledger.parse_ledger_text`.
+    """
+    lines: list[str] = [_EDITOR_TEMPLATE_HEADER, ""]
+    lines.append(f"{tx.get('date', '')} {tx.get('description', '')}")
+    for p in tx.get("postings", []):
+        account_ref = accounts_by_id.get(p.get("account_id", ""), {}).get("code") or p.get(
+            "account_id", ""
+        )
+        amount = p.get("amount", "")
+        currency = p.get("currency", "")
+        lines.append(f"  {account_ref}  {amount} {currency}")
+    return "\n".join(lines) + "\n"

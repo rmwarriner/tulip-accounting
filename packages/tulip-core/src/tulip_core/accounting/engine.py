@@ -26,6 +26,7 @@ from tulip_core.transactions import Posting, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import date
     from uuid import UUID
 
     from tulip_core.periods import Period
@@ -42,6 +43,67 @@ class ClosedPeriodError(ValueError):
     - No period covers the transaction date.
     - A period covers the date but is soft-closed and override is not set.
     """
+
+
+def build_reversal(
+    source: Transaction,
+    *,
+    reversal_id: UUID,
+    reversal_date: date,
+    description: str,
+    actor_user_id: UUID | None = None,
+) -> Transaction:
+    """Construct a sign-flipped PENDING reversal sibling for a posted source.
+
+    Postings carry the same ``account_id``, ``pool_id``, and ``memo`` as
+    the source; amounts are negated within the same currency. The returned
+    transaction is balanced by construction (each currency's net is zero).
+    Each posting receives a fresh UUID so the reversal can be persisted as
+    a distinct row.
+
+    The caller is expected to run :func:`post_transaction` on the result,
+    which enforces the period gate against ``reversal_date`` (per ADR-0004
+    §"What P5.0 ships": the void's *own* date must be in an open period).
+
+    Args:
+        source: The POSTED or RECONCILED transaction being voided.
+        reversal_id: The UUID for the new reversal transaction.
+        reversal_date: Date for the reversal — typically today.
+        description: Description for the reversal row.
+        actor_user_id: Optional creator id propagated to the reversal row.
+
+    Returns:
+        A balanced PENDING ``Transaction`` ready for :func:`post_transaction`.
+
+    Raises:
+        ValueError: ``source`` is not POSTED or RECONCILED.
+
+    """
+    if source.status not in (TransactionStatus.POSTED, TransactionStatus.RECONCILED):
+        raise ValueError(
+            f"only POSTED or RECONCILED transactions may be voided; got {source.status.value}"
+        )
+
+    flipped: list[Posting] = []
+    for p in source.postings:
+        flipped.append(
+            Posting(
+                id=uuid4(),
+                account_id=p.account_id,
+                amount=Money(-p.amount.amount, p.amount.currency),
+                pool_id=p.pool_id,
+                memo=p.memo,
+            )
+        )
+    return Transaction(
+        id=reversal_id,
+        household_id=source.household_id,
+        date=reversal_date,
+        description=description,
+        postings=tuple(flipped),
+        status=TransactionStatus.PENDING,
+        created_by_user_id=actor_user_id,
+    )
 
 
 def post_transaction(
