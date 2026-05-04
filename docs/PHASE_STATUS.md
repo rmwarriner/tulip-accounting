@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-04 · `main` @ **P5.0 in flight** ([ADR-0004](adrs/0004-reconciliation.md) merged; first implementation slice on transaction void + PENDING-only edit)
+**Last updated:** 2026-05-05 · `main` @ **P5.1 in flight** (storage layer for imports + reconciliations; 7 new tables, 5 new transactions columns, 7 repos)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (transaction void + PENDING-only edit, #55) implemented per [ADR-0004](adrs/0004-reconciliation.md). 829 tests passing locally. Next: P5.1 (schema + storage layer for `attachments` / `import_batches` / `reconciliations`).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55) and P5.1 (storage layer) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.a (OFX importer).
 
-**Tests:** 829 passing · **CI:** green on `main`
+**Tests:** 860 passing · **CI:** green on `main`
 
 ---
 
@@ -411,9 +411,18 @@ Closes #55. First Phase 5 implementation slice; prerequisite for every later sli
 - **Architecture test**: `test_architecture_no_direct_void_link_writes.py` AST scan rejects writes to `transactions.voided_by_transaction_id` outside `TransactionRepository.persist_reversal`, mirroring P4.0's shadow-write guard.
 - **Tests**: 57 new (4 core, 16 storage, 15 API, 8 CLI E2E + arch tests). Project total: **829 passing** (up from 772).
 
-### P5.1 — Schema + storage layer for imports + reconciliations — queued
+### P5.1 — Schema + storage layer for imports + reconciliations — ✅ *(2026-05-05)*
 
-Per ADR-0004 § slice ordering. Adds `attachments`, `attachment_links`, `import_batches`, `statement_lines`, `reconciliations`, `reconciliation_matches`, `csv_profiles` tables + the §4.1-sketched columns on `transactions` (`cleared_at`, `reconciled_at`, `reconciliation_id`, `imported_from_id`, `carried_forward_from_reconciliation_id`). Architecture-test guards mirror the void-link guard added in P5.0.
+Pure storage slice; no API verbs, no CLI. Migration `f4a6b9c2e7d3` adds 7 new tables and 5 nullable columns on `transactions`.
+
+- **New tables**: `attachments`, `attachment_links`, `import_batches`, `statement_lines`, `reconciliations`, `reconciliation_matches`, `csv_profiles`. All use composite `(household_id, id)` PKs and composite FKs (the established P4.0 pattern).
+- **New transactions columns**: `cleared_at`, `reconciled_at`, `reconciliation_id`, `imported_from_id`, `carried_forward_from_reconciliation_id`. Trigger drop-and-recreate dance reused from P5.0 because the main-ledger balance triggers reference `transactions` by name.
+- **`reconciliation_matches → transactions` FK is `ON DELETE RESTRICT`** (not CASCADE) per ADR-0004 §Q3 — voiding a matched tx must fail loudly until the match is rejected.
+- **AttachmentRepository is the first repo with filesystem I/O**: encrypts plaintext bytes via P1.6 `encrypt_field` and writes to `Settings.attachment_root` (defaults to `~/.local/share/tulip/attachments`; env override `TULIP_ATTACHMENT_ROOT`). New `Settings.attachment_root` field plumbed through the existing `Settings` dataclass.
+- **`ReconciliationRepository.complete()` is the chokepoint** for `transactions.reconciled_at` + `transactions.reconciliation_id` per ADR-0004 §Q7. Architecture test `test_architecture_no_direct_reconciled_at_writes.py` enforces this; analogous to P5.0's void-link guard.
+- **Three new architecture tests**: no direct P5.1 model writes outside repos, no direct reconciled_at writes outside chokepoint, no `tulip_ai` imports in (yet-to-exist) `tulip_importers` package.
+- **`csv_profiles` stored DB-only** with YAML as export/import format (per the P5 design decision).
+- **Tests**: 31 new (10 migration + 18 repository + 3 architecture). Project total: **860 passing** (up from 829).
 
 ### P5.2 — P5.4 — queued
 

@@ -154,10 +154,12 @@ class TestSchemaShape:
         eng.dispose()
 
     def test_round_trip_upgrade_downgrade(self, tmp_path):
+        # Pin to the revision before P5.0 so this test stays meaningful as
+        # later phases pile on. Pre-P5.0 head was b8a91c2f3d44 (P4.3.a).
         db_path = tmp_path / "tulip.db"
         cfg = _make_alembic_cfg(f"sqlite:///{db_path}")
         upgrade(cfg, "head")
-        downgrade(cfg, "-1")
+        downgrade(cfg, "b8a91c2f3d44")
         from sqlalchemy import create_engine
 
         eng = create_engine(f"sqlite:///{db_path}")

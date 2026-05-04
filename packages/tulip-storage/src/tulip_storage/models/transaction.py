@@ -14,6 +14,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from tulip_storage.models.base import GUID, Base
 from tulip_storage.models.household import Household
 
+# P5.1 added five reconciliation/import-link columns; their FKs are wired
+# at the migration layer via batch_alter_table. The mapped attributes here
+# are nullable and untyped at the FK level (the migration declares the
+# composite FKs to reconciliations / import_batches).
+
 
 class TransactionStatus(Enum):
     """Workflow status — see tulip_core.transactions.TransactionStatus."""
@@ -43,6 +48,13 @@ class Transaction(Base):
     created_by_user_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
     voided_by_transaction_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconciliation_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    imported_from_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    carried_forward_from_reconciliation_id: Mapped[UUID | None] = mapped_column(
+        GUID(), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
