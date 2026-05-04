@@ -29,4 +29,4 @@ jobs:
     name: Apply area labels
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/labeler@v5
+      - uses: actions/labeler@v6
