@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-02 · `main` @ **Phase 4 complete** (P4.0 + P4.1.a + P4.1.b + P4.2 + P4.3.a + P4.3.b + P4.3.c)
+**Last updated:** 2026-05-04 · `main` @ **Phase 5 kickoff** ([ADR-0004](adrs/0004-reconciliation.md) proposed; no Phase 5 code yet)
 
 ---
 
@@ -16,7 +16,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** not started.
+- **Phase 5 (importers + reconciliation):** in flight — design only. [ADR-0004](adrs/0004-reconciliation.md) (Proposed, 2026-05-04) settles the nine open questions from #101; closes the design phase before any code lands. P5.0 = #55 (transaction void + PENDING-only edit) is the first implementation slice.
 
 **Tests:** 772 passing · **CI:** green on `main`
 
@@ -386,6 +386,24 @@ Closes #70. **Final Phase 4 slice.** Wires the user-facing surface for managing 
 ### Phase 4 follow-ups
 
 - **P4 follow-up — `--edit` flow for `tulip envelopes add` / `edit`** so users can author `RefillRule` structures interactively. (No issue filed; deliberate deferral from P4.2.)
+
+---
+
+## Phase 5 — Importers + reconciliation — in flight (design)
+
+Umbrella issue: #74. Per [ADR-0004](adrs/0004-reconciliation.md). Phase 5 adds statement importers (OFX, QIF, CSV) and reconciliation (manual `cleared` flag + statement-driven matcher). Reconciliation is modeled as a separate aggregate (`reconciliations` + `reconciliation_matches` tables) with denormalized join shortcuts on `transactions`. The matcher is a pure `tulip-core` function consuming a `StatementLine` common-denominator schema; the categorization seam is a `Categorizer` Protocol so Phase 6 plugs in without touching importer code. Carry-forward is explicit; CSV profiles live only in the DB (YAML is export / import format).
+
+### P5 design — ADR-0004 — ✅ *(2026-05-04)*
+
+Closes #101. Pre-code design doc — no implementation lands until reviewed. Settles the nine open questions: match candidates (account + exact amount + ±3 day window + not-already-reconciled); confidence buckets (`high` / `medium` / `low`, rule-based, `rapidfuzz`); partial / split matches via M:N `reconciliation_matches`; manual override on the same row with NULL confidence; unmatched inbox with three actions per side; idempotency on raw-file SHA-256; hybrid state model (separate `reconciliations` table is truth, denorm columns on `transactions`); `StatementLine` common-denominator dataclass in `tulip-core`; three-layer audit (audit_log + match provenance + encrypted file attachment).
+
+### P5.0 — Transaction void / PENDING-only edit — queued (#55)
+
+First implementation slice. Adds `transactions.voided_by_transaction_id`, `voided_at`. API: `POST /v1/transactions/{id}/void`, `PATCH /v1/transactions/{id}` (PENDING-only), `DELETE /v1/transactions/{id}` (PENDING-only). CLI: `tulip transactions {edit,void,delete}`. Prerequisite for every later slice's revert / un-reconcile / cleanup paths.
+
+### P5.1 — P5.4 — queued
+
+Per ADR-0004 § slice ordering. P5.1 ships schema + storage layer + architecture-test guards; P5.2.{a,b,c} ship the three importers in parallel; P5.3 ships the matcher + categorizer DI seam; P5.4 closes Phase 5 with the API + CLI surface.
 
 ---
 
