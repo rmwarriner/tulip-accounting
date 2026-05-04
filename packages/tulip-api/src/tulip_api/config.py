@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger("tulip_api.config")
 
@@ -18,6 +19,21 @@ def _default_jwt_secret() -> str:
 
 def _default_db_url() -> str:
     return os.environ.get("TULIP_DATABASE_URL", "sqlite:///./tulip.db")
+
+
+def _default_attachment_root() -> Path:
+    """Resolve the on-disk root for encrypted import-file attachments (P5.1).
+
+    Reads ``TULIP_ATTACHMENT_ROOT`` (an absolute path) or defaults to
+    ``~/.local/share/tulip/attachments`` per ADR-0004 §Q9. The directory
+    is created on first use; the bytes stored under it are encrypted with
+    the same master key used for ``transactions.notes_encrypted`` and
+    ``users.totp_secret_encrypted``.
+    """
+    raw = os.environ.get("TULIP_ATTACHMENT_ROOT")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home() / ".local" / "share" / "tulip" / "attachments"
 
 
 def _default_master_key() -> bytes:
@@ -51,6 +67,7 @@ class Settings:
     database_url: str = field(default_factory=_default_db_url)
     jwt_secret: str = field(default_factory=_default_jwt_secret)
     master_key: bytes = field(default_factory=_default_master_key)
+    attachment_root: Path = field(default_factory=_default_attachment_root)
 
 
 _SINGLETON: Settings | None = None

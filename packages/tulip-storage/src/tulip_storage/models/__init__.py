@@ -13,13 +13,26 @@ architecture test in tulip-core enforces this.
 
 from tulip_storage.models.account import Account, AccountType
 from tulip_storage.models.allocation_pool import AllocationPool, PoolType
+from tulip_storage.models.attachment import Attachment
+from tulip_storage.models.attachment_link import AttachmentLink
 from tulip_storage.models.audit_log import AuditLog
 from tulip_storage.models.base import Base
+from tulip_storage.models.csv_profile import CsvProfile
 from tulip_storage.models.envelope import BudgetPeriod, Envelope, RolloverPolicy
 from tulip_storage.models.household import Household, MfaPolicy
+from tulip_storage.models.import_batch import (
+    ImportBatch,
+    ImportBatchStatus,
+    SourceFormat,
+)
 from tulip_storage.models.mfa_recovery_code import MfaRecoveryCode
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
+from tulip_storage.models.reconciliation import Reconciliation, ReconciliationStatus
+from tulip_storage.models.reconciliation_match import (
+    MatchConfidence,
+    ReconciliationMatch,
+)
 from tulip_storage.models.scheduled_job import (
     ScheduledJob,
     ScheduledJobRun,
@@ -33,6 +46,7 @@ from tulip_storage.models.shadow_transaction import (
     ShadowTxStatus,
 )
 from tulip_storage.models.sinking_fund import ContributionStrategy, SinkingFund
+from tulip_storage.models.statement_line import StatementLine
 from tulip_storage.models.transaction import Transaction, TransactionStatus
 from tulip_storage.models.user import User, UserRole
 
@@ -40,18 +54,27 @@ __all__ = [
     "Account",
     "AccountType",
     "AllocationPool",
+    "Attachment",
+    "AttachmentLink",
     "AuditLog",
     "Base",
     "BudgetPeriod",
     "ContributionStrategy",
+    "CsvProfile",
     "Envelope",
     "Household",
+    "ImportBatch",
+    "ImportBatchStatus",
+    "MatchConfidence",
     "MfaPolicy",
     "MfaRecoveryCode",
     "Period",
     "PeriodStatus",
     "PoolType",
     "Posting",
+    "Reconciliation",
+    "ReconciliationMatch",
+    "ReconciliationStatus",
     "RolloverPolicy",
     "ScheduledJob",
     "ScheduledJobRun",
@@ -62,6 +85,8 @@ __all__ = [
     "ShadowTxReason",
     "ShadowTxStatus",
     "SinkingFund",
+    "SourceFormat",
+    "StatementLine",
     "Transaction",
     "TransactionStatus",
     "User",
