@@ -30,7 +30,10 @@ from tulip_api.config import get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountUnknownError,
+    CsvProfileNotFoundError,
     ImportBatchNotFoundError,
+    ImportCsvParseFailedError,
+    ImportCsvProfileMissingError,
     ImportDuplicateFileError,
     ImportOfxParseFailedError,
     ImportQifParseFailedError,
@@ -44,6 +47,8 @@ from tulip_api.schemas.import_batch import (
     ImportBatchSummary,
     StatementLineRead,
 )
+from tulip_importers.csv import CsvParseError, CsvProfile
+from tulip_importers.csv import parse as csv_parse
 from tulip_importers.ofx import OfxParseError
 from tulip_importers.ofx import parse as ofx_parse
 from tulip_importers.qif import QifParseError
@@ -53,6 +58,7 @@ from tulip_storage.repositories import (
     AccountRepository,
     AttachmentRepository,
     AuditLogWriter,
+    CsvProfileRepository,
     ImportBatchRepository,
     StatementLineRepository,
 )
@@ -85,7 +91,14 @@ _QIF_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "text/plain",
 )
 
-_SUPPORTED_FORMATS: Final[tuple[str, ...]] = ("ofx", "qif")
+_CSV_CONTENT_TYPES: Final[tuple[str, ...]] = (
+    "text/csv",
+    "application/csv",
+    "application/octet-stream",
+    "text/plain",
+)
+
+_SUPPORTED_FORMATS: Final[tuple[str, ...]] = ("ofx", "qif", "csv")
 
 
 def _request_uuid(request: Request) -> UUID | None:
@@ -107,11 +120,14 @@ def _request_uuid(request: Request) -> UUID | None:
             "account.unknown",
             "import.ofx_parse_failed",
             "import.qif_parse_failed",
+            "import.csv_parse_failed",
+            "import.csv_profile_missing",
             "import.unsupported_format",
             "request.body_invalid",
         ),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
+        404: problem_response("csv_profile.not_found"),
         409: problem_response("import.duplicate_file"),
         413: problem_response("request.payload_too_large"),
         415: problem_response("request.unsupported_media_type"),
@@ -120,11 +136,18 @@ def _request_uuid(request: Request) -> UUID | None:
 )
 async def upload_import(
     request: Request,
-    file: UploadFile = File(..., description="OFX (XML/SGML) or QIF text."),  # noqa: B008
+    file: UploadFile = File(..., description="OFX (XML/SGML), QIF, or CSV text."),  # noqa: B008
     account_id: UUID = Form(..., description="Account this statement belongs to."),  # noqa: B008
     source_format: str = Form(
         "ofx",
-        description="Statement format ('ofx' or 'qif'; CSV lands in P5.2.c).",
+        description="Statement format ('ofx', 'qif', or 'csv').",
+    ),
+    profile_id: UUID | None = Form(  # noqa: B008
+        None,
+        description=(
+            "CSV column-mapping profile (UUID). Required when "
+            "source_format='csv'; ignored otherwise."
+        ),
     ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
@@ -137,7 +160,12 @@ async def upload_import(
         )
 
     received_ct = (file.content_type or "").lower()
-    accepted_cts = _OFX_CONTENT_TYPES if source_format == "ofx" else _QIF_CONTENT_TYPES
+    if source_format == "ofx":
+        accepted_cts = _OFX_CONTENT_TYPES
+    elif source_format == "qif":
+        accepted_cts = _QIF_CONTENT_TYPES
+    else:
+        accepted_cts = _CSV_CONTENT_TYPES
     if received_ct not in accepted_cts:
         raise UnsupportedMediaTypeError(
             accepted=accepted_cts,
@@ -150,12 +178,23 @@ async def upload_import(
     if not raw_bytes:
         if source_format == "ofx":
             raise ImportOfxParseFailedError(reason="uploaded file is empty")
-        raise ImportQifParseFailedError(reason="uploaded file is empty")
+        if source_format == "qif":
+            raise ImportQifParseFailedError(reason="uploaded file is empty")
+        raise ImportCsvParseFailedError(reason="uploaded file is empty")
 
     accounts_repo = AccountRepository(session, claims.household_id)
     account = accounts_repo.get(account_id)
     if account is None:
         raise AccountUnknownError(account_id=str(account_id))
+
+    csv_profile: CsvProfile | None = None
+    if source_format == "csv":
+        if profile_id is None:
+            raise ImportCsvProfileMissingError()
+        profile_row = CsvProfileRepository(session, claims.household_id).get(profile_id)
+        if profile_row is None:
+            raise CsvProfileNotFoundError()
+        csv_profile = CsvProfile.from_yaml(profile_row.yaml_body)
 
     settings = get_settings()
     attachment_repo = AttachmentRepository(
@@ -186,15 +225,30 @@ async def upload_import(
             parsed_lines = ofx_parse(raw_bytes)
         except OfxParseError as exc:
             raise ImportOfxParseFailedError(reason=str(exc)) from exc
-    else:  # qif
+    elif source_format == "qif":
         try:
             parsed_lines = qif_parse(raw_bytes, currency=account.currency)
         except QifParseError as exc:
             raise ImportQifParseFailedError(reason=str(exc)) from exc
+    else:  # csv
+        # csv_profile guaranteed non-None by the source_format=='csv' branch above.
+        assert csv_profile is not None  # noqa: S101 - existence verified above
+        try:
+            parsed_lines = csv_parse(
+                raw_bytes,
+                profile=csv_profile,
+                currency=account.currency,
+            )
+        except CsvParseError as exc:
+            raise ImportCsvParseFailedError(reason=str(exc)) from exc
 
     # Persist: attachment → batch → lines.
-    default_filename = "upload.ofx" if source_format == "ofx" else "upload.qif"
-    default_ct = "application/x-ofx" if source_format == "ofx" else "application/qif"
+    if source_format == "ofx":
+        default_filename, default_ct = "upload.ofx", "application/x-ofx"
+    elif source_format == "qif":
+        default_filename, default_ct = "upload.qif", "application/qif"
+    else:
+        default_filename, default_ct = "upload.csv", "text/csv"
     if existing_attachment is None:
         attachment = attachment_repo.create(
             filename=file.filename or default_filename,
@@ -205,7 +259,12 @@ async def upload_import(
     else:
         attachment = existing_attachment
 
-    storage_format = SourceFormat.OFX if source_format == "ofx" else SourceFormat.QIF
+    if source_format == "ofx":
+        storage_format = SourceFormat.OFX
+    elif source_format == "qif":
+        storage_format = SourceFormat.QIF
+    else:
+        storage_format = SourceFormat.CSV
     batch = batch_repo.create(
         account_id=account_id,
         source_format=storage_format,

@@ -20,15 +20,17 @@ import typer
 
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
+from tulip_cli.commands.csv_profiles import csv_profiles_app
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
 from tulip_cli.http import TulipClient
 
 imports_app = typer.Typer(
-    name="import",
-    help="Upload statement files (OFX in P5.2.a; QIF and CSV in later slices).",
+    name="imports",
+    help="Upload statement files (OFX, QIF, CSV) and manage CSV profiles.",
     no_args_is_help=True,
 )
+imports_app.add_typer(csv_profiles_app, name="profiles")
 
 
 def _client(config: Config, *, as_json: bool) -> TulipClient:
@@ -50,8 +52,14 @@ def _do_import(
     account: str,
     source_format: str,
     content_type: str,
+    extra_form: dict[str, str] | None = None,
 ) -> None:
-    """Shared upload flow: resolve account, read file, multipart POST."""
+    """Shared upload flow: resolve account, read file, multipart POST.
+
+    ``extra_form`` carries format-specific form fields (e.g.,
+    ``profile_id`` for CSV uploads) merged with the standard
+    ``account_id``/``source_format`` pair.
+    """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
@@ -60,10 +68,16 @@ def _do_import(
             account_record = _resolve_account(client, account)
             account_id = str(account_record["id"])
             raw_bytes = file_path.read_bytes()
+            data: dict[str, str] = {
+                "account_id": account_id,
+                "source_format": source_format,
+            }
+            if extra_form:
+                data.update(extra_form)
             response = client.post_multipart(
                 "/v1/imports",
                 files={"file": (file_path.name, raw_bytes, content_type)},
-                data={"account_id": account_id, "source_format": source_format},
+                data=data,
                 authenticated=True,
             )
     except CliError as err:
@@ -74,6 +88,12 @@ def _do_import(
         sys.stdout.write(response.text + "\n")
         return
     _render_summary(response.json())
+
+
+def _resolve_profile_id(client: TulipClient, profile: str) -> str:
+    """Resolve a CSV profile name (or UUID) to a UUID via the API."""
+    response = client.get(f"/v1/imports/profiles/{profile}", authenticated=True)
+    return str(response.json()["id"])
 
 
 @imports_app.command("ofx")
@@ -108,6 +128,60 @@ def import_ofx(
         account=account,
         source_format="ofx",
         content_type="application/x-ofx",
+    )
+
+
+@imports_app.command("csv")
+def import_csv(
+    ctx: typer.Context,
+    file_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a CSV statement file.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            metavar="FILE",
+        ),
+    ],
+    account: Annotated[
+        str,
+        typer.Option(
+            "--account",
+            help=(
+                "Account this statement belongs to. UUID or code. The "
+                "account's currency is applied to every line."
+            ),
+        ),
+    ],
+    profile: Annotated[
+        str,
+        typer.Option(
+            "--profile",
+            help=(
+                "CSV column-mapping profile (UUID or name). Resolved client-side before the upload."
+            ),
+        ),
+    ],
+) -> None:
+    """Upload a CSV file with the named profile; the API parses it."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            profile_id = _resolve_profile_id(client, profile)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    _do_import(
+        ctx,
+        file_path=file_path,
+        account=account,
+        source_format="csv",
+        content_type="text/csv",
+        extra_form={"profile_id": profile_id},
     )
 
 

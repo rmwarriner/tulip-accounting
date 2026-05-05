@@ -112,6 +112,9 @@ app.add_typer(transactions_app, name="transactions")
 app.add_typer(envelopes_app, name="envelopes")
 app.add_typer(sinking_funds_app, name="sinking-funds")
 app.add_typer(refills_app, name="refills")
+# Register `imports` (canonical, plural) and keep `import` as an alias
+# for back-compat with P5.2.a/b examples that used the singular form.
+app.add_typer(imports_app, name="imports")
 app.add_typer(imports_app, name="import")
 
 

@@ -28,6 +28,7 @@ from tulip_api.middleware import RequestIdMiddleware
 from tulip_api.routers import (
     accounts,
     auth,
+    csv_profiles,
     envelopes,
     health,
     imports,
@@ -115,6 +116,12 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(pools.router)
     app.include_router(refill_schedules.router)
     app.include_router(reports.router)
+    # csv_profiles must register BEFORE imports — both prefix on
+    # /v1/imports, and the more specific /v1/imports/profiles router
+    # must win route matching for the profile endpoints. (FastAPI
+    # matches in registration order; including imports first would
+    # absorb /v1/imports/profiles into the imports router.)
+    app.include_router(csv_profiles.router)
     app.include_router(imports.router)
 
     return app

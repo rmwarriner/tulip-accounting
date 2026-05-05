@@ -9,6 +9,17 @@ dependencies = [
     # ofxparse last released 2023; ofxtools actively maintained, ships type
     # stubs, parses both OFX 1.x SGML and 2.x XML through one API.
     "ofxtools>=0.9.5",
+    # Pydantic for CsvProfile (P5.2.c). Justified deviation from "no
+    # frameworks in importers" because (a) the API layer's CsvProfileCreate /
+    # CsvProfileRead schemas need Pydantic for OpenAPI anyway and Pydantic
+    # here avoids dual definitions, (b) YAML→model error mapping reuses
+    # FastAPI's existing validation.failed translator. Pydantic is already a
+    # transitive dep via tulip-api; this just makes it direct on tulip-importers.
+    "pydantic>=2.7",
+    # YAML for the CSV-profile codec. yaml.safe_load only — yaml.load is
+    # banned by an architecture test in tulip-storage's test suite.
+    "pyyaml>=6.0",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.uv.sources]
