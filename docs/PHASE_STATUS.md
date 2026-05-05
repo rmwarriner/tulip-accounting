@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-05 · `main` @ **P5.2.a in flight** (OFX importer + first `tulip-importers` package + first `tulip_core.reconciliation` domain types)
+**Last updated:** 2026-05-05 · `main` @ **P5.2.b in flight** (QIF importer; reuses the P5.2.a API + CLI surface)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), and P5.2.a (OFX importer) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.b (QIF importer).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a (OFX), and P5.2.b (QIF) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.c (CSV importer + per-household profiles).
 
-**Tests:** 900 passing · **CI:** green on `main`
+**Tests:** 917 passing · **CI:** green on `main`
 
 ---
 
@@ -438,9 +438,16 @@ First Phase 5 slice that touches all four layers (core domain + new `tulip-impor
 - **`force=true` deferred** (#114): ADR-0004 §Q6 specifies a `?force=true` override but P5.1's unique index `ix_import_batches_idempotency` forbids it. The 409 happy path works; the override is xfailed and tracked as a P5.1 fix-up migration in #114.
 - **Tests**: 40 new — 14 core, 8 importer, 1 storage E2E, 10 API endpoint (+1 xfailed for #114), 5 CLI E2E, 2 architecture. Project total: **900 passing** (up from 860).
 
-### P5.2.b — QIF importer — queued
+### P5.2.b — QIF importer — ✅ *(2026-05-05)*
 
-Custom parser (small format). CLI: `tulip import qif FILE --account ACCOUNT`. Reuses the API endpoint + `tulip_core.reconciliation.ParsedStatementLine` shape from P5.2.a; only the parser swap differs.
+Smaller cousin of P5.2.a. Reuses the API endpoint, multipart upload machinery, `TulipClient.post_multipart`, and `ParsedStatementLine` shape; only the parser is new.
+
+- **Custom parser** in `tulip_importers.qif.parser` per ADR-0004 §Q8 ("custom parser, small format, public domain"). ~150 LOC. No external library — QIF is line-oriented and small enough to handle in-house.
+- **Date parsing** handles three dialects: ISO (`2026-05-12`), US 4-digit (`5/12/2026`), US 2-digit (`5/12/26` → 2026). Per-record line numbers in error messages so operators can locate bad rows.
+- **Currency**: QIF carries no currency code, so `parse(bytes, *, currency="USD")` takes the account's currency as a kwarg. The API handler reads it from the resolved `Account` row.
+- **API endpoint generalized**: `POST /v1/imports` now accepts `source_format=qif` alongside `ofx`. Per-format content-type allowlists (`application/qif`, `text/plain`, etc. for QIF). Per-format error codes: `import.qif_parse_failed` (400). New code `import.unsupported_format` (400, with `format` + `supported` extensions) for future format names landing through the same endpoint.
+- **CLI**: new `tulip import qif FILE --account ACCOUNT` subcommand. Refactored `commands/imports.py` to share a `_do_import(...)` helper between OFX and QIF — no duplicated upload plumbing.
+- **Tests**: 17 new (12 parser, 3 API, 2 CLI E2E). Project total: **917 passing** (up from 900).
 
 ### P5.2.c — CSV importer + per-household profile CRUD — queued
 

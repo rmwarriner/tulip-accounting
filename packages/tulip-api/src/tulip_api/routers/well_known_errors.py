@@ -64,6 +64,11 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "existing_batch_id": "<batch-uuid>",
     },
     "ImportOfxParseFailedError": {"reason": "could not parse as OFX: ..."},
+    "ImportQifParseFailedError": {"reason": "could not parse as QIF: ..."},
+    "ImportUnsupportedFormatError": {
+        "format_name": "csv",
+        "supported": ("ofx", "qif"),
+    },
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),

@@ -33,6 +33,8 @@ from tulip_api.errors import (
     ImportBatchNotFoundError,
     ImportDuplicateFileError,
     ImportOfxParseFailedError,
+    ImportQifParseFailedError,
+    ImportUnsupportedFormatError,
     RequestPayloadTooLargeError,
     UnsupportedMediaTypeError,
     problem_response,
@@ -44,6 +46,8 @@ from tulip_api.schemas.import_batch import (
 )
 from tulip_importers.ofx import OfxParseError
 from tulip_importers.ofx import parse as ofx_parse
+from tulip_importers.qif import QifParseError
+from tulip_importers.qif import parse as qif_parse
 from tulip_storage.models import SourceFormat
 from tulip_storage.repositories import (
     AccountRepository,
@@ -74,6 +78,15 @@ _OFX_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "application/xml",
 )
 
+_QIF_CONTENT_TYPES: Final[tuple[str, ...]] = (
+    "application/qif",
+    "application/x-qif",
+    "application/octet-stream",
+    "text/plain",
+)
+
+_SUPPORTED_FORMATS: Final[tuple[str, ...]] = ("ofx", "qif")
+
 
 def _request_uuid(request: Request) -> UUID | None:
     rid = request.headers.get("x-request-id")
@@ -93,6 +106,8 @@ def _request_uuid(request: Request) -> UUID | None:
         400: problem_response(
             "account.unknown",
             "import.ofx_parse_failed",
+            "import.qif_parse_failed",
+            "import.unsupported_format",
             "request.body_invalid",
         ),
         401: problem_response("auth.unauthorized"),
@@ -105,25 +120,27 @@ def _request_uuid(request: Request) -> UUID | None:
 )
 async def upload_import(
     request: Request,
-    file: UploadFile = File(..., description="OFX 1.x SGML or 2.x XML."),  # noqa: B008
+    file: UploadFile = File(..., description="OFX (XML/SGML) or QIF text."),  # noqa: B008
     account_id: UUID = Form(..., description="Account this statement belongs to."),  # noqa: B008
     source_format: str = Form(
         "ofx",
-        description="Statement format. Only 'ofx' supported in P5.2.a.",
+        description="Statement format ('ofx' or 'qif'; CSV lands in P5.2.c).",
     ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchSummary:
     """Upload a statement file; parse it; persist as an ``import_batches`` row."""
-    if source_format != "ofx":
-        raise ImportOfxParseFailedError(
-            reason=f"P5.2.a supports only source_format='ofx' (got {source_format!r})"
+    if source_format not in _SUPPORTED_FORMATS:
+        raise ImportUnsupportedFormatError(
+            format_name=source_format,
+            supported=_SUPPORTED_FORMATS,
         )
 
     received_ct = (file.content_type or "").lower()
-    if received_ct not in _OFX_CONTENT_TYPES:
+    accepted_cts = _OFX_CONTENT_TYPES if source_format == "ofx" else _QIF_CONTENT_TYPES
+    if received_ct not in accepted_cts:
         raise UnsupportedMediaTypeError(
-            accepted=_OFX_CONTENT_TYPES,
+            accepted=accepted_cts,
             received=received_ct or "<missing>",
         )
 
@@ -131,10 +148,13 @@ async def upload_import(
     if len(raw_bytes) > MAX_OFX_BYTES:
         raise RequestPayloadTooLargeError(max_bytes=MAX_OFX_BYTES)
     if not raw_bytes:
-        raise ImportOfxParseFailedError(reason="uploaded file is empty")
+        if source_format == "ofx":
+            raise ImportOfxParseFailedError(reason="uploaded file is empty")
+        raise ImportQifParseFailedError(reason="uploaded file is empty")
 
     accounts_repo = AccountRepository(session, claims.household_id)
-    if accounts_repo.get(account_id) is None:
+    account = accounts_repo.get(account_id)
+    if account is None:
         raise AccountUnknownError(account_id=str(account_id))
 
     settings = get_settings()
@@ -160,27 +180,36 @@ async def upload_import(
                 existing_batch_id=str(existing_batch.id),
             )
 
-    # Parse the OFX before any DB write so we can fail fast on garbage uploads.
-    try:
-        parsed_lines = ofx_parse(raw_bytes)
-    except OfxParseError as exc:
-        raise ImportOfxParseFailedError(reason=str(exc)) from exc
+    # Parse before any DB write so we can fail fast on garbage uploads.
+    if source_format == "ofx":
+        try:
+            parsed_lines = ofx_parse(raw_bytes)
+        except OfxParseError as exc:
+            raise ImportOfxParseFailedError(reason=str(exc)) from exc
+    else:  # qif
+        try:
+            parsed_lines = qif_parse(raw_bytes, currency=account.currency)
+        except QifParseError as exc:
+            raise ImportQifParseFailedError(reason=str(exc)) from exc
 
     # Persist: attachment → batch → lines.
+    default_filename = "upload.ofx" if source_format == "ofx" else "upload.qif"
+    default_ct = "application/x-ofx" if source_format == "ofx" else "application/qif"
     if existing_attachment is None:
         attachment = attachment_repo.create(
-            filename=file.filename or "upload.ofx",
-            content_type=file.content_type or "application/x-ofx",
+            filename=file.filename or default_filename,
+            content_type=file.content_type or default_ct,
             raw_bytes=raw_bytes,
             uploaded_by_user_id=claims.user_id,
         )
     else:
         attachment = existing_attachment
 
+    storage_format = SourceFormat.OFX if source_format == "ofx" else SourceFormat.QIF
     batch = batch_repo.create(
         account_id=account_id,
-        source_format=SourceFormat.OFX,
-        source_filename=file.filename or "upload.ofx",
+        source_format=storage_format,
+        source_filename=file.filename or default_filename,
         source_file_attachment_id=attachment.id,
         created_by_user_id=claims.user_id,
         summary_json={"line_count": len(parsed_lines)},
@@ -216,8 +245,8 @@ async def upload_import(
         entity_id=batch.id,
         after={
             "account_id": str(account_id),
-            "source_format": "ofx",
-            "source_filename": file.filename or "upload.ofx",
+            "source_format": source_format,
+            "source_filename": file.filename or default_filename,
             "line_count": len(parsed_lines),
         },
         request_id=_request_uuid(request),
@@ -232,7 +261,7 @@ async def upload_import(
     return ImportBatchSummary(
         id=batch.id,
         account_id=account_id,
-        source_format="ofx",
+        source_format=source_format,
         source_filename=batch.source_filename,
         status=batch.status.value,
         statement_line_count=len(parsed_lines),
