@@ -172,6 +172,32 @@ class TulipClient:
         """``DELETE path`` against the configured API."""
         return self.request("DELETE", path, authenticated=authenticated, headers=headers)
 
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        files: dict[str, tuple[str, bytes, str]],
+        data: dict[str, str] | None = None,
+        authenticated: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """``POST path`` with ``multipart/form-data`` content (P5.2.a).
+
+        ``files`` is a dict in httpx's shape:
+        ``{"file": (filename, raw_bytes, content_type)}``. ``data``
+        carries any non-file form fields (e.g., ``account_id``).
+        """
+        merged: dict[str, str] = dict(headers) if headers else {}
+        if authenticated:
+            merged["authorization"] = f"Bearer {self._access_token()}"
+        try:
+            response = self._client.post(path, files=files, data=data, headers=merged)
+        except httpx.HTTPError as exc:
+            raise CliError.from_network_error(exc, as_json=self._as_json) from exc
+        if response.status_code >= 400:
+            raise CliError.from_response(response, as_json=self._as_json)
+        return response
+
     def _access_token(self) -> str:
         store = self._token_store
         if store is None:

@@ -68,11 +68,12 @@ def session_maker(db_url: str) -> Iterator[sessionmaker[Session]]:
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(tmp_path: Path) -> Settings:
     return Settings(
         database_url="sqlite:///:memory:",  # overridden per-app via deps
         jwt_secret="test-secret-32bytes-test-secret!!",
         master_key=b"\xab" * 32,  # deterministic test key; never used outside tests
+        attachment_root=tmp_path / "attachments",
     )
 
 

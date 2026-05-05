@@ -1247,6 +1247,12 @@ wheels = [
 ]
 
 [[package]]
+name = "ofxtools"
+version = "0.9.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/37/d224428cbb44b8d36b9458c2c9b11eb54ece95bc455ef6f7ada583809b13/ofxtools-0.9.5.tar.gz", hash = "sha256:682a516bfa5ccad0f9551c17cc2cf155422f9f5f85a341cfb4911b324de46045", size = 114090, upload-time = "2022-01-13T14:18:16.584Z" }
+
+[[package]]
 name = "packageurl-python"
 version = "0.17.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1637,6 +1643,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/de/ef/3bae0e537cfe91e8431efcba4434463d2c5a65f5a89edd47c6cf2f03c55f/python_discovery-1.2.2.tar.gz", hash = "sha256:876e9c57139eb757cb5878cbdd9ae5379e5d96266c99ef731119e04fffe533bb", size = 58872, upload-time = "2026-04-07T17:28:49.249Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d8/db/795879cc3ddfe338599bddea6388cc5100b088db0a4caf6e6c1af1c27e04/python_discovery-1.2.2-py3-none-any.whl", hash = "sha256:e1ae95d9af875e78f15e19aed0c6137ab1bb49c200f21f5061786490c9585c7a", size = 31894, upload-time = "2026-04-07T17:28:48.09Z" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.27"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/9b/f23807317a113dc36e74e75eb265a02dd1a4d9082abc3c1064acd22997c4/python_multipart-0.0.27.tar.gz", hash = "sha256:9870a6a8c5a20a5bf4f07c017bd1489006ff8836cff097b6933355ee2b49b602", size = 44043, upload-time = "2026-04-27T10:51:26.649Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/78/4126abcbdbd3c559d43e0db7f7b9173fc6befe45d39a2856cc0b8ec2a5a6/python_multipart-0.0.27-py3-none-any.whl", hash = "sha256:6fccfad17a27334bd0193681b369f476eda3409f17381a2d65aa7df3f7275645", size = 29254, upload-time = "2026-04-27T10:51:24.997Z" },
 ]
 
 [[package]]
@@ -2236,10 +2251,12 @@ dependencies = [
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
     { name = "pyotp" },
+    { name = "python-multipart" },
     { name = "qrcode" },
     { name = "slowapi" },
     { name = "structlog" },
     { name = "tulip-core" },
+    { name = "tulip-importers" },
     { name = "tulip-storage" },
     { name = "uvicorn" },
 ]
@@ -2254,10 +2271,12 @@ requires-dist = [
     { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
     { name = "pyjwt", specifier = ">=2.9" },
     { name = "pyotp", specifier = ">=2.9" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "qrcode", specifier = ">=7.4" },
     { name = "slowapi", specifier = ">=0.1.9" },
     { name = "structlog", specifier = ">=24.1" },
     { name = "tulip-core", editable = "packages/tulip-core" },
+    { name = "tulip-importers", editable = "packages/tulip-importers" },
     { name = "tulip-storage", editable = "packages/tulip-storage" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
@@ -2290,6 +2309,16 @@ source = { editable = "packages/tulip-core" }
 name = "tulip-importers"
 version = "0.0.0"
 source = { editable = "packages/tulip-importers" }
+dependencies = [
+    { name = "ofxtools" },
+    { name = "tulip-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ofxtools", specifier = ">=0.9.5" },
+    { name = "tulip-core", editable = "packages/tulip-core" },
+]
 
 [[package]]
 name = "tulip-reports"

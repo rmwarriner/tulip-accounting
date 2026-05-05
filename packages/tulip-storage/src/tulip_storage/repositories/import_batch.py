@@ -31,6 +31,23 @@ class ImportBatchRepository:
             )
         ).scalar_one_or_none()
 
+    def find_for_attachment(self, *, account_id: UUID, attachment_id: UUID) -> ImportBatch | None:
+        """Return the existing batch for this attachment + account, or None.
+
+        Used for idempotency checks: per ADR-0004 §Q6, re-uploading the
+        same file to the same account is a 409 ``import.duplicate_file``.
+        The unique index ``ix_import_batches_idempotency`` enforces this
+        at the DB layer; this method provides the lookup so the API can
+        return a typed problem before the IntegrityError fires.
+        """
+        return self._session.execute(
+            select(ImportBatch).where(
+                ImportBatch.household_id == self._household_id,
+                ImportBatch.account_id == account_id,
+                ImportBatch.source_file_attachment_id == attachment_id,
+            )
+        ).scalar_one_or_none()
+
     def list_for_account(self, account_id: UUID) -> list[ImportBatch]:
         """Return all import batches for an account, newest first."""
         return list(

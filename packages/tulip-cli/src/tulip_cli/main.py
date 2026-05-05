@@ -18,6 +18,7 @@ from tulip_cli.commands.accounts import accounts_app
 from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.balance import balance as balance_command
 from tulip_cli.commands.envelopes import envelopes_app
+from tulip_cli.commands.imports import imports_app
 from tulip_cli.commands.pool_actions import (
     budget_inflow as budget_inflow_command,
 )
@@ -111,6 +112,7 @@ app.add_typer(transactions_app, name="transactions")
 app.add_typer(envelopes_app, name="envelopes")
 app.add_typer(sinking_funds_app, name="sinking-funds")
 app.add_typer(refills_app, name="refills")
+app.add_typer(imports_app, name="import")
 
 
 if __name__ == "__main__":
