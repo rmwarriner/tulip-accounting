@@ -197,6 +197,64 @@ class TestUploadErrorPaths:
         assert second.json()["id"] != first.json()["id"]
 
 
+class TestUploadQif:
+    def test_uploads_qif_and_persists_lines(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "minimal.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("may.qif", body_bytes, "application/qif")},
+            data={"account_id": checking_account, "source_format": "qif"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["statement_line_count"] == 3
+        assert body["source_format"] == "qif"
+
+        r2 = client.get(f"/v1/imports/{body['id']}", headers=auth_h)
+        assert r2.status_code == 200
+        full = r2.json()
+        # Currency on every line picks up the account's USD; QIF carries none.
+        assert all(line["currency"] == "USD" for line in full["lines"])
+
+    def test_qif_garbage_returns_parse_error(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={
+                "file": ("not.qif", b"this is not qif data", "application/qif"),
+            },
+            data={"account_id": checking_account, "source_format": "qif"},
+        )
+        assert_problem(r, code="import.qif_parse_failed", status=400)
+
+    def test_unsupported_format_returns_400(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        body_bytes = (_OFX_FIXTURES / "minimal_ofx2.ofx").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("file.csv", body_bytes, "text/csv")},
+            data={"account_id": checking_account, "source_format": "csv"},
+        )
+        body = assert_problem(r, code="import.unsupported_format", status=400)
+        assert body["format"] == "csv"
+
+
 class TestGetImport:
     def test_unknown_id_returns_404(
         self,

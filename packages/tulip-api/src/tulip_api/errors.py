@@ -982,6 +982,36 @@ class ImportOfxParseFailedError(TulipProblem):
         )
 
 
+class ImportQifParseFailedError(TulipProblem):
+    """The uploaded bytes could not be parsed as QIF (P5.2.b)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the import.qif_parse_failed problem (400)."""
+        super().__init__(
+            code="import.qif_parse_failed",
+            title="QIF file could not be parsed",
+            status=400,
+            detail=reason,
+        )
+
+
+class ImportUnsupportedFormatError(TulipProblem):
+    """The requested ``source_format`` isn't implemented yet."""
+
+    def __init__(self, *, format_name: str, supported: tuple[str, ...]) -> None:
+        """Build the import.unsupported_format problem (400)."""
+        super().__init__(
+            code="import.unsupported_format",
+            title="Unsupported import format",
+            status=400,
+            detail=(
+                f"source_format={format_name!r} is not yet implemented. "
+                f"Supported formats: {', '.join(supported)}."
+            ),
+            extensions={"format": format_name, "supported": list(supported)},
+        )
+
+
 class ImportBatchNotFoundError(TulipProblem):
     """No import batch with that ID exists in this household (P5.2.a)."""
 

@@ -43,6 +43,39 @@ def _render_summary(body: dict[str, Any]) -> None:
     )
 
 
+def _do_import(
+    ctx: typer.Context,
+    *,
+    file_path: Path,
+    account: str,
+    source_format: str,
+    content_type: str,
+) -> None:
+    """Shared upload flow: resolve account, read file, multipart POST."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            account_record = _resolve_account(client, account)
+            account_id = str(account_record["id"])
+            raw_bytes = file_path.read_bytes()
+            response = client.post_multipart(
+                "/v1/imports",
+                files={"file": (file_path.name, raw_bytes, content_type)},
+                data={"account_id": account_id, "source_format": source_format},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    _render_summary(response.json())
+
+
 @imports_app.command("ofx")
 def import_ofx(
     ctx: typer.Context,
@@ -69,31 +102,46 @@ def import_ofx(
     ],
 ) -> None:
     """Upload an OFX file; the API parses it and persists a batch."""
-    config: Config = ctx.obj["config"]
-    as_json: bool = ctx.obj["json"]
+    _do_import(
+        ctx,
+        file_path=file_path,
+        account=account,
+        source_format="ofx",
+        content_type="application/x-ofx",
+    )
 
-    try:
-        with _client(config, as_json=as_json) as client:
-            account_record = _resolve_account(client, account)
-            account_id = str(account_record["id"])
-            raw_bytes = file_path.read_bytes()
-            response = client.post_multipart(
-                "/v1/imports",
-                files={
-                    "file": (
-                        file_path.name,
-                        raw_bytes,
-                        "application/x-ofx",
-                    ),
-                },
-                data={"account_id": account_id, "source_format": "ofx"},
-                authenticated=True,
-            )
-    except CliError as err:
-        err.render()
-        raise typer.Exit(err.exit_code) from None
 
-    if as_json:
-        sys.stdout.write(response.text + "\n")
-        return
-    _render_summary(response.json())
+@imports_app.command("qif")
+def import_qif(
+    ctx: typer.Context,
+    file_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a QIF (Quicken Interchange Format) statement file.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            metavar="FILE",
+        ),
+    ],
+    account: Annotated[
+        str,
+        typer.Option(
+            "--account",
+            help=(
+                "Account this statement belongs to. UUID or code. The "
+                "account's currency is applied to every line — QIF doesn't "
+                "carry currency in the file itself."
+            ),
+        ),
+    ],
+) -> None:
+    """Upload a QIF file; the API parses it and persists a batch."""
+    _do_import(
+        ctx,
+        file_path=file_path,
+        account=account,
+        source_format="qif",
+        content_type="application/qif",
+    )

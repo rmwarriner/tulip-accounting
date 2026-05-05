@@ -184,6 +184,39 @@ def test_import_ofx_unknown_account(authed_session: str) -> None:
 
 
 @pytest.mark.integration
+def test_import_qif_happy_path(authed_session: str) -> None:
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES.parent / "qif" / "minimal.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account",
+        "1110",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Imported 3 statement lines" in result.stdout
+
+
+@pytest.mark.integration
+def test_import_qif_garbage_returns_problem(authed_session: str, tmp_path: Path) -> None:
+    _seed_checking(authed_session)
+    bad = tmp_path / "bad.qif"
+    bad.write_bytes(b"this is not qif at all")
+    result = _run_cli(
+        "import",
+        "qif",
+        str(bad),
+        "--account",
+        "1110",
+        api_url=authed_session,
+    )
+    assert result.returncode != 0
+    assert "qif" in (result.stdout + result.stderr).lower()
+
+
+@pytest.mark.integration
 def test_import_ofx_unauthenticated_exits_2(live_api: str, tmp_path: Path) -> None:
     fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
     result = subprocess.run(
