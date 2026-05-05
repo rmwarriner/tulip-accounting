@@ -65,10 +65,13 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "ImportOfxParseFailedError": {"reason": "could not parse as OFX: ..."},
     "ImportQifParseFailedError": {"reason": "could not parse as QIF: ..."},
+    "ImportCsvParseFailedError": {"reason": "row 7: date '13/45/2026' doesn't match ..."},
     "ImportUnsupportedFormatError": {
         "format_name": "csv",
-        "supported": ("ofx", "qif"),
+        "supported": ("ofx", "qif", "csv"),
     },
+    "CsvProfileDuplicateNameError": {"name": "chase-checking"},
+    "CsvProfileInvalidYamlError": {"reason": "yaml.safe_load rejected the payload"},
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),

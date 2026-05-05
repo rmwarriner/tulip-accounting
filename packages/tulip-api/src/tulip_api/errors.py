@@ -995,6 +995,80 @@ class ImportQifParseFailedError(TulipProblem):
         )
 
 
+class ImportCsvParseFailedError(TulipProblem):
+    """The uploaded bytes could not be parsed as CSV per the supplied profile (P5.2.c)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the import.csv_parse_failed problem (400)."""
+        super().__init__(
+            code="import.csv_parse_failed",
+            title="CSV file could not be parsed",
+            status=400,
+            detail=reason,
+        )
+
+
+class ImportCsvProfileMissingError(TulipProblem):
+    """``source_format=csv`` requires a ``profile_id`` form field (P5.2.c)."""
+
+    def __init__(self) -> None:
+        """Build the import.csv_profile_missing problem (400)."""
+        super().__init__(
+            code="import.csv_profile_missing",
+            title="CSV import requires a profile",
+            status=400,
+            detail=(
+                "source_format='csv' requires the 'profile_id' form field. "
+                "Create a profile via POST /v1/imports/profiles first, then "
+                "pass its UUID."
+            ),
+        )
+
+
+class CsvProfileNotFoundError(TulipProblem):
+    """No CSV profile with that id or name exists in this household (P5.2.c)."""
+
+    def __init__(self) -> None:
+        """Build the csv_profile.not_found problem (404)."""
+        super().__init__(
+            code="csv_profile.not_found",
+            title="CSV profile not found",
+            status=404,
+            detail="No CSV profile with that id or name exists in this household.",
+        )
+
+
+class CsvProfileDuplicateNameError(TulipProblem):
+    """A CSV profile with the same name already exists in the household (P5.2.c)."""
+
+    def __init__(self, *, name: str) -> None:
+        """Build the csv_profile.duplicate_name problem (409)."""
+        super().__init__(
+            code="csv_profile.duplicate_name",
+            title="CSV profile name already in use",
+            status=409,
+            detail=(
+                f"A CSV profile named {name!r} already exists in this "
+                "household. Names must be unique per household; pick "
+                "another, or PATCH the existing profile."
+            ),
+            extensions={"name": name},
+        )
+
+
+class CsvProfileInvalidYamlError(TulipProblem):
+    """The supplied YAML couldn't be parsed (or contained unsafe tags) (P5.2.c)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the csv_profile.invalid_yaml problem (400)."""
+        super().__init__(
+            code="csv_profile.invalid_yaml",
+            title="CSV profile YAML is invalid",
+            status=400,
+            detail=reason,
+        )
+
+
 class ImportUnsupportedFormatError(TulipProblem):
     """The requested ``source_format`` isn't implemented yet."""
 

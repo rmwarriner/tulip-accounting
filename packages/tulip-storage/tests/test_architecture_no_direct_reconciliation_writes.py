@@ -67,6 +67,11 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         "tulip-storage/src/tulip_storage/repositories/reconciliation_match.py",
         "tulip-storage/src/tulip_storage/repositories/csv_profile.py",
         "tulip-storage/src/tulip_storage/repositories/__init__.py",
+        # API router needs the row type for the _resolve helper's return
+        # annotation (writes still route through CsvProfileRepository;
+        # the import is read-only, mirroring how P5.0's void-link guard
+        # allowed the API router for read-side access).
+        "tulip-api/src/tulip_api/routers/csv_profiles.py",
     }
 )
 

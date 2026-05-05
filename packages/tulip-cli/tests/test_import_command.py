@@ -200,6 +200,109 @@ def test_import_qif_happy_path(authed_session: str) -> None:
 
 
 @pytest.mark.integration
+def test_csv_profile_create_and_import_e2e(authed_session: str) -> None:
+    _seed_checking(authed_session)
+    # Create a profile via CLI.
+    create = _run_cli(
+        "imports",
+        "profiles",
+        "add",
+        "--name",
+        "chase",
+        "--date-column",
+        "Posting Date",
+        "--date-format",
+        "%m/%d/%Y",
+        "--amount-column",
+        "Amount",
+        "--description-column",
+        "Description",
+        "--reference-column",
+        "Check or Slip #",
+        api_url=authed_session,
+    )
+    assert create.returncode == 0, create.stderr
+    assert "chase" in create.stdout
+
+    # List shows it.
+    listed = _run_cli("imports", "profiles", "list", api_url=authed_session)
+    assert listed.returncode == 0
+    assert "chase" in listed.stdout
+
+    # Import a CSV referencing the profile.
+    fixture = _OFX_FIXTURES.parent / "csv" / "chase_checking.csv"
+    result = _run_cli(
+        "import",
+        "csv",
+        str(fixture),
+        "--account",
+        "1110",
+        "--profile",
+        "chase",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Imported 4 statement lines" in result.stdout
+
+
+@pytest.mark.integration
+def test_csv_profile_export_round_trip(authed_session: str, tmp_path: Path) -> None:
+    _seed_checking(authed_session)
+    _run_cli(
+        "imports",
+        "profiles",
+        "add",
+        "--name",
+        "amex",
+        "--date-column",
+        "Date",
+        "--date-format",
+        "%Y-%m-%d",
+        "--amount-column",
+        "Amount",
+        "--description-column",
+        "Description",
+        "--amount-negative-means",
+        "credit",
+        api_url=authed_session,
+    )
+
+    # Export to a file.
+    out = tmp_path / "amex.yaml"
+    exported = _run_cli(
+        "imports",
+        "profiles",
+        "export",
+        "amex",
+        "--out",
+        str(out),
+        api_url=authed_session,
+    )
+    assert exported.returncode == 0
+    body = out.read_text()
+    assert "name: amex" in body
+
+    # Delete + re-import.
+    _run_cli(
+        "imports",
+        "profiles",
+        "delete",
+        "amex",
+        "--yes",
+        api_url=authed_session,
+    )
+    imported = _run_cli(
+        "imports",
+        "profiles",
+        "import",
+        str(out),
+        api_url=authed_session,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert "amex" in imported.stdout
+
+
+@pytest.mark.integration
 def test_import_qif_garbage_returns_problem(authed_session: str, tmp_path: Path) -> None:
     _seed_checking(authed_session)
     bad = tmp_path / "bad.qif"

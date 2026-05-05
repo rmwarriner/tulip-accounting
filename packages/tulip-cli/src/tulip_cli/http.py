@@ -172,6 +172,32 @@ class TulipClient:
         """``DELETE path`` against the configured API."""
         return self.request("DELETE", path, authenticated=authenticated, headers=headers)
 
+    def post_raw(
+        self,
+        path: str,
+        *,
+        body: bytes,
+        content_type: str,
+        authenticated: bool = False,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """``POST path`` with a raw byte body and an explicit content type.
+
+        Used by the CSV-profile YAML import (P5.2.c) where the API
+        expects ``application/x-yaml`` rather than JSON or multipart.
+        """
+        merged: dict[str, str] = dict(headers) if headers else {}
+        merged["content-type"] = content_type
+        if authenticated:
+            merged["authorization"] = f"Bearer {self._access_token()}"
+        try:
+            response = self._client.post(path, content=body, headers=merged)
+        except httpx.HTTPError as exc:
+            raise CliError.from_network_error(exc, as_json=self._as_json) from exc
+        if response.status_code >= 400:
+            raise CliError.from_response(response, as_json=self._as_json)
+        return response
+
     def post_multipart(
         self,
         path: str,

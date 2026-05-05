@@ -245,14 +245,118 @@ class TestUploadQif:
         checking_account: str,
     ):
         body_bytes = (_OFX_FIXTURES / "minimal_ofx2.ofx").read_bytes()
+        # 'journal' is reserved in the storage enum but no parser ships
+        # for it yet — it's the canonical "unimplemented format" probe.
         r = client.post(
             "/v1/imports",
             headers=auth_h,
-            files={"file": ("file.csv", body_bytes, "text/csv")},
-            data={"account_id": checking_account, "source_format": "csv"},
+            files={"file": ("file.journal", body_bytes, "text/plain")},
+            data={"account_id": checking_account, "source_format": "journal"},
         )
         body = assert_problem(r, code="import.unsupported_format", status=400)
-        assert body["format"] == "csv"
+        assert body["format"] == "journal"
+
+
+class TestUploadCsv:
+    @pytest.fixture
+    def chase_profile_id(self, client: TestClient, auth_h: dict[str, str]) -> str:
+        r = client.post(
+            "/v1/imports/profiles",
+            headers=auth_h,
+            json={
+                "name": "chase-checking",
+                "date_column": "Posting Date",
+                "date_format": "%m/%d/%Y",
+                "amount_column": "Amount",
+                "description_column": "Description",
+                "reference_column": "Check or Slip #",
+            },
+        )
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_uploads_csv_with_profile(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        chase_profile_id: str,
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "csv" / "chase_checking.csv").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("may.csv", body_bytes, "text/csv")},
+            data={
+                "account_id": checking_account,
+                "source_format": "csv",
+                "profile_id": chase_profile_id,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["statement_line_count"] == 4
+        assert body["source_format"] == "csv"
+
+    def test_csv_without_profile_returns_400(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "csv" / "chase_checking.csv").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("may.csv", body_bytes, "text/csv")},
+            data={"account_id": checking_account, "source_format": "csv"},
+        )
+        assert_problem(r, code="import.csv_profile_missing", status=400)
+
+    def test_csv_with_unknown_profile_returns_404(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "csv" / "chase_checking.csv").read_bytes()
+        bogus = "11111111-1111-1111-1111-111111111111"
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("may.csv", body_bytes, "text/csv")},
+            data={
+                "account_id": checking_account,
+                "source_format": "csv",
+                "profile_id": bogus,
+            },
+        )
+        assert_problem(r, code="csv_profile.not_found", status=404)
+
+    def test_csv_parse_error_surfaces_row_number(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        chase_profile_id: str,
+    ):
+        body = (
+            b"Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+            b"05/12/2026,Good,-10.00,D,0,\n"
+            b"13/45/2026,Bad,-20.00,D,0,\n"
+        )
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("bad.csv", body, "text/csv")},
+            data={
+                "account_id": checking_account,
+                "source_format": "csv",
+                "profile_id": chase_profile_id,
+            },
+        )
+        problem = assert_problem(r, code="import.csv_parse_failed", status=400)
+        assert "row 2" in problem["detail"]
 
 
 class TestGetImport:

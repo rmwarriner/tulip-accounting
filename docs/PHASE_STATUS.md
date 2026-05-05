@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-05 · `main` @ **P5.2.b in flight** (QIF importer; reuses the P5.2.a API + CLI surface)
+**Last updated:** 2026-05-05 · `main` @ **P5.2.c in flight** (CSV importer + per-household CSV profiles + YAML round-trip)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a (OFX), and P5.2.b (QIF) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.c (CSV importer + per-household profiles).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a (OFX), P5.2.b (QIF), and P5.2.c (CSV + profiles) implemented per [ADR-0004](adrs/0004-reconciliation.md). All three statement-format importers shipped. Next: **P5.3** (matcher + categorizer DI seam).
 
-**Tests:** 917 passing · **CI:** green on `main`
+**Tests:** 974 passing · **CI:** green on `main`
 
 ---
 
@@ -449,11 +449,23 @@ Smaller cousin of P5.2.a. Reuses the API endpoint, multipart upload machinery, `
 - **CLI**: new `tulip import qif FILE --account ACCOUNT` subcommand. Refactored `commands/imports.py` to share a `_do_import(...)` helper between OFX and QIF — no duplicated upload plumbing.
 - **Tests**: 17 new (12 parser, 3 API, 2 CLI E2E). Project total: **917 passing** (up from 900).
 
-### P5.2.c — CSV importer + per-household profile CRUD — queued
+### P5.2.c — CSV importer + per-household profile CRUD — ✅ *(2026-05-05)*
 
-Per-household column-mapping profiles via the `csv_profiles` table from P5.1. CLI: `tulip imports profiles {add,edit,list,show,delete,export,import}` + `tulip import csv FILE --account A --profile P`. YAML round-trip for sharing profiles.
+Largest of the P5.2.x slices: CSV parser + Pydantic-validated profiles + 7-endpoint CRUD surface + YAML round-trip + new CLI subgroup. End-to-end: `tulip imports profiles add --name chase ...` → `tulip import csv FILE --account A --profile chase`.
 
-### P5.3 — Reconciliation matcher — queued
+- **`CsvProfile` Pydantic model** in `tulip_importers.csv.profile`. Required fields: `name`, `date_column`, `date_format`, `amount_column`, `description_column`. Defaults: `amount_negative_means="debit"`, `delimiter=","`, `encoding="utf-8"`, `skip_header_rows=1`. **Pydantic chosen over pure-stdlib dataclass** (deviation from `tulip-core`'s precedent) so the API's `CsvProfileCreate`/`CsvProfileRead` schemas reuse the same model directly — no dual definitions to keep in sync.
+- **`CsvProfile.to_yaml()` / `from_yaml()`** uses `yaml.safe_load` exclusively. New architecture test `test_architecture_no_unsafe_yaml.py` AST-scans for `yaml.load` / `yaml.full_load` / `yaml.unsafe_load` across all `packages/*/src/` and rejects them.
+- **CSV parser** (`tulip_importers.csv.parse(file_bytes, *, profile, currency)`). Handles UTF-8 BOM transparently (`utf-8-sig` upgrade), embedded-comma quoted fields, multi-line quoted fields, blank-row skipping, configurable `skip_header_rows`. Date parsing is strict strftime — the user picked the bank's format on purpose, no presets. Per-row error messages with row numbers.
+- **`amount_negative_means="credit"`** flips signs for credit-card-style CSVs where positive = charge.
+- **API**: 7 endpoints under `/v1/imports/profiles` — list, create (JSON), get (UUID-or-name), patch (partial), delete (hard), export (`application/x-yaml`), import (raw YAML body). `POST /v1/imports` extended with a `csv` branch + `profile_id` form field.
+- **CLI**: new `tulip imports profiles {add, list, show, delete, export, import}` subgroup. `add` accepts both individual `--*-column` flags and `--from-yaml FILE`. New `tulip import csv FILE --account A --profile NAME` resolves the profile client-side via the existing UUID-or-name pattern. Refactored `_do_import` shared helper to pass `extra_form` for format-specific fields.
+- **New error codes**: `import.csv_parse_failed` (400), `import.csv_profile_missing` (400), `csv_profile.not_found` (404), `csv_profile.duplicate_name` (409), `csv_profile.invalid_yaml` (400). The OFX/QIF errors stay distinct.
+- **Router registration order matters**: `csv_profiles.router` must register *before* `imports.router` because both prefix on `/v1/imports`; the more specific `/v1/imports/profiles` must win FastAPI's first-match dispatch.
+- **CLI alias**: `tulip import` (singular) kept alongside the new `tulip imports` (plural) for back-compat with PR-body smoke tests using the old name.
+- **New deps on `tulip-importers`**: `pydantic>=2.7`, `pyyaml>=6.0`, `types-pyyaml`. Pydantic was previously transitive via tulip-api; now direct on tulip-importers as well.
+- **Tests**: 57 new (14 profile model + 14 parser + 16 profile-CRUD API + 4 imports-endpoint CSV cases + 5 CLI E2E + 4 architecture/schemathesis adjustments). Project total: **974 passing** (up from 917). One schemathesis case skipped (path-collision between `POST /import` and `/{id_or_name}` — harmless, documented inline).
+
+### P5.3 — Reconciliation matcher — next up
 
 `tulip_core.reconciliation.matcher.find_candidates` per ADR-0004 §Q1-Q3 + `MatchConfidence` enum + `Categorizer` Protocol DI hook for Phase 6.
 
