@@ -943,6 +943,99 @@ _FRAMEWORK_ERROR_CODES: Final[dict[int, str]] = {
 }
 
 
+class ImportDuplicateFileError(TulipProblem):
+    """A statement file with this content hash was already imported (P5.2.a).
+
+    Idempotency per ADR-0004 §Q6: SHA-256 of the file bytes is the dedup
+    key. Surfaces the existing batch id as an extension so clients can
+    GET it without a second request.
+    """
+
+    def __init__(self, *, content_hash: str, existing_batch_id: str) -> None:
+        """Build the import.duplicate_file problem (409)."""
+        super().__init__(
+            code="import.duplicate_file",
+            title="Import file is a duplicate",
+            status=409,
+            detail=(
+                "A statement file with the same SHA-256 hash has already been "
+                "imported for this account. Re-importing the same file is "
+                "blocked to preserve idempotency."
+            ),
+            extensions={
+                "content_hash": content_hash,
+                "existing_batch_id": existing_batch_id,
+            },
+        )
+
+
+class ImportOfxParseFailedError(TulipProblem):
+    """The uploaded bytes could not be parsed as OFX (P5.2.a)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the import.ofx_parse_failed problem (400)."""
+        super().__init__(
+            code="import.ofx_parse_failed",
+            title="OFX file could not be parsed",
+            status=400,
+            detail=reason,
+        )
+
+
+class ImportBatchNotFoundError(TulipProblem):
+    """No import batch with that ID exists in this household (P5.2.a)."""
+
+    def __init__(self) -> None:
+        """Build the import_batch.not_found problem (404)."""
+        super().__init__(
+            code="import_batch.not_found",
+            title="Import batch not found",
+            status=404,
+            detail="No import batch with that ID exists in this household.",
+        )
+
+
+class RequestPayloadTooLargeError(TulipProblem):
+    """The uploaded payload exceeds ``MAX_OFX_BYTES`` (P5.2.a).
+
+    A size cap defends against accidental or malicious uploads that would
+    OOM the handler when it slurps the whole upload into memory. The cap
+    is currently a module constant; a follow-up will plumb it through
+    ``Settings`` for per-deployment configurability.
+    """
+
+    def __init__(self, *, max_bytes: int) -> None:
+        """Build the request.payload_too_large problem (413)."""
+        super().__init__(
+            code="request.payload_too_large",
+            title="Upload too large",
+            status=413,
+            detail=(
+                f"The uploaded file exceeds the {max_bytes}-byte limit. Real "
+                "bank statements are typically under 1 MB; if you genuinely "
+                "need to upload more, contact the operator to raise the cap."
+            ),
+            extensions={"max_bytes": max_bytes},
+        )
+
+
+class UnsupportedMediaTypeError(TulipProblem):
+    """The uploaded file's content type isn't accepted by the endpoint."""
+
+    def __init__(self, *, accepted: tuple[str, ...], received: str) -> None:
+        """Build the request.unsupported_media_type problem (415)."""
+        super().__init__(
+            code="request.unsupported_media_type",
+            title="Unsupported media type",
+            status=415,
+            detail=(
+                f"The uploaded file's content_type {received!r} is not in the "
+                f"accepted set: {', '.join(repr(a) for a in accepted)}."
+            ),
+            extensions={"accepted": list(accepted), "received": received},
+        )
+
+
 class InternalServerError(TulipProblem):
     """Catch-all for an unhandled exception escaping a route handler.
 

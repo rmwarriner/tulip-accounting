@@ -3,6 +3,16 @@ name = "tulip-importers"
 version = "0.0.0"
 description = "File-format importers (OFX, QIF, CSV, journal) for Tulip Accounting."
 requires-python = ">=3.12"
+dependencies = [
+    "tulip-core",
+    # ofxtools chosen over ofxparse per ADR-0004 §Q8 review at P5.2.a kickoff:
+    # ofxparse last released 2023; ofxtools actively maintained, ships type
+    # stubs, parses both OFX 1.x SGML and 2.x XML through one API.
+    "ofxtools>=0.9.5",
+]
+
+[tool.uv.sources]
+tulip-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

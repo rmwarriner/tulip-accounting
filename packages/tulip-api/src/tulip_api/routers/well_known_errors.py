@@ -59,6 +59,16 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     "RefillScheduleInvalidRRuleError": {"reason": "<dateutil parser error>"},
     "TransactionAlreadyVoidedError": {"voided_by_transaction_id": "<reversal-transaction-uuid>"},
     "TransactionNotVoidableError": {"status": "pending"},
+    "ImportDuplicateFileError": {
+        "content_hash": "<sha256-hex>",
+        "existing_batch_id": "<batch-uuid>",
+    },
+    "ImportOfxParseFailedError": {"reason": "could not parse as OFX: ..."},
+    "RequestPayloadTooLargeError": {"max_bytes": 26214400},
+    "UnsupportedMediaTypeError": {
+        "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),
+        "received": "text/plain",
+    },
     "ValidationFailedError": {
         "errors": [
             {

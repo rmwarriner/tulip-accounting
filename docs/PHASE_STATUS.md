@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-05 · `main` @ **P5.1 in flight** (storage layer for imports + reconciliations; 7 new tables, 5 new transactions columns, 7 repos)
+**Last updated:** 2026-05-05 · `main` @ **P5.2.a in flight** (OFX importer + first `tulip-importers` package + first `tulip_core.reconciliation` domain types)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55) and P5.1 (storage layer) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.a (OFX importer).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), and P5.2.a (OFX importer) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: P5.2.b (QIF importer).
 
-**Tests:** 860 passing · **CI:** green on `main`
+**Tests:** 900 passing · **CI:** green on `main`
 
 ---
 
@@ -424,9 +424,35 @@ Pure storage slice; no API verbs, no CLI. Migration `f4a6b9c2e7d3` adds 7 new ta
 - **`csv_profiles` stored DB-only** with YAML as export/import format (per the P5 design decision).
 - **Tests**: 31 new (10 migration + 18 repository + 3 architecture). Project total: **860 passing** (up from 829).
 
-### P5.2 — P5.4 — queued
+### P5.2.a — OFX importer + first reconciliation domain types — ✅ *(2026-05-05)*
 
-P5.2.{a,b,c} ship the three importers in parallel; P5.3 ships the matcher + categorizer DI seam; P5.4 closes Phase 5 with the API + CLI surface.
+First Phase 5 slice that touches all four layers (core domain + new `tulip-importers` package + storage write-through + API + CLI). Closes the all-four-layers cohesion gap; P5.2.b (QIF) and P5.2.c (CSV) reuse the chokepoints landed here.
+
+- **Core domain** (first `tulip_core.reconciliation` module): new `ParsedStatementLine` (parser output, no persistence ids) + `StatementLine` (persisted form, equality by id). Split keeps each value object with one writer and one reader; placeholder UUIDs in parser output become a type error rather than a runtime surprise. `raw` is `MappingProxyType[str, str]` — read-only after construction so the matcher can't mutate format-specific noise.
+- **`tulip-importers` package** wired (was empty in P5.1). Depends on `tulip-core` (for `ParsedStatementLine`) + `ofxtools>=0.9.5`. **`ofxtools` chosen over the ADR's default `ofxparse`** at slice kickoff: ofxparse last released July 2023 (~2 years stale); ofxtools last released Jan 2026, actively maintained, ships type stubs, parses both OFX 1.x SGML and OFX 2.x XML through one API.
+- **`tulip_importers.ofx.parse(file_bytes) -> list[ParsedStatementLine]`** with typed `OfxParseError`. Maps `STMTTRN.{DTPOSTED, TRNAMT, NAME, MEMO, FITID, TRNTYPE}` per ADR §Q8. Empty OFX returns `[]`; not-OFX raises. Three test fixtures: hand-crafted OFX 2.x XML + OFX 1.x SGML + empty-OFX. **No real bank statements committed** (per the fixture-strategy decision).
+- **Architecture test** `test_architecture_importers_pure.py` bans `tulip_storage`, `tulip_api`, `sqlalchemy`, `fastapi`, `httpx`, `typer` imports from `tulip_importers/src/`. Sibling to the existing AI guard from P5.1; together they pin the importer's purity.
+- **API**: new `routers/imports.py`. `POST /v1/imports` accepts multipart upload (file + `account_id` form field + `source_format`). 25 MB cap (`MAX_OFX_BYTES`) defends against OOM uploads; `Settings.attachment_root` already plumbed in P5.1. Idempotency goes through `ImportBatchRepository.find_for_attachment` (new method) so the API never imports the storage model directly. Five new error codes: `import.duplicate_file` (409, with `existing_batch_id` extension), `import.ofx_parse_failed` (400), `import_batch.not_found` (404), `request.payload_too_large` (413), `request.unsupported_media_type` (415). `python-multipart` added as a `tulip-api` dep.
+- **CLI**: new `tulip import ofx FILE --account ACCOUNT [--json]`. Reads file from disk; resolves `--account` via the shared `_resolve_account` helper; multipart POST through new `TulipClient.post_multipart`.
+- **Settings**: new `attachment_root` field already lived in `Settings` from P5.1; conftest now passes `tmp_path / "attachments"` to the test settings so the encrypted-bytes write doesn't pollute the dev's home directory.
+- **`force=true` deferred** (#114): ADR-0004 §Q6 specifies a `?force=true` override but P5.1's unique index `ix_import_batches_idempotency` forbids it. The 409 happy path works; the override is xfailed and tracked as a P5.1 fix-up migration in #114.
+- **Tests**: 40 new — 14 core, 8 importer, 1 storage E2E, 10 API endpoint (+1 xfailed for #114), 5 CLI E2E, 2 architecture. Project total: **900 passing** (up from 860).
+
+### P5.2.b — QIF importer — queued
+
+Custom parser (small format). CLI: `tulip import qif FILE --account ACCOUNT`. Reuses the API endpoint + `tulip_core.reconciliation.ParsedStatementLine` shape from P5.2.a; only the parser swap differs.
+
+### P5.2.c — CSV importer + per-household profile CRUD — queued
+
+Per-household column-mapping profiles via the `csv_profiles` table from P5.1. CLI: `tulip imports profiles {add,edit,list,show,delete,export,import}` + `tulip import csv FILE --account A --profile P`. YAML round-trip for sharing profiles.
+
+### P5.3 — Reconciliation matcher — queued
+
+`tulip_core.reconciliation.matcher.find_candidates` per ADR-0004 §Q1-Q3 + `MatchConfidence` enum + `Categorizer` Protocol DI hook for Phase 6.
+
+### P5.4 — API + CLI surface (closes Phase 5) — queued
+
+Reconciliation CRUD endpoints, manual matching, carry-forward, `tulip reconcile` interactive flow, import apply / revert.
 
 ---
 
