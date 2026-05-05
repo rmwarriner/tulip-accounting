@@ -150,10 +150,13 @@ jobs:
       - name: Run tests with coverage
         # --cov-fail-under enforces the project floor declared in README.md.
         # Bump this number as coverage improves; never lower it without an ADR.
-        # `-n auto` parallelises test execution across CPU cores via
-        # pytest-xdist; pytest-cov handles coverage aggregation across workers.
+        # `-n auto --maxprocesses=4` parallelises test execution across CPU
+        # cores via pytest-xdist while capping at 4 workers so local
+        # invocations don't saturate developer machines (CI runners are
+        # 4-vCPU so the cap is a no-op here; it matters locally). The cap
+        # mirrors XDIST_WORKERS in the justfile.
         run: |
-          uv run pytest -n auto \
+          uv run pytest -n auto --maxprocesses 4 \
             --cov \
             --cov-report=term \
             --cov-report=xml \

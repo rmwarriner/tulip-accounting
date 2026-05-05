@@ -28,17 +28,24 @@ precommit-install:
 # Tests
 # ---------------------------------------------------------------------------
 
+# Worker cap for pytest-xdist. `auto` resolves to os.cpu_count(), which on
+# typical dev machines (8-12 cores) saturates the box and makes the rest
+# of the system unusable mid-run. Cap to 4 — leaves headroom for browser /
+# editor / Slack and matches CI's 4-vCPU runner so local + CI stay aligned.
+# Override per-invocation via `XDIST_WORKERS=8 just test`.
+export XDIST_WORKERS := env_var_or_default("XDIST_WORKERS", "4")
+
 # Run the full test suite, parallelised via pytest-xdist (matches CI).
 test:
-    uv run pytest -n auto
+    uv run pytest -n auto --maxprocesses {{XDIST_WORKERS}}
 
 # Fast loop — skip slow / integration markers for quick local feedback.
 test-fast:
-    uv run pytest -n auto -m "not slow and not integration"
+    uv run pytest -n auto --maxprocesses {{XDIST_WORKERS}} -m "not slow and not integration"
 
 # Run tests with coverage and the 85% gate (mirrors CI exactly).
 coverage:
-    uv run pytest -n auto \
+    uv run pytest -n auto --maxprocesses {{XDIST_WORKERS}} \
         --cov \
         --cov-report=term \
         --cov-report=html \
