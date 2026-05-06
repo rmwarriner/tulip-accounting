@@ -79,6 +79,27 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "StatementLineExcludedError": {"line_id": "<statement-line-uuid>"},
     "ImportCategorizeUnknownAccountError": {"account_code": "Imbalance:Unknown"},
+    "ReconciliationMatchesExistError": {
+        "reconciliation_id": "<reconciliation-uuid>",
+        "existing_match_count": 7,
+    },
+    "ReconciliationUnbalancedError": {
+        "reconciliation_id": "<reconciliation-uuid>",
+        "expected_net": "-450.00",
+        "matched_net": "-300.00",
+        "residual": "-150.00",
+    },
+    "ReconciliationInvalidStateError": {"current_status": "complete", "action": "complete"},
+    "ReconciliationAccountAlreadyInProgressError": {
+        "account_id": "<account-uuid>",
+        "existing_reconciliation_id": "<reconciliation-uuid>",
+    },
+    "ReconciliationCurrencyMismatchError": {
+        "reconciliation_currency": "USD",
+        "source_currency": "EUR",
+        "source": "import_batch",
+    },
+    # ReconciliationCascadeRequiredError takes no args.
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),

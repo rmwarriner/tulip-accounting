@@ -1163,6 +1163,181 @@ class StatementLineExcludedError(TulipProblem):
         )
 
 
+class ReconciliationNotFoundError(TulipProblem):
+    """No reconciliation with that ID exists in this household (P5.4.b)."""
+
+    def __init__(self) -> None:
+        """Build the reconciliation.not_found problem (404)."""
+        super().__init__(
+            code="reconciliation.not_found",
+            title="Reconciliation not found",
+            status=404,
+            detail="No reconciliation with that ID exists in this household.",
+        )
+
+
+class ReconciliationMatchNotFoundError(TulipProblem):
+    """No match with that ID exists for this reconciliation (P5.4.b)."""
+
+    def __init__(self) -> None:
+        """Build the reconciliation_match.not_found problem (404)."""
+        super().__init__(
+            code="reconciliation_match.not_found",
+            title="Reconciliation match not found",
+            status=404,
+            detail="No match with that ID exists for this reconciliation.",
+        )
+
+
+class ReconciliationMatchesExistError(TulipProblem):
+    """Auto-match was called on a reconciliation that already has matches (P5.4.b).
+
+    Per the locked decision in the P5.4.b scoping discussion: re-running
+    auto-match is rejected (rather than appended-to or replaced) so the
+    contract stays simple. Caller should reject individual matches or
+    DELETE+recreate the reconciliation for a fresh pass.
+    """
+
+    def __init__(self, *, reconciliation_id: str, existing_match_count: int) -> None:
+        """Build the reconciliation.matches_exist problem (409)."""
+        super().__init__(
+            code="reconciliation.matches_exist",
+            title="Reconciliation already has matches",
+            status=409,
+            detail=(
+                "This reconciliation already has matches. Re-running auto-match "
+                "would create duplicates. Reject the existing matches one-by-one, "
+                "or DELETE the reconciliation and create a new one for a fresh pass."
+            ),
+            extensions={
+                "reconciliation_id": reconciliation_id,
+                "existing_match_count": existing_match_count,
+            },
+        )
+
+
+class ReconciliationUnbalancedError(TulipProblem):
+    """Complete was called but matched + carry-forward != ending - starting (P5.4.b).
+
+    Per the locked decision: strict balance enforcement at /complete.
+    The user must reach a fully-balanced state before marking the
+    reconciliation done — no force-complete-with-residual.
+    """
+
+    def __init__(
+        self,
+        *,
+        reconciliation_id: str,
+        expected_net: str,
+        matched_net: str,
+        residual: str,
+    ) -> None:
+        """Build the reconciliation.unbalanced problem (409)."""
+        super().__init__(
+            code="reconciliation.unbalanced",
+            title="Reconciliation does not balance",
+            status=409,
+            detail=(
+                "The matched transactions don't sum to "
+                f"(ending_balance - starting_balance) = {expected_net}. "
+                f"Matched net is {matched_net}; residual {residual} remains. "
+                "Match additional transactions, exclude lines that aren't real, "
+                "or carry-forward the residual (P5.4.c)."
+            ),
+            extensions={
+                "reconciliation_id": reconciliation_id,
+                "expected_net": expected_net,
+                "matched_net": matched_net,
+                "residual": residual,
+            },
+        )
+
+
+class ReconciliationInvalidStateError(TulipProblem):
+    """A state-transitioning action was called from a non-IN_PROGRESS state (P5.4.b)."""
+
+    def __init__(self, *, current_status: str, action: str) -> None:
+        """Build the reconciliation.invalid_state problem (409)."""
+        super().__init__(
+            code="reconciliation.invalid_state",
+            title="Reconciliation is not in a valid state for this action",
+            status=409,
+            detail=(
+                f"Cannot {action} a reconciliation in {current_status!r} status. "
+                "Only IN_PROGRESS reconciliations accept matches and completion."
+            ),
+            extensions={"current_status": current_status, "action": action},
+        )
+
+
+class ReconciliationAccountAlreadyInProgressError(TulipProblem):
+    """An IN_PROGRESS reconciliation already exists for this account (P5.4.b).
+
+    Locked decision: at most one IN_PROGRESS reconciliation per account at
+    any time. Avoids the matcher having to consult multiple in-progress
+    match tables to detect double-matches.
+    """
+
+    def __init__(self, *, account_id: str, existing_reconciliation_id: str) -> None:
+        """Build the reconciliation.account_already_in_progress problem (409)."""
+        super().__init__(
+            code="reconciliation.account_already_in_progress",
+            title="An in-progress reconciliation already exists for this account",
+            status=409,
+            detail=(
+                "Complete or delete the existing reconciliation before opening a "
+                "new one for this account."
+            ),
+            extensions={
+                "account_id": account_id,
+                "existing_reconciliation_id": existing_reconciliation_id,
+            },
+        )
+
+
+class ReconciliationCascadeRequiredError(TulipProblem):
+    """DELETE /v1/reconciliations/{id} called without ``?cascade=true`` (P5.4.b).
+
+    The destructive intent is gated behind an explicit query param so a
+    typo or browser-bookmark-replay can't silently un-reconcile a closed
+    period.
+    """
+
+    def __init__(self) -> None:
+        """Build the reconciliation.cascade_required problem (400)."""
+        super().__init__(
+            code="reconciliation.cascade_required",
+            title="Cascade flag required",
+            status=400,
+            detail=(
+                "Reverting a reconciliation deletes its matches and nulls "
+                "transactions.reconciliation_id + reconciled_at. Pass "
+                "?cascade=true to confirm the destructive intent."
+            ),
+        )
+
+
+class ReconciliationCurrencyMismatchError(TulipProblem):
+    """The import batch / account / reconciliation currencies disagree (P5.4.b)."""
+
+    def __init__(self, *, reconciliation_currency: str, source_currency: str, source: str) -> None:
+        """Build the reconciliation.currency_mismatch problem (400)."""
+        super().__init__(
+            code="reconciliation.currency_mismatch",
+            title="Currency mismatch between reconciliation and source",
+            status=400,
+            detail=(
+                f"Reconciliation currency is {reconciliation_currency!r} but "
+                f"the {source} currency is {source_currency!r}. They must match."
+            ),
+            extensions={
+                "reconciliation_currency": reconciliation_currency,
+                "source_currency": source_currency,
+                "source": source,
+            },
+        )
+
+
 class ImportCategorizeUnknownAccountError(TulipProblem):
     """The categorizer suggested an account_code with no matching Account (P5.4.a)."""
 

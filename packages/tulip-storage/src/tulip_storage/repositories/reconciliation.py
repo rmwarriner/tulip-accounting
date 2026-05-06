@@ -13,12 +13,13 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from tulip_storage.models import (
     Reconciliation,
     ReconciliationMatch,
     ReconciliationStatus,
+    StatementLine,
     Transaction,
 )
 
@@ -149,3 +150,73 @@ class ReconciliationRepository:
         recon.status = ReconciliationStatus.ABANDONED
         self._session.flush()
         return recon
+
+    def revert(self, reconciliation_id: UUID) -> None:
+        """Un-reconcile: null tx denorms, clear line pointers, delete the row.
+
+        Per ADR-0004 §Q7, ``DELETE /v1/reconciliations/{id}?cascade=true``
+        is the user-facing un-reconcile path. This is its single
+        chokepoint:
+
+        1. Null ``transactions.reconciliation_id`` + ``reconciled_at`` for
+           every transaction this reconciliation completed (so they're
+           re-matchable).
+        2. Null ``statement_lines.reconciliation_match_id`` for every line
+           in the affected matches (the FK on ``reconciliation_matches``
+           is ON DELETE CASCADE, but the line's denormalised pointer has
+           no FK and would otherwise dangle).
+        3. Delete the reconciliation row — cascades the matches.
+
+        Raises:
+            LookupError: ``reconciliation_id`` does not exist in this household.
+
+        """
+        recon = self.get(reconciliation_id)
+        if recon is None:
+            raise LookupError(
+                f"reconciliation {reconciliation_id} not found in household {self._household_id}"
+            )
+
+        # Pull all match rows so we know which lines + txs to clean up.
+        match_rows = list(
+            self._session.execute(
+                select(ReconciliationMatch).where(
+                    ReconciliationMatch.household_id == self._household_id,
+                    ReconciliationMatch.reconciliation_id == reconciliation_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        line_ids = [m.statement_line_id for m in match_rows]
+
+        # Clear the statement_line denormalised pointers (no FK to cascade).
+        if line_ids:
+            self._session.execute(
+                update(StatementLine)
+                .where(
+                    StatementLine.household_id == self._household_id,
+                    StatementLine.id.in_(line_ids),
+                )
+                .values(reconciliation_match_id=None)
+            )
+
+        # Null the transaction denorms — only this method (and complete())
+        # touch these columns; architecture test enforces.
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.reconciliation_id == reconciliation_id,
+            )
+            .values(reconciliation_id=None, reconciled_at=None)
+        )
+
+        # Delete the reconciliation row — cascades reconciliation_matches.
+        self._session.execute(
+            delete(Reconciliation).where(
+                Reconciliation.household_id == self._household_id,
+                Reconciliation.id == reconciliation_id,
+            )
+        )
+        self._session.flush()
