@@ -60,6 +60,15 @@ class AccountRepository:
             )
         ).scalar_one_or_none()
 
+    def get_by_code(self, code: str) -> Account | None:
+        """Return the Account with the given code within this household, or None."""
+        return self._session.execute(
+            select(Account).where(
+                Account.household_id == self._household_id,
+                Account.code == code,
+            )
+        ).scalar_one_or_none()
+
     def list_active(self) -> list[Account]:
         """Return all active accounts in this household, ordered by code/name."""
         return list(

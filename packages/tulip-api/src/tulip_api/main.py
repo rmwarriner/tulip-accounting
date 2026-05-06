@@ -39,7 +39,15 @@ from tulip_api.routers import (
     transactions,
     well_known_errors,
 )
+from tulip_core.reconciliation.categorizer import NullCategorizer, register_categorizer
 from tulip_storage.runner import Runner
+
+# Register the default Categorizer at module-import time so production
+# wiring is grep-able (Phase 6 will swap NullCategorizer for the real
+# AICategorizer at this exact line). Tests that need a different
+# categorizer call register_categorizer(...) themselves; the registry
+# warns on replacement, which is the right signal in production.
+register_categorizer(NullCategorizer())
 
 API_VERSION = "v1"
 API_TITLE = "Tulip Accounting API"

@@ -203,20 +203,31 @@ class TransactionRepository:
             for account_id, currency, balance in rows
         ]
 
-    def save_balanced(self, domain_tx: DomainTransaction) -> Transaction:
+    def save_balanced(
+        self,
+        domain_tx: DomainTransaction,
+        *,
+        imported_from_id: UUID | None = None,
+    ) -> Transaction:
         """Persist a balanced Domain Transaction.
 
         Inserts the header as PENDING, then all postings, then UPDATEs the
         header to the requested final status. The balance trigger validates
         on the UPDATE; if postings are unbalanced the transaction aborts.
+
+        ``imported_from_id`` links the persisted row to the
+        ``import_batches`` row that produced it (used by the apply /
+        promote flow in P5.4.a).
         """
         target_status = self._domain_to_storage(domain_tx.status)
-        return self._save(domain_tx, target_status)
+        return self._save(domain_tx, target_status, imported_from_id=imported_from_id)
 
     def _save(
         self,
         domain_tx: DomainTransaction,
         target_status: TransactionStatus,
+        *,
+        imported_from_id: UUID | None = None,
     ) -> Transaction:
         header = Transaction(
             household_id=self._household_id,
@@ -227,6 +238,7 @@ class TransactionRepository:
             status=TransactionStatus.PENDING,
             created_by_user_id=domain_tx.created_by_user_id,
             posted_at=datetime.now(tz=UTC) if target_status is TransactionStatus.POSTED else None,
+            imported_from_id=imported_from_id,
         )
         self._session.add(header)
         self._session.flush()

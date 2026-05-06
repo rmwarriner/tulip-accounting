@@ -49,6 +49,7 @@ class StatementLine(Base):
     raw_json: Mapped[str] = mapped_column(Text, nullable=False)
     is_excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     reconciliation_match_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
+    promoted_transaction_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
 
     __table_args__ = (
         PrimaryKeyConstraint("household_id", "id", name="pk_statement_lines"),

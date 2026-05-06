@@ -105,3 +105,20 @@ class StatementLineRepository:
         line.is_excluded = True
         self._session.flush()
         return line
+
+    def mark_promoted(self, line_id: UUID, transaction_id: UUID) -> StatementLine:
+        """Link a statement line to the ledger Transaction it was promoted into.
+
+        Single chokepoint for setting ``promoted_transaction_id`` —
+        keeps the architecture test happy and gives one obvious place to
+        layer in audit-log writes if/when promotion needs more than the
+        router-level audit row that already covers it.
+        """
+        line = self.get(line_id)
+        if line is None:
+            raise LookupError(
+                f"statement_line {line_id} not found in household {self._household_id}"
+            )
+        line.promoted_transaction_id = transaction_id
+        self._session.flush()
+        return line

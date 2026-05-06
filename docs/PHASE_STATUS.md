@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-06 · `main` @ **P5.3 in flight** (reconciliation matcher + categorizer DI seam)
+**Last updated:** 2026-05-06 · `main` @ **P5.4.a in flight** (apply / promote endpoints + CLI)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), and P5.3 (matcher + categorizer DI seam) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: **P5.4** (API + CLI surface — closes Phase 5).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), and P5.4.a (apply / promote endpoints + CLI) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slices land the reconciliation envelope (P5.4.b), manual match + carry-forward (P5.4.c), and the `tulip reconcile` CLI (P5.4.d) — closing Phase 5.
 
-**Tests:** 1028 passing · **CI:** green on `main`
+**Tests:** 1061 passing · **CI:** green on `main`
 
 ---
 
@@ -479,9 +479,28 @@ Pure-`tulip-core` slice. No API, no CLI, no storage. Adds the bucketed-confidenc
 - **Hypothesis property tests** for the bucket-classification function: `_classify_confidence(delta_days, fuzzy)` is exhaustively probed across the window, asserting boundary invariants (same-date is never LOW; date drift never returns HIGH; outside-window always emits no candidate).
 - **Tests**: 54 new (6 `MatchConfidence` + 12 `CandidateMatch` + 18 matcher integration + 5 hypothesis properties + 15 categorizer + registry; the matcher's hypothesis suite expands to multiple parametrized cases under the `--hypothesis-show-statistics` runner). Project total: **1028 passing** (up from 974).
 
-### P5.4 — API + CLI surface (closes Phase 5) — queued
+### P5.4.a — Apply / promote endpoints + CLI — ✅ *(2026-05-06)*
 
-Reconciliation CRUD endpoints, manual matching, carry-forward, `tulip reconcile` interactive flow, import apply / revert.
+First sub-slice of P5.4: closes the importer loop. Statement lines now turn into PENDING ledger transactions via the registered `Categorizer` (currently `NullCategorizer` from P5.3). The reconciliation envelope (P5.4.b), manual match + carry-forward (P5.4.c), and the `tulip reconcile` CLI (P5.4.d) follow.
+
+- **`POST /v1/imports/{batch_id}/apply`** — promote every non-excluded, non-already-promoted line in the batch to a PENDING `transaction` with two `posting`s (bank-side + categorizer-side). Flips `import_batches.status = 'applied'`. Idempotent at the batch level: re-applying returns `409 import.already_applied`.
+- **`POST /v1/imports/{batch_id}/lines/{line_id}/promote`** — single-line promotion. Returns `201` with `{statement_line_id, transaction_id}`. Idempotent at the line level (`409 import.line.already_promoted` carries the existing tx id in the response). An excluded line returns `422 import.line.excluded` — un-exclude it first.
+- **`tulip imports apply BATCH_ID`** — CLI wrapper. Renders a one-line summary in human mode; passes the JSON body through in `--json` mode.
+- **Storage prerequisites** rolled into the slice:
+  - New migration `d5c8e7a91f2b` adds `statement_lines.promoted_transaction_id` (composite FK to `transactions(household_id, id)`) for O(1) idempotency lookup. Picked over a back-query through `transactions.imported_from_id` because back-query is O(N) per line.
+  - `AccountRepository.get_by_code` for resolving the categorizer's account-code suggestion to an `account_id`.
+  - `TransactionRepository.save_balanced(..., imported_from_id=...)` propagates the FK through `_save` (the column existed in P5.1 but no path set it).
+  - Registration now seeds `Imbalance:Unknown` (EQUITY, base currency) per household — chosen over `EXPENSE` because suspense accounts conventionally sit on the balance sheet rather than shifting the P&L until categorized.
+- **`Categorizer` registry wiring** — `tulip_api.main` now calls `register_categorizer(NullCategorizer())` at module-import time. Phase 6's swap-in lands at this exact line; explicit registration makes the production wiring grep-able.
+- **Service-level orchestration** lives in `tulip_api.services.import_apply` (`promote_statement_line`, `apply_batch`, `ApplyResult`). The router awaits the service; the service flushes but never commits, so the caller can wrap a single `commit()` around the audit-log row + the promoted-tx rows for atomicity.
+- **Atomicity in `apply_batch`** is the caller's responsibility — service flushes only. Mid-batch failure (e.g., categorizer suggests an unknown account on line 3 of 5) raises `CategorizeUnknownAccountError`; the router returns `409 import.categorize.unknown_account` and FastAPI's exception path triggers `session.rollback()`. No partial state.
+- **`409 import.categorize.unknown_account`** carries the offending `account_code` as an extension field, so the client can prompt the user to create the missing account or re-train the categorizer.
+- **Audit-log entries**: `import_apply` (one row per batch, with `created_count` / `skipped_count` / `transaction_ids`) and `statement_line_promote` (one row per line, with `transaction_id` / `batch_id`).
+- **Tests**: 11 service tests + 9 router tests + 4 storage-layer tests + 2 CLI integration tests + 1 register-seed test, plus a small architecture-test enhancement (the `if TYPE_CHECKING:` walker filter so type-only model imports don't trip the chokepoint guard). Project total: **1061 passing** (up from 1028).
+
+### P5.4.b — Reconciliation envelope + auto-match — queued
+
+`POST/GET/DELETE /v1/reconciliations`, `POST /complete`, `POST /auto-match` (wires `find_candidates`), `POST /matches/{id}/reject`. Server-side only.
 
 ---
 

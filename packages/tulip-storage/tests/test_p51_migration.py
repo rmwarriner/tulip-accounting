@@ -206,7 +206,10 @@ class TestSchemaShape:
         db_path = tmp_path / "tulip.db"
         cfg = _make_alembic_cfg(f"sqlite:///{db_path}")
         upgrade(cfg, "head")
-        downgrade(cfg, "-1")
+        # Downgrade to the revision *before* P5.1 (e7d2a4f8c1b9 = P5.0).
+        # P5.4.a (d5c8e7a91f2b) sits above P5.1, so a single "-1" no
+        # longer un-applies the P5.1 tables — reach the exact target.
+        downgrade(cfg, "e7d2a4f8c1b9")
         from sqlalchemy import create_engine
 
         eng = create_engine(f"sqlite:///{db_path}")

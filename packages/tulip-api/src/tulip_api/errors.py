@@ -1099,6 +1099,88 @@ class ImportBatchNotFoundError(TulipProblem):
         )
 
 
+class ImportAlreadyAppliedError(TulipProblem):
+    """The import batch has already been applied to the ledger (P5.4.a)."""
+
+    def __init__(self, *, batch_id: str) -> None:
+        """Build the import.already_applied problem (409)."""
+        super().__init__(
+            code="import.already_applied",
+            title="Import already applied",
+            status=409,
+            detail=(
+                "This import batch has already been applied. To re-promote a "
+                "specific line, use POST /v1/imports/{batch_id}/lines/{line_id}/promote."
+            ),
+            extensions={"batch_id": batch_id},
+        )
+
+
+class StatementLineNotFoundError(TulipProblem):
+    """No statement line with that ID exists in this household / batch (P5.4.a)."""
+
+    def __init__(self) -> None:
+        """Build the import.line.not_found problem (404)."""
+        super().__init__(
+            code="import.line.not_found",
+            title="Statement line not found",
+            status=404,
+            detail="No statement line with that ID exists in this batch.",
+        )
+
+
+class StatementLineAlreadyPromotedError(TulipProblem):
+    """The statement line has already been promoted to a ledger tx (P5.4.a)."""
+
+    def __init__(self, *, line_id: str, transaction_id: str) -> None:
+        """Build the import.line.already_promoted problem (409)."""
+        super().__init__(
+            code="import.line.already_promoted",
+            title="Statement line already promoted",
+            status=409,
+            detail=(
+                "This statement line was already promoted to a ledger transaction. "
+                "Edit the existing transaction instead."
+            ),
+            extensions={"line_id": line_id, "transaction_id": transaction_id},
+        )
+
+
+class StatementLineExcludedError(TulipProblem):
+    """The statement line is excluded; un-exclude before promoting (P5.4.a)."""
+
+    def __init__(self, *, line_id: str) -> None:
+        """Build the import.line.excluded problem (422)."""
+        super().__init__(
+            code="import.line.excluded",
+            title="Statement line excluded",
+            status=422,
+            detail=(
+                "This statement line is excluded from import. Un-exclude it "
+                "before attempting to promote it to the ledger."
+            ),
+            extensions={"line_id": line_id},
+        )
+
+
+class ImportCategorizeUnknownAccountError(TulipProblem):
+    """The categorizer suggested an account_code with no matching Account (P5.4.a)."""
+
+    def __init__(self, *, account_code: str) -> None:
+        """Build the import.categorize.unknown_account problem (409)."""
+        super().__init__(
+            code="import.categorize.unknown_account",
+            title="Categorizer suggested an unknown account",
+            status=409,
+            detail=(
+                f"The categorizer suggested account_code={account_code!r}, but "
+                "no account with that code exists in this household. Create the "
+                "account first, then retry the apply / promote."
+            ),
+            extensions={"account_code": account_code},
+        )
+
+
 class RequestPayloadTooLargeError(TulipProblem):
     """The uploaded payload exceeds ``MAX_OFX_BYTES`` (P5.2.a).
 

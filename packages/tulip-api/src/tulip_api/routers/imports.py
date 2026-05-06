@@ -31,7 +31,9 @@ from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountUnknownError,
     CsvProfileNotFoundError,
+    ImportAlreadyAppliedError,
     ImportBatchNotFoundError,
+    ImportCategorizeUnknownAccountError,
     ImportCsvParseFailedError,
     ImportCsvProfileMissingError,
     ImportDuplicateFileError,
@@ -39,14 +41,28 @@ from tulip_api.errors import (
     ImportQifParseFailedError,
     ImportUnsupportedFormatError,
     RequestPayloadTooLargeError,
+    StatementLineAlreadyPromotedError,
+    StatementLineExcludedError,
+    StatementLineNotFoundError,
     UnsupportedMediaTypeError,
     problem_response,
 )
 from tulip_api.schemas.import_batch import (
+    ImportBatchApplyResponse,
     ImportBatchRead,
     ImportBatchSummary,
+    StatementLinePromoteResponse,
     StatementLineRead,
 )
+from tulip_api.services.import_apply import (
+    BatchAlreadyAppliedError,
+    CategorizeUnknownAccountError,
+    LineAlreadyPromotedError,
+    LineExcludedError,
+    apply_batch,
+    promote_statement_line,
+)
+from tulip_core.reconciliation.categorizer import get_categorizer
 from tulip_importers.csv import CsvParseError, CsvProfile
 from tulip_importers.csv import parse as csv_parse
 from tulip_importers.ofx import OfxParseError
@@ -328,6 +344,160 @@ async def upload_import(
         skipped_count=batch.skipped_count,
         error_count=batch.error_count,
         created_at=batch.created_at,
+    )
+
+
+@router.post(
+    "/{batch_id}/apply",
+    response_model=ImportBatchApplyResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("import_batch.not_found"),
+        409: problem_response(
+            "import.already_applied",
+            "import.categorize.unknown_account",
+        ),
+    },
+)
+async def apply_import(
+    batch_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> ImportBatchApplyResponse:
+    """Promote every non-excluded line in the batch to a PENDING ledger tx.
+
+    Per ADR-0004 §Q4. Idempotent at the batch level: re-applying an
+    already-applied batch returns ``import.already_applied`` (409). To
+    promote a specific line individually, see
+    ``POST /v1/imports/{batch_id}/lines/{line_id}/promote``.
+    """
+    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch = batch_repo.get(batch_id)
+    if batch is None:
+        raise ImportBatchNotFoundError()
+
+    try:
+        result = await apply_batch(
+            session=session,
+            household_id=claims.household_id,
+            batch=batch,
+            categorizer=get_categorizer(),
+            actor_user_id=claims.user_id,
+        )
+    except BatchAlreadyAppliedError as exc:
+        raise ImportAlreadyAppliedError(batch_id=str(batch_id)) from exc
+    except CategorizeUnknownAccountError as exc:
+        raise ImportCategorizeUnknownAccountError(account_code=exc.account_code) from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="import_apply",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="import_batch",
+        entity_id=batch.id,
+        after={
+            "created_count": result.created_count,
+            "skipped_count": result.skipped_count,
+            "transaction_ids": [str(t) for t in result.transaction_ids],
+        },
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "import.applied",
+        batch_id=str(batch.id),
+        created=result.created_count,
+        skipped=result.skipped_count,
+    )
+    return ImportBatchApplyResponse(
+        batch_id=batch.id,
+        status="applied",
+        created_count=result.created_count,
+        skipped_count=result.skipped_count,
+        transaction_ids=list(result.transaction_ids),
+    )
+
+
+@router.post(
+    "/{batch_id}/lines/{line_id}/promote",
+    response_model=StatementLinePromoteResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("import_batch.not_found", "import.line.not_found"),
+        409: problem_response(
+            "import.line.already_promoted",
+            "import.categorize.unknown_account",
+        ),
+        422: problem_response("import.line.excluded"),
+    },
+)
+async def promote_line(
+    batch_id: UUID,
+    line_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> StatementLinePromoteResponse:
+    """Promote one statement line to a PENDING ledger transaction.
+
+    Per ADR-0004 §Q4. Useful for line-by-line review or for re-promoting
+    a previously-excluded line after un-excluding it.
+    """
+    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch = batch_repo.get(batch_id)
+    if batch is None:
+        raise ImportBatchNotFoundError()
+
+    line_repo = StatementLineRepository(session, claims.household_id)
+    line = line_repo.get(line_id)
+    if line is None or line.import_batch_id != batch_id:
+        raise StatementLineNotFoundError()
+
+    try:
+        tx = await promote_statement_line(
+            session=session,
+            household_id=claims.household_id,
+            batch=batch,
+            line=line,
+            categorizer=get_categorizer(),
+            actor_user_id=claims.user_id,
+        )
+    except LineAlreadyPromotedError as exc:
+        # Re-fetch (line.promoted_transaction_id may have been set).
+        line2 = line_repo.get(line_id)
+        assert line2 is not None  # noqa: S101 - existence verified above
+        raise StatementLineAlreadyPromotedError(
+            line_id=str(line_id),
+            transaction_id=str(line2.promoted_transaction_id),
+        ) from exc
+    except LineExcludedError as exc:
+        raise StatementLineExcludedError(line_id=str(line_id)) from exc
+    except CategorizeUnknownAccountError as exc:
+        raise ImportCategorizeUnknownAccountError(account_code=exc.account_code) from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="statement_line_promote",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="statement_line",
+        entity_id=line.id,
+        after={"transaction_id": str(tx.id), "batch_id": str(batch.id)},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "statement_line.promoted",
+        line_id=str(line.id),
+        transaction_id=str(tx.id),
+    )
+    return StatementLinePromoteResponse(
+        statement_line_id=line.id,
+        transaction_id=tx.id,
     )
 
 

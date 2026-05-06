@@ -62,3 +62,29 @@ class ImportBatchRead(BaseModel):
     applied_at: datetime | None
     reverted_at: datetime | None
     lines: list[StatementLineRead]
+
+
+class ImportBatchApplyResponse(BaseModel):
+    """Response for ``POST /v1/imports/{id}/apply`` (P5.4.a)."""
+
+    batch_id: UUID
+    status: str = Field(description="The new ``status`` of the batch (always ``applied``).")
+    created_count: int = Field(
+        description="Number of PENDING ledger transactions created from the batch's lines."
+    )
+    skipped_count: int = Field(
+        description=(
+            "Number of statement lines that were not promoted because they were "
+            "already excluded or already promoted from a prior partial promote."
+        )
+    )
+    transaction_ids: list[UUID] = Field(
+        description="The IDs of the newly-created PENDING transactions, in line order."
+    )
+
+
+class StatementLinePromoteResponse(BaseModel):
+    """Response for ``POST /v1/imports/{batch_id}/lines/{line_id}/promote`` (P5.4.a)."""
+
+    statement_line_id: UUID
+    transaction_id: UUID

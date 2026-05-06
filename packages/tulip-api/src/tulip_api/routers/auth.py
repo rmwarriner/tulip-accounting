@@ -75,9 +75,17 @@ from tulip_api.schemas.auth import (
     RegisterResponse,
     TokenResponse,
 )
-from tulip_storage.models import Household, MfaPolicy, MfaRecoveryCode, User, UserRole
+from tulip_storage.models import (
+    AccountType,
+    Household,
+    MfaPolicy,
+    MfaRecoveryCode,
+    User,
+    UserRole,
+)
 from tulip_storage.models import Session as SessionRow
 from tulip_storage.repositories import (
+    AccountRepository,
     AllocationPoolRepository,
     AuditLogWriter,
     PeriodRepository,
@@ -145,6 +153,18 @@ def register(
     # first use; see ADR-0001.
     AllocationPoolRepository(session, household.id).get_or_create_system_pools(
         currency=household.base_currency,
+    )
+
+    # Seed the Imbalance:Unknown EQUITY account so import-apply (P5.4.a)
+    # has a target the default Categorizer (NullCategorizer) can resolve
+    # without per-call account creation. Conventional accounting suspense
+    # account; user re-categorizes via the transaction-edit API.
+    AccountRepository(session, household.id).create(
+        code="Imbalance:Unknown",
+        name="Imbalance: Unknown",
+        type=AccountType.EQUITY,
+        currency=household.base_currency,
+        created_by_user_id=user.id,
     )
 
     AuditLogWriter(session, household.id).write(
