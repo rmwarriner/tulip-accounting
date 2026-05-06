@@ -86,12 +86,48 @@ def _python_source_files() -> list[Path]:
     return out
 
 
+def _is_type_checking_block(node: ast.AST) -> bool:
+    """True iff ``node`` is ``if TYPE_CHECKING:`` (or ``if typing.TYPE_CHECKING:``)."""
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+        return True
+    if (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and isinstance(test.value, ast.Name)
+        and test.value.id == "typing"
+    ):
+        return True
+    return False
+
+
+def _collect_type_checking_lines(tree: ast.Module) -> set[int]:
+    """Return the line numbers covered by every ``if TYPE_CHECKING:`` block in ``tree``."""
+    covered: set[int] = set()
+    for node in ast.walk(tree):
+        if _is_type_checking_block(node):
+            for child in ast.walk(node):
+                if hasattr(child, "lineno"):
+                    covered.add(child.lineno)
+    return covered
+
+
 def _illegal_storage_model_imports(path: Path) -> list[tuple[int, str]]:
-    """Return ``(lineno, name)`` pairs that import P5.1 storage-layer models."""
+    """Return ``(lineno, name)`` pairs that import P5.1 storage-layer models.
+
+    Imports inside ``if TYPE_CHECKING:`` blocks are excluded — they don't
+    create a runtime path to the model class, so they can't construct or
+    write to one. This matches mypy's standard idiom for type-only imports.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    type_checking_lines = _collect_type_checking_lines(tree)
     hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in _STORAGE_MODEL_MODULES:
+            if node.lineno in type_checking_lines:
+                continue
             for alias in node.names:
                 if alias.name in _BANNED_NAMES:
                     hits.append((node.lineno, alias.name))

@@ -112,11 +112,12 @@ def authed_session(live_api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.integration
-def test_accounts_list_when_empty(authed_session: str) -> None:
+def test_accounts_list_when_only_seeded(authed_session: str) -> None:
+    """Fresh households still get the Imbalance:Unknown seed (P5.4.a)."""
     result = _run_cli("accounts", "list", api_url=authed_session)
     assert result.returncode == 0, result.stderr
-    # Empty households still register an opening message — not just blank stdout.
-    assert "no accounts" in result.stdout.lower()
+    # The seeded Imbalance:Unknown row shows up in the rendered table.
+    assert "imbalance:unknown" in result.stdout.lower()
 
 
 @pytest.mark.integration

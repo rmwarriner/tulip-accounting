@@ -185,6 +185,40 @@ def import_csv(
     )
 
 
+@imports_app.command("apply")
+def apply_import(
+    ctx: typer.Context,
+    batch_id: Annotated[
+        str,
+        typer.Argument(
+            help="Import batch UUID returned by `tulip imports ofx/qif/csv`.",
+            metavar="BATCH_ID",
+        ),
+    ],
+) -> None:
+    """Apply a parsed batch: every non-excluded line becomes a PENDING ledger transaction."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                f"/v1/imports/{batch_id}/apply",
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    body = response.json()
+    typer.echo(
+        f"Applied batch {body['batch_id']}: created {body['created_count']} "
+        f"PENDING transactions, skipped {body['skipped_count']} lines."
+    )
+
+
 @imports_app.command("qif")
 def import_qif(
     ctx: typer.Context,

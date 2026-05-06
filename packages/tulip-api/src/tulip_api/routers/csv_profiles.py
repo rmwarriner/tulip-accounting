@@ -106,6 +106,7 @@ def list_profiles(
     response_model=CsvProfileRead,
     status_code=status.HTTP_201_CREATED,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         409: problem_response("csv_profile.duplicate_name"),
         422: problem_response("validation.failed"),
@@ -168,6 +169,7 @@ def get_profile(
     "/{id_or_name}",
     response_model=CsvProfileRead,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         404: problem_response("csv_profile.not_found"),
         409: problem_response("csv_profile.duplicate_name"),

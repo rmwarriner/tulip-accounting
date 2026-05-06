@@ -96,6 +96,36 @@ class TestAccountRepository:
         # but get() still finds it
         assert repo.get(a.id) is not None
 
+    def test_get_by_code_returns_match(self, session: Session, household: Household):
+        repo = AccountRepository(session, household.id)
+        a = repo.create(
+            code="Imbalance:Unknown",
+            name="Imbalance: Unknown",
+            type=AccountType.EQUITY,
+            currency="USD",
+        )
+        found = repo.get_by_code("Imbalance:Unknown")
+        assert found is not None
+        assert found.id == a.id
+
+    def test_get_by_code_returns_none_when_missing(self, session: Session, household: Household):
+        repo = AccountRepository(session, household.id)
+        repo.create(code="1110", name="Checking", type=AccountType.ASSET, currency="USD")
+        assert repo.get_by_code("DoesNotExist") is None
+
+    def test_get_by_code_scoped_to_household(self, session: Session, household: Household):
+        # One household has the code; the other does not.
+        AccountRepository(session, household.id).create(
+            code="Imbalance:Unknown",
+            name="Imbalance",
+            type=AccountType.EQUITY,
+            currency="USD",
+        )
+        other = Household(id=uuid4(), name="Jones", base_currency="USD")
+        session.add(other)
+        session.commit()
+        assert AccountRepository(session, other.id).get_by_code("Imbalance:Unknown") is None
+
 
 class TestPeriodRepository:
     def test_create_and_find_for_date(self, session: Session, household: Household):
@@ -156,6 +186,35 @@ class TestTransactionRepository:
         food = repo.create(code="5100", name="Food", type=AccountType.EXPENSE, currency="USD")
         session.commit()
         return cash, food
+
+    def test_save_balanced_persists_imported_from_id(self, session: Session, household: Household):
+        """save_balanced(..., imported_from_id=...) propagates to the header."""
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+
+        batch_id = uuid4()
+        domain_tx = DomainTransaction(
+            id=uuid4(),
+            household_id=household.id,
+            date=date(2026, 6, 1),
+            description="Promoted from statement line",
+            postings=(
+                DomainPosting(id=uuid4(), account_id=food.id, amount=Money(Decimal("8.00"), "USD")),
+                DomainPosting(
+                    id=uuid4(), account_id=cash.id, amount=Money(Decimal("-8.00"), "USD")
+                ),
+            ),
+            status=DomainTxStatus.PENDING,
+        )
+        header = TransactionRepository(session, household.id).save_balanced(
+            domain_tx, imported_from_id=batch_id
+        )
+        assert header.imported_from_id == batch_id
 
     def test_save_posted_transaction_with_postings(self, session: Session, household: Household):
         cash, food = self._seed_accounts(session, household)

@@ -100,6 +100,75 @@ def _seed_checking(api_url: str) -> None:
 
 
 @pytest.mark.integration
+def test_imports_apply_happy_path(authed_session: str) -> None:
+    """`tulip imports apply BATCH_ID` promotes every line into a PENDING tx."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert upload.returncode == 0, upload.stderr
+    batch_id = json.loads(upload.stdout)["id"]
+
+    apply_result = _run_cli(
+        "imports",
+        "apply",
+        batch_id,
+        api_url=authed_session,
+    )
+    assert apply_result.returncode == 0, apply_result.stderr
+    assert "created 2" in apply_result.stdout
+    assert batch_id in apply_result.stdout
+
+
+@pytest.mark.integration
+def test_imports_apply_already_applied_returns_409(authed_session: str) -> None:
+    """Re-applying renders the typed Problem and exits non-zero."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    batch_id = json.loads(upload.stdout)["id"]
+    _run_cli("imports", "apply", batch_id, api_url=authed_session)
+    second = _run_cli("imports", "apply", batch_id, api_url=authed_session)
+    assert second.returncode != 0
+    assert "Import already applied" in (second.stdout + second.stderr)
+
+
+@pytest.mark.integration
 def test_import_ofx_happy_path(authed_session: str) -> None:
     _seed_checking(authed_session)
     fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"

@@ -63,8 +63,10 @@ class TestAccountCrud:
         r2 = client.get("/v1/accounts", headers=auth_h)
         assert r2.status_code == 200
         rows = r2.json()
-        assert len(rows) == 1
-        assert rows[0]["name"] == "Checking"
+        # Registration seeds Imbalance:Unknown (P5.4.a) — filter to the
+        # account we just created to keep the assertion intent-focused.
+        names = {row["name"] for row in rows}
+        assert "Checking" in names
 
     def test_get_returns_not_found_for_unknown(self, client: TestClient, auth_h: dict[str, str]):
         r = client.get(
@@ -137,4 +139,8 @@ class TestTenantIsolation:
             json={"name": "A's account", "type": "asset", "currency": "USD"},
         )
         rows = client.get("/v1/accounts", headers={"Authorization": f"Bearer {b_token}"}).json()
-        assert rows == []
+        # Household B sees its own seeded Imbalance:Unknown (P5.4.a) but
+        # not the account A just created.
+        names = {row["name"] for row in rows}
+        assert "A's account" not in names
+        assert names <= {"Imbalance: Unknown"}

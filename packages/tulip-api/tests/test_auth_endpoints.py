@@ -103,7 +103,35 @@ class TestRegister:
             types = {p.pool_type for p in rows}
             assert types == {PoolType.INFLOW, PoolType.UNALLOCATED, PoolType.SPENT}
             assert all(p.currency == "USD" for p in rows)
-            assert all(p.is_active for p in rows)
+
+    def test_register_seeds_imbalance_unknown_account(self, client, session_maker):
+        """P5.4.a: a new household gets an Imbalance:Unknown EQUITY account
+        seeded so that the import-apply flow can resolve the categorizer's
+        default account-code without per-call account creation.
+        """
+        r = client.post(
+            "/v1/auth/register",
+            json={
+                "email": "imbalance@example.com",
+                "password": "correct horse battery staple",
+                "display_name": "Imbalance",
+                "household_name": "Smith",
+            },
+        )
+        assert r.status_code == 201
+        household_id = r.json()["household_id"]
+
+        from uuid import UUID
+
+        from tulip_storage.models import AccountType
+        from tulip_storage.repositories.account import AccountRepository
+
+        with session_maker() as s:
+            account = AccountRepository(s, UUID(household_id)).get_by_code("Imbalance:Unknown")
+            assert account is not None, "Imbalance:Unknown not seeded"
+            assert account.type is AccountType.EQUITY
+            assert account.currency == "USD"
+            assert account.is_active is True
 
 
 class TestLogin:

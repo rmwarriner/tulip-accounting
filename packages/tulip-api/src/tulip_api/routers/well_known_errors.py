@@ -72,6 +72,13 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "CsvProfileDuplicateNameError": {"name": "chase-checking"},
     "CsvProfileInvalidYamlError": {"reason": "yaml.safe_load rejected the payload"},
+    "ImportAlreadyAppliedError": {"batch_id": "<batch-uuid>"},
+    "StatementLineAlreadyPromotedError": {
+        "line_id": "<statement-line-uuid>",
+        "transaction_id": "<transaction-uuid>",
+    },
+    "StatementLineExcludedError": {"line_id": "<statement-line-uuid>"},
+    "ImportCategorizeUnknownAccountError": {"account_code": "Imbalance:Unknown"},
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),
