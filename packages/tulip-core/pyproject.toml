@@ -3,6 +3,14 @@ name = "tulip-core"
 version = "0.0.0"
 description = "Pure domain logic for Tulip Accounting (no I/O, no framework deps)."
 requires-python = ">=3.12"
+dependencies = [
+    # rapidfuzz powers the reconciliation matcher's description-similarity
+    # heuristic (P5.3 / ADR-0004 §Q2). ~1 MB; pure Python wrappers around a
+    # C++ core; no native build deps. Pinned to <4 because token_set_ratio's
+    # tokenization changed across major versions and our confidence-bucket
+    # boundary tests would tip from HIGH to MEDIUM if the ratio shifts.
+    "rapidfuzz>=3.0,<4",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -14,12 +14,32 @@ UUIDs in parser output, format-specific noise in matcher input — a
 type error rather than a runtime surprise.
 """
 
+from tulip_core.reconciliation.candidate_match import CandidateMatch
+from tulip_core.reconciliation.categorizer import (
+    CategorizationResult,
+    Categorizer,
+    HouseholdContext,
+    NullCategorizer,
+    get_categorizer,
+    register_categorizer,
+)
+from tulip_core.reconciliation.match_confidence import MatchConfidence
+from tulip_core.reconciliation.matcher import find_candidates
 from tulip_core.reconciliation.statement_line import (
     ParsedStatementLine,
     StatementLine,
 )
 
 __all__ = [
+    "CandidateMatch",
+    "CategorizationResult",
+    "Categorizer",
+    "HouseholdContext",
+    "MatchConfidence",
+    "NullCategorizer",
     "ParsedStatementLine",
     "StatementLine",
+    "find_candidates",
+    "get_categorizer",
+    "register_categorizer",
 ]
