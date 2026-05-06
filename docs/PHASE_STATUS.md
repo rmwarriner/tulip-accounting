@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-05 · `main` @ **P5.2.c in flight** (CSV importer + per-household CSV profiles + YAML round-trip)
+**Last updated:** 2026-05-06 · `main` @ **P5.3 in flight** (reconciliation matcher + categorizer DI seam)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a (OFX), P5.2.b (QIF), and P5.2.c (CSV + profiles) implemented per [ADR-0004](adrs/0004-reconciliation.md). All three statement-format importers shipped. Next: **P5.3** (matcher + categorizer DI seam).
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), and P5.3 (matcher + categorizer DI seam) implemented per [ADR-0004](adrs/0004-reconciliation.md). Next: **P5.4** (API + CLI surface — closes Phase 5).
 
-**Tests:** 974 passing · **CI:** green on `main`
+**Tests:** 1028 passing · **CI:** green on `main`
 
 ---
 
@@ -465,9 +465,19 @@ Largest of the P5.2.x slices: CSV parser + Pydantic-validated profiles + 7-endpo
 - **New deps on `tulip-importers`**: `pydantic>=2.7`, `pyyaml>=6.0`, `types-pyyaml`. Pydantic was previously transitive via tulip-api; now direct on tulip-importers as well.
 - **Tests**: 57 new (14 profile model + 14 parser + 16 profile-CRUD API + 4 imports-endpoint CSV cases + 5 CLI E2E + 4 architecture/schemathesis adjustments). Project total: **974 passing** (up from 917). One schemathesis case skipped (path-collision between `POST /import` and `/{id_or_name}` — harmless, documented inline).
 
-### P5.3 — Reconciliation matcher — next up
+### P5.3 — Reconciliation matcher + categorizer DI seam — ✅ *(2026-05-06)*
 
-`tulip_core.reconciliation.matcher.find_candidates` per ADR-0004 §Q1-Q3 + `MatchConfidence` enum + `Categorizer` Protocol DI hook for Phase 6.
+Pure-`tulip-core` slice. No API, no CLI, no storage. Adds the bucketed-confidence matcher per ADR-0004 §Q1-Q2 and the `Categorizer` Protocol seam that Phase 6's `AICategorizer` will plug into.
+
+- **`MatchConfidence` enum** (`HIGH > MEDIUM > LOW`). Plain `Enum`, not `str` mixin — the str mixin would let `MatchConfidence.HIGH < "low"` silently return True via alphabetic comparison ("high" < "low"). String values match the `reconciliation_matches.confidence` CHECK constraint from P5.1 so JSON round-trip needs no converter.
+- **`CandidateMatch` value object** — frozen dataclass, equality by `(statement_line_id, ledger_transaction_id)` pair (so re-running the matcher with different fuzzy thresholds collapses duplicate proposals). `match_amount` stored explicitly so P5.4's split-match work doesn't change the shape.
+- **`find_candidates(statement_lines, ledger_transactions, *, account_id, reconciled_transaction_ids=frozenset())`** — pure function. Walks each statement line × each eligible ledger tx; eligibility = ledger status (POSTED or RECONCILED) + correct account posting + not already reconciled. Money equality enforces currency match. Output sorted by `(statement_line_id, ledger_transaction_id)` for deterministic test diffs.
+- **Confidence bucketing** per ADR §Q2: `HIGH` = same date + fuzzy ≥ 0.9; `MEDIUM` = same date with lower fuzzy OR ±3 days with fuzzy ≥ 0.6; `LOW` = ±1-3 days with fuzzy < 0.6. **Same-date is never LOW** — even no-fuzzy matches surface for user confirmation.
+- **`rapidfuzz>=3.0,<4`** added as the first runtime dep on `tulip-core` (deviation from "no deps in core" but called out in the dependency comment). `token_set_ratio` with `default_process` (lowercase + punctuation strip) is the heuristic. Pinned `<4` because tokenization changes across major versions could flip bucket-boundary tests.
+- **"Already reconciled" via `reconciled_transaction_ids: frozenset[UUID]` keyword arg** — the matcher has no DB access; caller queries `transactions.reconciliation_id IS NOT NULL` and passes the set. Documented as a caller obligation; P5.4 wires it.
+- **`Categorizer` Protocol** + **`NullCategorizer`** + module-global registry (`register_categorizer` / `get_categorizer` / `_reset_categorizer_for_testing`). Async-by-design: `categorize` is `async def` from day one because Phase 6's `AICategorizer` will issue an LLM call. v1's `NullCategorizer` returns `Imbalance:Unknown` — a real rule-based categorizer + per-household rule storage land in P5.4 alongside the API surface.
+- **Hypothesis property tests** for the bucket-classification function: `_classify_confidence(delta_days, fuzzy)` is exhaustively probed across the window, asserting boundary invariants (same-date is never LOW; date drift never returns HIGH; outside-window always emits no candidate).
+- **Tests**: 54 new (6 `MatchConfidence` + 12 `CandidateMatch` + 18 matcher integration + 5 hypothesis properties + 15 categorizer + registry; the matcher's hypothesis suite expands to multiple parametrized cases under the `--hypothesis-show-statistics` runner). Project total: **1028 passing** (up from 974).
 
 ### P5.4 — API + CLI surface (closes Phase 5) — queued
 
