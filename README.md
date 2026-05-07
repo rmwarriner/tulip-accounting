@@ -2,7 +2,7 @@
 
 Household-focused, double-entry accounting system with first-class envelope budgeting and sinking-fund support.
 
-> **Status:** Pre-alpha — Phases 0–3 complete (project bootstrap, storage + accounting engine, API surface for auth/accounts/transactions/balance, scriptable CLI client). Phase 4 (envelopes + sinking funds) not yet started. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
+> **Status:** Pre-alpha — Phases 0–5 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation). Phase 6 (AI integration) is the next phase; pre-internal-beta hardening (#121) is in scope before then. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ---
 
@@ -54,9 +54,9 @@ tulip-accounting/
 ```bash
 git clone https://github.com/<your-org>/tulip-accounting
 cd tulip-accounting
-uv sync                          # installs all workspace packages + dev deps
+uv sync --all-packages --dev     # installs all workspace packages + dev deps
 uv run pre-commit install        # enable pre-commit hooks
-uv run pytest                    # confirm tests pass (460 tests, ~90s)
+just test                        # confirm tests pass (~1130 tests, ~4–5 min with xdist on 4 workers)
 ```
 
 > **Note for committers:** `main` is branch-protected and **requires every commit to be signed**. Configure SSH or GPG commit signing before your first push (`git config --global commit.gpgsign true` plus a signing key); see [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection-on-main) for the details, the most common failure modes, and the diagnostic checklist if a push is rejected as unsigned.
@@ -71,14 +71,18 @@ TULIP_DATABASE_URL=sqlite:///./tulip.db \
 
 ### Common commands
 
+The [`justfile`](justfile) wraps the standard loops; see `just --list` for the full surface.
+
 ```bash
-uv run pytest                                # full test suite (all packages)
+just test                                    # full test suite, parallel (~1130 tests)
+just lint                                    # ruff check
+just typecheck                               # mypy --strict
+just coverage                                # coverage report (gate is 85% project, 90% tulip-core)
+just bench                                   # pytest-benchmark (sequential — incompatible with xdist)
+just ci                                      # everything CI runs, locally
 uv run pytest packages/tulip-core            # tests for a single package
 uv run pytest -m property                    # only property-based (hypothesis) tests
-uv run ruff check                            # lint
-uv run ruff format                           # autoformat
-uv run mypy                                  # type check (strict)
-uv run pre-commit run --all-files            # run all pre-commit hooks
+uv run pytest -m integration                 # only integration tests (CLI subprocess + live API)
 ```
 
 ### Running the API server
@@ -89,30 +93,47 @@ TULIP_JWT_SECRET="$(uv run python -c 'import secrets; print(secrets.token_urlsaf
   uv run uvicorn tulip_api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Available endpoints:
+Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Endpoint surface (Phases 0–5):
 
-- `POST /v1/auth/{register,login,login/mfa,login/recover,refresh,logout}`
-- `POST /v1/auth/mfa/{enroll,verify,recovery-codes/regenerate}` · `GET /v1/auth/mfa/recovery-codes/status`
-- `GET/POST/PATCH/DELETE /v1/accounts[/{id}]` · `GET /v1/accounts/{id}/balance`
-- `GET/POST /v1/transactions[/{id}]`
-- `GET /v1/reports/trial-balance`
+- **Auth (Phase 2 / 2.x):** `POST /v1/auth/{register,login,login/mfa,login/recover,refresh,logout}`, `POST /v1/auth/mfa/{enroll,verify,recovery-codes/regenerate}`, `GET /v1/auth/mfa/recovery-codes/status`
+- **Accounts + transactions (Phase 2):** `GET/POST/PATCH/DELETE /v1/accounts[/{id}]`, `GET /v1/accounts/{id}/balance`, `GET/POST/PATCH/DELETE /v1/transactions[/{id}]`, `POST /v1/transactions/{id}/void`, `GET /v1/reports/trial-balance`
+- **Envelopes + sinking funds + pools (Phase 4):** `GET/POST/PATCH/DELETE /v1/envelopes[/{id}]`, `GET/POST/PATCH/DELETE /v1/sinking-funds[/{id}]`, `GET /v1/pools/{id}/balance`, `POST /v1/pools/{id}/{refill,transfer,budget-inflow}`, `GET/POST/PATCH/DELETE /v1/refill-schedules[/{id}]`
+- **Importers + reconciliation (Phase 5):** `POST /v1/imports[?force=true]`, `GET /v1/imports/{id}`, `POST /v1/imports/{id}/{apply,lines/{line_id}/promote}`, `GET/POST/PATCH/DELETE /v1/imports/profiles[/{id_or_name}]` (CSV column-mapping profiles, YAML round-trip), `GET/POST/DELETE /v1/reconciliations[/{id}][?cascade=true]`, `POST /v1/reconciliations/{id}/{auto-match,complete,matches,carry-forward}`, `POST /v1/reconciliations/{id}/matches/{id}/reject`, `DELETE /v1/reconciliations/{id}/carry-forward/{tx_id}`
 
 Every non-2xx response is `application/problem+json` per RFC 9457. In production, supply `TULIP_JWT_SECRET` and `TULIP_MASTER_KEY` from a secret store rather than generating fresh on every start (existing tokens and field-encrypted columns won't validate after a restart with new secrets).
 
 ### Running the CLI
 
+A short tour through Phase 5's end-to-end loop (register → import → reconcile):
+
 ```bash
+# Set up.
 uv run tulip register --email me@example.com --display-name Me --household Mine
 uv run tulip auth login --email me@example.com
-uv run tulip accounts add --name Checking --type asset --currency USD --code assets:checking
-uv run tulip accounts add --name Food --type expense --currency USD --code expenses:food
-uv run tulip add --date 2026-04-29 --description 'Grocery store' \
-  --post expenses:food=87.42 \
-  --post assets:checking=-87.42
+uv run tulip accounts add --name Checking --type asset --currency USD --code 1110
+uv run tulip accounts add --name Food --type expense --currency USD --code 5100
+
+# A manual transaction.
+uv run tulip add --date 2026-05-12 --description 'Grocery store' \
+  --post 5100=87.42 \
+  --post 1110=-87.42
 uv run tulip balance
+
+# Importer + reconciliation flow.
+BATCH_ID=$(uv run tulip --json import ofx ./statement.ofx --account 1110 | jq -r .id)
+uv run tulip imports apply "$BATCH_ID"            # promotes lines to PENDING ledger txs
+RECON_ID=$(uv run tulip --json reconcile create \
+  --account 1110 --batch "$BATCH_ID" \
+  --period 2026-05-01..2026-05-31 \
+  --starting 0.00 --ending 1234.56 | jq -r .id)
+uv run tulip reconcile auto-match "$RECON_ID"     # bucketed-confidence matcher (P5.3)
+uv run tulip reconcile show "$RECON_ID"           # 4-section review pane
+uv run tulip reconcile complete "$RECON_ID"       # strict balance check, denormalises reconciled_at
 ```
 
 `tulip add --edit` opens `$EDITOR` with a hledger-style template instead of taking flags. `tulip accounts list` renders a Rich tree when nesting exists, a flat table otherwise (`--flat` to force the table for scripting). Tokens persist in the OS keyring; the CLI exit-code map and full RFC 9457 error rendering are documented in [docs/ARCHITECTURE.md §7.8.5](docs/ARCHITECTURE.md).
+
+Other top-level commands: `tulip envelopes`, `tulip sinking-funds`, `tulip refills`, `tulip transfer`, `tulip refill`, `tulip budget-inflow`, `tulip transactions {show,edit,void,delete}`, `tulip imports {profiles,apply}`. Each takes `--help`; the surface mirrors the API endpoints listed above.
 
 ## Development discipline
 
@@ -128,8 +149,12 @@ This project follows test-driven development. Every feature ships with tests wri
 
 - [Architecture](docs/ARCHITECTURE.md) — full system design, data model, phase roadmap, error-handling standard (§7.8)
 - [Phase Status](docs/PHASE_STATUS.md) — what's shipped, what's queued
-- [Phase 0 Checklist](docs/PHASE_0_CHECKLIST.md) — original bootstrap checklist (Phase 0 complete)
-- Additional docs (DATA_MODEL, API, CLI, DEPLOYMENT, BACKUP_RESTORE, SECURITY, AI) land as their respective phases are built. The OpenAPI spec at `/openapi.json` is the live contract for `tulip-api` until `docs/API.md` exists.
+- [Threat Model](docs/THREAT_MODEL.md) — lightweight security checkpoint (deep audit deferred to Phase 8)
+- [ADRs](docs/adrs/) — architectural decision records (envelope shadow ledger, scheduler primitive, mutation testing, reconciliation)
+- [Phase 0 Checklist](docs/PHASE_0_CHECKLIST.md) — original bootstrap checklist (historical)
+- [CONTRIBUTING.md](CONTRIBUTING.md) — TDD discipline, coverage gates, signed commits, manual smoke test format
+- [CLAUDE.md](CLAUDE.md) — operational notes for AI-assisted development on this repo
+- Additional docs (QUICKSTART, DEPLOYMENT, BACKUP_RESTORE, AI) land as their respective phases are built. The OpenAPI spec at `/openapi.json` is the live contract for `tulip-api` until `docs/API.md` exists.
 
 ## Security & privacy
 

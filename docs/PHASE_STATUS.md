@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-07 · `main` @ **P5.4.d in flight** (`tulip reconcile` CLI — closes Phase 5)
+**Last updated:** 2026-05-07 · `main` @ **Phase 5 complete + cleanup PRs landed** (#127, #114, #118 closed)
 
 ---
 
@@ -18,7 +18,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
 - **Phase 5 (importers + reconciliation):** ✅ **complete** — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), P5.4.b (reconciliation envelope + auto-match), P5.4.c (manual match + carry-forward), and P5.4.d (`tulip reconcile` CLI) all merged. Phase 5 closes per [ADR-0004](adrs/0004-reconciliation.md).
 
-**Tests:** 1113 passing · **CI:** green on `main`
+- **Phase 5 cleanup (post-merge):** three follow-ups closed — #127 (reconciliation inbox surfacing prior-completed-recon lines, fix in PR #129), #114 (relax `import_batch` idempotency index + wire `?force=true`, PR #130), #118 (CLI `--household` vs API `household_name` asymmetry — closed wontfix; rationale in `feedback_pr_body_no_backtick_escapes.md` and the issue thread).
+
+**Tests:** 1132 passing · **CI:** green on `main`
 
 ---
 
