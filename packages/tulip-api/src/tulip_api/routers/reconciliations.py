@@ -270,8 +270,49 @@ def get_reconciliation(
         all_lines = lines_repo.list_for_batch(recon.source_import_batch_id)
     else:
         all_lines = []
+
+    # #127: a line whose ``reconciliation_match_id`` points at a match in a
+    # prior completed reconciliation has already been accounted for elsewhere.
+    # Exclude it from this reconciliation's inbox so the user isn't asked to
+    # re-match a line that's already taken.
+    from sqlalchemy import select as _select
+
+    from tulip_storage.models import (
+        Reconciliation as _Reconciliation,
+    )
+    from tulip_storage.models import (
+        ReconciliationMatch as _ReconciliationMatch,
+    )
+    from tulip_storage.models import (
+        ReconciliationStatus as _ReconciliationStatus,
+    )
+
+    prior_completed_match_ids: set[UUID] = set()
+    candidate_match_ids = {
+        line.reconciliation_match_id for line in all_lines if line.reconciliation_match_id
+    }
+    if candidate_match_ids:
+        rows = session.execute(
+            _select(_ReconciliationMatch.id)
+            .join(
+                _Reconciliation,
+                (_Reconciliation.id == _ReconciliationMatch.reconciliation_id)
+                & (_Reconciliation.household_id == _ReconciliationMatch.household_id),
+            )
+            .where(
+                _ReconciliationMatch.household_id == claims.household_id,
+                _ReconciliationMatch.id.in_(candidate_match_ids),
+                _Reconciliation.status == _ReconciliationStatus.COMPLETE,
+            )
+        ).all()
+        prior_completed_match_ids = {row[0] for row in rows}
+
     unmatched_lines = [
-        line for line in all_lines if not line.is_excluded and line.id not in matched_line_ids
+        line
+        for line in all_lines
+        if not line.is_excluded
+        and line.id not in matched_line_ids
+        and line.reconciliation_match_id not in prior_completed_match_ids
     ]
 
     tx_repo = TransactionRepository(session, claims.household_id)
