@@ -1,8 +1,8 @@
 # Tulip Accounting — Architectural Specification (v1)
 
-**Status:** Ready for handoff to Claude Code
-**Document version:** 1.0
-**Date:** 2026-04-29
+**Status:** Ready for handoff to Claude Code (Phases 0–5 complete; Phase 6 ADR pending)
+**Document version:** 1.1
+**Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh)
 
 ---
 
@@ -937,17 +937,25 @@ These weren't in the original Phase 3 list but landed before Phase 4 because the
 - Account nesting end-to-end (#42) — `parent_account_id` consistency rules (type / currency / visibility / no-cycle), reparenting via PATCH, CLI `--parent` flag, tree rendering, parent-name surfacing on `show`. Multi-currency parents deliberately rejected for now (#44 is the holding pen).
 - Interactive `tulip add --edit` (#43) — opens `$EDITOR` with a hledger-subset template; reopens with a banner on parse / balance / unknown-account errors.
 
-### Phase 4 — Envelopes + sinking funds
-- Allocation pool models and CRUD
-- Refill rules implementation
-- Scheduled-tx runner (in-process)
-- Reports: envelope status, sinking-fund progress
+### Phase 4 — Envelopes + sinking funds ✅ complete
+- ✅ Allocation pool models + CRUD; pool transfers; budget-inflow command; per-currency Inflow / Unallocated / Spent system pools per [ADR-0001](adrs/0001-envelope-shadow-ledger.md)
+- ✅ Refill rules implementation (`refill_rule` JSON schema, fixed / target-balance / pct-of-inflow shapes; refill-schedule CRUD endpoints + CLI)
+- ✅ Scheduled-tx runner — in-process per [ADR-0002](adrs/0002-scheduler-primitive.md); polls `scheduled_jobs` + writes `scheduled_job_runs` audit rows; runs in the FastAPI lifespan with deliberate test-time disable via `enable_runner=False`
+- ✅ Envelope + sinking-fund CLI surface (`tulip envelopes`, `tulip sinking-funds`, `tulip refills`, `tulip refill`, `tulip transfer`, `tulip budget-inflow`)
 
-### Phase 5 — Importers + reconciliation
-- OFX, QIF, CSV importers
-- Statement-driven reconciliation matcher
-- Manual cleared/reconciled flow
-- Import batches and rollback
+### Phase 5 — Importers + reconciliation ✅ complete
+
+Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-slices (P5.0 → P5.4.d) plus three follow-up cleanup PRs.
+
+- ✅ **P5.0** — Transaction void / PENDING-only edit / hard delete (#55). The un-reconcile dependency for the rest of Phase 5; ships before importers so reconciliation has a working revert path.
+- ✅ **P5.1** — Storage layer for imports + reconciliation: `attachments`, `attachment_links`, `import_batches`, `statement_lines`, `reconciliations`, `reconciliation_matches`, `csv_profiles` tables; SQLite-trigger drop-and-recreate dance for `transactions` denorms.
+- ✅ **P5.2.a/b/c** — OFX (`ofxtools`, XXE-safe), QIF (hand-rolled line parser), CSV (per-household profiles, YAML round-trip via `yaml.safe_load`) importers + `POST /v1/imports`.
+- ✅ **P5.3** — Reconciliation matcher (pure-`tulip-core`, `find_candidates` with bucketed `MatchConfidence` per ADR §Q2) + `Categorizer` Protocol DI seam for Phase 6.
+- ✅ **P5.4.a** — Apply / promote endpoints + CLI: statement lines → PENDING ledger transactions via the registered `Categorizer` (currently `NullCategorizer` → `Imbalance:Unknown`).
+- ✅ **P5.4.b** — Reconciliation envelope + auto-match: `POST/GET/DELETE /v1/reconciliations`, `/auto-match`, `/complete`, `/matches/{id}/reject`. One IN_PROGRESS reconciliation per account at a time.
+- ✅ **P5.4.c** — Manual match (`POST /matches`) + carry-forward (`/carry-forward` CRUD). `/complete` balance equation extended: `sum(matched) + sum(carry_forward) == ending - starting`.
+- ✅ **P5.4.d** — `tulip reconcile` CLI (10 subcommands wrapping the endpoints) + new `GET /v1/reconciliations` list endpoint.
+- ✅ **Cleanup**: PR #129 (#127 — inbox surfacing prior-completed-recon lines), PR #130 (#114 — relax `import_batch` idempotency index, wire `?force=true`); #118 closed wontfix.
 
 ### Phase 6 — AI integration
 - **Privacy audit** *before* AI capabilities ship — household financial data starts leaving the local boundary here, so data-flow review, redaction policy, retention, and per-tenant opt-in/opt-out shape this phase's design rather than reviewing it after. Tracked as part of the Phase 6 entry criteria.

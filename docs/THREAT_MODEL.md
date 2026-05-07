@@ -2,7 +2,7 @@
 
 **Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI), deep security audit at Phase 8 (operations + hardening), pre-cloud re-audit at Phase 9.
 
-**Last updated:** 2026-05-01 · `main` @ `7e724a6`
+**Last updated:** 2026-05-07 · `main` @ Phase 5 complete
 
 This document captures what the system protects, what it doesn't, and the constraints Phase 4–6 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI add surface area, not after. Tracked as #56.
 
@@ -56,8 +56,8 @@ Single-tenant local deployment scopes the actor list down hard:
 - **Network attacker** — single-tenant local. **Phase 9.**
 - **Cross-household attacker** — single-tenant local. **Phase 9** (cloud), but the design already has composite FKs to make this safe-by-construction.
 - **Compromised AI provider / prompt injection / model exfiltration** — no AI in flight. **Phase 6.**
-- **Compromised import source** — no importers yet. **Phase 5** (importers + reconciliation) brings parser-hardening + size limits into scope as part of that phase's entry criteria — see [§5](#5-constraints-for-phase-46-work).
-- **Stolen attachment / external-document exposure** — no attachments yet (#36 holds the hook, no implementation). **Phase 5+** when imported statements become real artifacts.
+- **Compromised import source** — Phase 5 shipped 2026-05-07. Now **in scope**: see [§5.2](#52--phase-5-importers--reconciliation) for the constraints that landed (size cap, parser hardening, encrypted attachment storage).
+- **Stolen attachment / external-document exposure** — Phase 5 wired the encrypted attachment store. Now **in scope**; field-level AES-256-GCM via the master key per ARCHITECTURE.md §7.4 Layer 3.
 
 ## 4. Known-deferred mitigations
 
@@ -94,11 +94,28 @@ Rules that must hold for the work that's about to happen. Each one references wh
 - **Refill rules don't execute arbitrary expressions.** The `refill_rule` JSON field (per ARCHITECTURE.md §5.3) is a structured shape, not a code-eval surface. Audit any future "expression-y" field for the same constraint.
 - **No new uniqueness constraints on user-chosen labels** without considering "same label across households" — this bit us once already in P2.x.3 (login mismatched on email-not-unique-across-households).
 
-### 5.2 — Phase 5 (importers + reconciliation)
+### 5.2 — Phase 5 (importers + reconciliation) — ✅ shipped
 
-- **Importers handle untrusted input.** OFX / CSV / QIF parsers must be hardened against malformed input: explicit size limits (default 50MB?), explicit timeout on parse, no XML external entities, no path traversal in filename fields. This is the *first* surface in v1 that processes attacker-controlled files.
-- **Statement attachments live in the encrypted attachment store** (ARCHITECTURE.md §7.4 Layer 3). Don't shortcut to the filesystem.
-- **Transaction void / reversal** (#55) — the un-reconcile flow that lands in this phase is the prerequisite for void, not the other way around. Encode the dependency in the slice ordering.
+Phase 5 closed 2026-05-07. The constraints that were locked at Phase 5 entry, and how they landed:
+
+- **Importers handle untrusted input.** OFX / QIF / CSV parsers all run under explicit size + content-type guards in `tulip_api.routers.imports.upload_import`:
+  - **25 MB upload cap** (`MAX_OFX_BYTES` constant) checked before slurping into memory; `413 request.payload_too_large` on overflow. Real bank statements are well under 1 MB; the cap is generous and bounds worst case.
+  - **Content-type allow-list** per format (OFX accepts `application/x-ofx`, `application/octet-stream`, `text/xml`, `application/xml`; QIF / CSV similar) checked before parsing; `415 request.unsupported_media_type` otherwise.
+  - **OFX**: `ofxtools` (chosen over `ofxparse` for active maintenance + XXE safety; uses `defusedxml` under the hood). XXE rejection covered by `tulip-importers/tests/test_ofx_security.py`.
+  - **QIF**: hand-rolled line-oriented parser; no XML attack surface.
+  - **CSV**: `csv.DictReader` with a per-household `CsvProfile` (Pydantic v2, YAML round-trip via `yaml.safe_load` only — `yaml.load` is banned by an architecture test). Profile uploads cap at 100 KB.
+  - Empty-body inputs surface a typed problem (`import.ofx_parse_failed` / `qif_parse_failed` / `csv_parse_failed`) rather than crashing.
+- **Statement attachments live in the encrypted attachment store** (ARCHITECTURE.md §7.4 Layer 3). `AttachmentRepository.create` writes the encrypted blob to `Settings.attachment_root`; the master key wraps the per-attachment DEK; the file on disk is never plaintext. Content-hash dedup (`ix_attachments_hash`) ensures one Attachment row per unique bytes per household — a duplicate upload re-uses the existing attachment row.
+- **Filename safety.** `source_filename` is stored verbatim (display only); the actual on-disk path is content-hash-derived, so user-supplied filename never participates in path resolution. No path-traversal surface.
+- **Transaction void / reversal** (#55) shipped as P5.0, ahead of the reconciliation flow that depends on it. The un-reconcile path (`DELETE /v1/reconciliations/{id}?cascade=true`) routes through `ReconciliationRepository.revert()`, the architecture-test-enforced single chokepoint for `transactions.reconciliation_id` + `reconciled_at` + `carried_forward_from_reconciliation_id` writes.
+- **`?force=true` upload override** (#114, ADR §Q6, PR #130) intentionally bypasses the same-file/same-account duplicate check. The audit log records `"force": true` in the `after_snapshot` so the admin trail is honest about the duplicate. Idempotency lookup is application-level; the underlying index is a query accelerator, not a constraint.
+- **Reconciliation is single-IN_PROGRESS-per-account** by the locked P5.4.b decision (`ReconciliationAccountAlreadyInProgressError`, 409). Simplifies the matcher's "already-reconciled" detection; closes a class of double-match bugs that would otherwise be possible if two reconciliations were open simultaneously.
+
+What is **out of scope** of the Phase 5 threat model and explicitly deferred:
+
+- **Attachment download endpoint** — there's no `GET /v1/imports/{id}/attachment` yet. Statement bytes can be re-uploaded but not retrieved through the API. If/when that endpoint lands, range-request denial-of-service + content-disposition smuggling become in-scope concerns.
+- **Multi-currency reconciliation** — every Phase 5 endpoint asserts `account.currency == reconciliation.currency`; multi-currency is silently out of scope. Lifting this requires FX rate engine work first (per ARCHITECTURE.md §1.3 deferred items).
+- **Partial-of-one matches** (a $100 statement line matching $60 of a $100 ledger tx with $40 residual) — explicitly rejected for v1 per ADR-0004 §Q3. Manual match enforces `match_amount == line.amount`.
 
 ### 5.3 — Phase 6 (AI integration)
 
