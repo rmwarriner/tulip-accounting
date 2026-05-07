@@ -170,14 +170,6 @@ class TestUploadErrorPaths:
         )
         assert r.status_code == 401
 
-    @pytest.mark.xfail(
-        reason=(
-            "force=true override conflicts with the unique idempotency index "
-            "on (household_id, account_id, source_file_attachment_id) added "
-            "in P5.1. Tracked in #114 — relax the index, wire ?force=true, "
-            "then remove this xfail."
-        )
-    )
     def test_force_override_creates_second_batch(
         self,
         client: TestClient,
