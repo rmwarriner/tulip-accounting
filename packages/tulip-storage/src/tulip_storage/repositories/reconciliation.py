@@ -59,6 +59,26 @@ class ReconciliationRepository:
             .all()
         )
 
+    def list_for_household(
+        self,
+        *,
+        account_id: UUID | None = None,
+        status: ReconciliationStatus | None = None,
+    ) -> list[Reconciliation]:
+        """Return reconciliations for the household, newest period first.
+
+        Optional filters: ``account_id`` (scope to one account),
+        ``status`` (scope to one workflow state). Filters AND together;
+        unset filters are not applied.
+        """
+        query = select(Reconciliation).where(Reconciliation.household_id == self._household_id)
+        if account_id is not None:
+            query = query.where(Reconciliation.account_id == account_id)
+        if status is not None:
+            query = query.where(Reconciliation.status == status)
+        query = query.order_by(Reconciliation.statement_period_end.desc())
+        return list(self._session.execute(query).scalars().all())
+
     def create(
         self,
         *,

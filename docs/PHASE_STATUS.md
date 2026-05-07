@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-07 · `main` @ **P5.4.c in flight** (manual match + carry-forward)
+**Last updated:** 2026-05-07 · `main` @ **P5.4.d in flight** (`tulip reconcile` CLI — closes Phase 5)
 
 ---
 
@@ -16,7 +16,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), P5.4.b (reconciliation envelope + auto-match), and P5.4.c (manual match + carry-forward) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slice is **P5.4.d** (the `tulip reconcile` CLI) — closing Phase 5.
+- **Phase 5 (importers + reconciliation):** ✅ **complete** — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), P5.4.b (reconciliation envelope + auto-match), P5.4.c (manual match + carry-forward), and P5.4.d (`tulip reconcile` CLI) all merged. Phase 5 closes per [ADR-0004](adrs/0004-reconciliation.md).
 
 **Tests:** 1113 passing · **CI:** green on `main`
 
@@ -532,9 +532,23 @@ Third sub-slice of P5.4. Lets the user resolve residuals auto-match can't pick u
 - **Audit-log entries**: `reconciliation_match_create_manual`, `reconciliation_carry_forward_add`, `reconciliation_carry_forward_remove`. The `_manual` suffix on the match-create action distinguishes user-driven matches from `reconciliation_auto_match` (which writes one row covering the whole batch).
 - **Tests**: 8 service tests + 7 router tests + 4 storage-layer tests + 1 inbox-shape test = ~20 new (1090 → **1113 passing**).
 
-### P5.4.d — `tulip reconcile` CLI — queued
+### P5.4.d — `tulip reconcile` CLI — ✅ *(2026-05-07)*
 
-Closes Phase 5. Imperative CLI subcommands per the locked decision (no Textual TUI for v1): `tulip reconcile create`, `tulip reconcile show`, `tulip reconcile auto-match`, `tulip reconcile match`, `tulip reconcile reject`, `tulip reconcile carry-forward`, `tulip reconcile complete`, `tulip reconcile delete`. Wraps the existing endpoints; no new server-side work.
+Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v1/reconciliations endpoints. Per the locked decisions: no Textual TUI for v1 (a follow-up if/when end-to-end review fatigue surfaces); UUIDs only for `--line` / `--tx` / `--batch`; `--account` reuses the UUID-or-code resolver from `commands.accounts`.
+
+- **`tulip reconcile create --account ACCT --batch BATCH --period START..END --starting AMT --ending AMT [--currency USD]`** — opens a reconciliation envelope. `--period` parses as `YYYY-MM-DD..YYYY-MM-DD` via a Typer parameter callback. `--starting` and `--ending` are `str` at the Typer layer (Typer doesn't natively render `Decimal`) and parsed to `Decimal` inside the function body — keeps `mypy --strict` clean while preserving accurate decimal arithmetic.
+- **`tulip reconcile list [--account ACCT] [--status STATUS]`** — lists reconciliations newest-first. Calls the new `GET /v1/reconciliations` endpoint added in this slice (~15 LOC server-side: extends `ReconciliationRepository.list_for_household` to accept optional `account_id` + `status` filters; returns `{items: list[ReconciliationRead]}`). Renders a rich table in human mode; `--json` passes through the full body.
+- **`tulip reconcile show RECON_ID`** — renders the four-section review pane: envelope summary + matches + unmatched statement lines + unmatched ledger transactions. Empty sections render `(none)` rather than being omitted (predictable structure beats minimalism for a top-to-bottom scan).
+- **`tulip reconcile auto-match RECON_ID`** — runs the matcher; renders `Auto-matched: N matches (high=H, medium=M, low=L)`.
+- **`tulip reconcile match RECON_ID --line UUID --tx UUID --amount AMT [--currency USD]`** — manual match.
+- **`tulip reconcile reject RECON_ID MATCH_ID`** — delete a match; line + transaction return to unmatched.
+- **`tulip reconcile carry-forward RECON_ID --tx UUID [--tx UUID ...]`** — repeatable `--tx` flag (Typer infers repetition from `list[UUID]` annotation; no `multiple=True` needed).
+- **`tulip reconcile carry-forward-remove RECON_ID TX_ID`** — un-mark.
+- **`tulip reconcile complete RECON_ID`** — finalise.
+- **`tulip reconcile delete RECON_ID --cascade`** — `--cascade` is required client-side (CLI exits 2 if omitted with a "Pass --cascade to confirm" message — gates the destructive intent without round-tripping to the server's 400). The server's own `?cascade=true` requirement is the second line of defense.
+- **New server-side endpoint** `GET /v1/reconciliations` with optional `account_id` + `status` query params. Tenant-scoped via the existing `claims.household_id` dependency. Unknown-account-id returns an empty list (silent scoping; 404 reserved for malformed paths). Invalid status values get FastAPI's 422.
+- **Tests**: 8 CLI integration tests (subprocess against a live API per the existing `live_api` + `authed_session` fixture pattern; exercises every command + the negative paths for unbalanced complete and missing `--cascade`) + 8 router tests for the new GET endpoint (filters, tenant scoping, 422 on bad status, empty-on-unknown-account). Project total: **1129 passing** (up from 1113).
+- **Phase 5 closes** with this slice. Importers + reconciliation are fully wired end-to-end: upload → apply → match → complete, with carry-forward and manual override available, all via API + CLI.
 
 ---
 

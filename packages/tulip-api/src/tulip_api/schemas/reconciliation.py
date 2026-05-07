@@ -140,3 +140,9 @@ class CarryForwardResponse(BaseModel):
 
     reconciliation_id: UUID
     transaction_ids: list[UUID]
+
+
+class ReconciliationListResponse(BaseModel):
+    """Response for ``GET /v1/reconciliations`` (P5.4.d)."""
+
+    items: list[ReconciliationRead]
