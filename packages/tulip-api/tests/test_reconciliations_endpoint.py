@@ -302,6 +302,36 @@ class TestGetReconciliationInbox:
         r = client.get(f"/v1/reconciliations/{uuid4()}", headers=auth_h)
         assert_problem(r, status=404, code="reconciliation.not_found")
 
+    def test_inbox_filters_lines_matched_in_prior_completed_recon(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        """#127: lines matched in a prior completed reconciliation
+        must NOT show up in a subsequent reconciliation's inbox as unmatched.
+        """
+        # Recon A: auto-match + complete -> all lines matched.
+        recon_a = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        client.post(f"/v1/reconciliations/{recon_a['id']}/auto-match", headers=auth_h)
+        complete_a = client.post(f"/v1/reconciliations/{recon_a['id']}/complete", headers=auth_h)
+        assert complete_a.status_code == 200, complete_a.text
+
+        # Recon B for the same account + same batch (allowed because A is complete).
+        recon_b = _create_recon(
+            client,
+            auth_h,
+            account_id=checking_account,
+            batch_id=parsed_batch,
+            starting="1457.83",
+            ending="1457.83",  # nothing new on the bank statement
+        )
+        inbox_b = client.get(f"/v1/reconciliations/{recon_b['id']}", headers=auth_h).json()
+        # Lines from recon A's matches must not surface as "unmatched" in recon B.
+        assert inbox_b["unmatched_statement_lines"] == []
+
 
 # ---- POST /v1/reconciliations/{id}/auto-match ----------------------------
 

@@ -270,8 +270,25 @@ def get_reconciliation(
         all_lines = lines_repo.list_for_batch(recon.source_import_batch_id)
     else:
         all_lines = []
+
+    # #127: a line whose ``reconciliation_match_id`` points at a match in a
+    # prior completed reconciliation has already been accounted for elsewhere.
+    # Exclude it from this reconciliation's inbox so the user isn't asked to
+    # re-match a line that's already taken. Storage owns the join; the
+    # architecture test bans model imports outside repositories.
+    candidate_match_ids = {
+        line.reconciliation_match_id for line in all_lines if line.reconciliation_match_id
+    }
+    prior_completed_match_ids = ReconciliationMatchRepository(
+        session, claims.household_id
+    ).filter_to_completed_recons(candidate_match_ids)
+
     unmatched_lines = [
-        line for line in all_lines if not line.is_excluded and line.id not in matched_line_ids
+        line
+        for line in all_lines
+        if not line.is_excluded
+        and line.id not in matched_line_ids
+        and line.reconciliation_match_id not in prior_completed_match_ids
     ]
 
     tx_repo = TransactionRepository(session, claims.household_id)

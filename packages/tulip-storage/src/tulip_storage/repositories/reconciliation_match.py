@@ -101,6 +101,35 @@ class ReconciliationMatchRepository:
             self._session.flush()
         return match
 
+    def filter_to_completed_recons(self, match_ids: set[UUID]) -> set[UUID]:
+        """Return the subset of ``match_ids`` whose reconciliation is COMPLETE.
+
+        Used by the inbox endpoint to filter out statement lines whose
+        ``reconciliation_match_id`` points at a match in a prior completed
+        reconciliation (issue #127). The matches themselves still exist
+        (cascade-deleting on revert handles abandonment); we filter on the
+        parent reconciliation's status to know "this line is already
+        accounted for elsewhere."
+        """
+        if not match_ids:
+            return set()
+        from tulip_storage.models import Reconciliation, ReconciliationStatus
+
+        rows = self._session.execute(
+            select(ReconciliationMatch.id)
+            .join(
+                Reconciliation,
+                (Reconciliation.id == ReconciliationMatch.reconciliation_id)
+                & (Reconciliation.household_id == ReconciliationMatch.household_id),
+            )
+            .where(
+                ReconciliationMatch.household_id == self._household_id,
+                ReconciliationMatch.id.in_(match_ids),
+                Reconciliation.status == ReconciliationStatus.COMPLETE,
+            )
+        ).all()
+        return {row[0] for row in rows}
+
     def reject(self, match_id: UUID) -> None:
         """Delete a match row (rejection per ADR-0004 §Q4)."""
         match = self.get(match_id)
