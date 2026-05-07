@@ -33,6 +33,7 @@ from tulip_api.routers import (
     health,
     imports,
     pools,
+    reconciliations,
     refill_schedules,
     reports,
     sinking_funds,
@@ -131,5 +132,6 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     # absorb /v1/imports/profiles into the imports router.)
     app.include_router(csv_profiles.router)
     app.include_router(imports.router)
+    app.include_router(reconciliations.router)
 
     return app

@@ -522,6 +522,83 @@ class TestReconciliationAndMatch:
         line = StatementLineRepository(session, household.id).get(lines[0].id)
         assert line.reconciliation_match_id is None
 
+    def test_revert_nulls_tx_denorms_and_clears_line_pointers(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment_for_recon,
+    ):
+        """revert() un-reconciles: nulls tx denorms, clears line pointers, deletes recon."""
+        batch = ImportBatchRepository(session, household.id).create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="may.ofx",
+            source_file_attachment_id=attachment_for_recon.id,
+        )
+        session.commit()
+        lines = StatementLineRepository(session, household.id).bulk_insert(
+            batch.id,
+            [
+                {
+                    "line_number": 1,
+                    "posted_date": date(2026, 5, 12),
+                    "amount": Decimal("-12.50"),
+                    "currency": "USD",
+                    "description": "LUNCH",
+                    "raw_json": "{}",
+                }
+            ],
+        )
+        session.commit()
+        tx = _seed_posted_tx(session, household.id, account)
+        recon_repo = ReconciliationRepository(session, household.id)
+        recon = recon_repo.create(
+            account_id=account.id,
+            statement_period_start=date(2026, 5, 1),
+            statement_period_end=date(2026, 5, 31),
+            statement_starting_balance=Decimal("0"),
+            statement_ending_balance=Decimal("-12.50"),
+            currency="USD",
+        )
+        ReconciliationMatchRepository(session, household.id).create(
+            reconciliation_id=recon.id,
+            statement_line_id=lines[0].id,
+            ledger_transaction_id=tx.id,
+            match_amount=Decimal("12.50"),
+            currency="USD",
+        )
+        recon_repo.complete(recon.id)
+        session.commit()
+
+        # Sanity: tx is reconciled.
+        loaded = TransactionRepository(session, household.id).get(tx.id)
+        assert loaded.reconciliation_id == recon.id
+        assert loaded.reconciled_at is not None
+
+        # Revert.
+        recon_repo.revert(recon.id)
+        session.commit()
+
+        # Tx denorms cleared.
+        loaded = TransactionRepository(session, household.id).get(tx.id)
+        assert loaded.reconciliation_id is None
+        assert loaded.reconciled_at is None
+
+        # Line pointer cleared (cascade-deleted match left a dangling pointer
+        # otherwise — revert nulls before delete).
+        line = StatementLineRepository(session, household.id).get(lines[0].id)
+        assert line.reconciliation_match_id is None
+
+        # Reconciliation row gone.
+        assert recon_repo.get(recon.id) is None
+
+    def test_revert_missing_id_raises(self, session: Session, household: Household):
+        from uuid import uuid4
+
+        with pytest.raises(LookupError):
+            ReconciliationRepository(session, household.id).revert(uuid4())
+
 
 # ---- CsvProfile ----------------------------------------------------------
 

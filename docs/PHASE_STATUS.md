@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-06 · `main` @ **P5.4.a in flight** (apply / promote endpoints + CLI)
+**Last updated:** 2026-05-06 · `main` @ **P5.4.b in flight** (reconciliation envelope + auto-match)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), and P5.4.a (apply / promote endpoints + CLI) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slices land the reconciliation envelope (P5.4.b), manual match + carry-forward (P5.4.c), and the `tulip reconcile` CLI (P5.4.d) — closing Phase 5.
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), and P5.4.b (reconciliation envelope + auto-match) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slices land manual match + carry-forward (P5.4.c) and the `tulip reconcile` CLI (P5.4.d) — closing Phase 5.
 
-**Tests:** 1061 passing · **CI:** green on `main`
+**Tests:** 1090 passing · **CI:** green on `main`
 
 ---
 
@@ -498,9 +498,26 @@ First sub-slice of P5.4: closes the importer loop. Statement lines now turn into
 - **Audit-log entries**: `import_apply` (one row per batch, with `created_count` / `skipped_count` / `transaction_ids`) and `statement_line_promote` (one row per line, with `transaction_id` / `batch_id`).
 - **Tests**: 11 service tests + 9 router tests + 4 storage-layer tests + 2 CLI integration tests + 1 register-seed test, plus a small architecture-test enhancement (the `if TYPE_CHECKING:` walker filter so type-only model imports don't trip the chokepoint guard). Project total: **1061 passing** (up from 1028).
 
-### P5.4.b — Reconciliation envelope + auto-match — queued
+### P5.4.b — Reconciliation envelope + auto-match — ✅ *(2026-05-06)*
 
-`POST/GET/DELETE /v1/reconciliations`, `POST /complete`, `POST /auto-match` (wires `find_candidates`), `POST /matches/{id}/reject`. Server-side only.
+Second sub-slice of P5.4: server-side reconciliation envelope CRUD + the auto-match endpoint that wires P5.3's matcher + persistence. Manual match (P5.4.c) and CLI (P5.4.d) follow.
+
+- **`POST /v1/reconciliations`** — open an IN_PROGRESS envelope tied to one `import_batch` for one `account`. Validates: account exists, batch exists + belongs to the account, currency match between envelope and account, no other IN_PROGRESS reconciliation for the account (one-at-a-time invariant — locked decision; simplifies the matcher's already-reconciled detection).
+- **`GET /v1/reconciliations/{id}`** — envelope **+ inline review pane**: matches, unmatched statement lines, unmatched ledger transactions in the period window. One round-trip for the entire reconciliation UI per the locked decision; the inbox is what the CLI/UI in P5.4.d will hit on every refresh.
+- **`POST /v1/reconciliations/{id}/auto-match`** — wires `tulip_core.reconciliation.matcher.find_candidates` (P5.3) over the batch's non-excluded statement lines + the period's POSTED ledger transactions, persists each emitted `CandidateMatch` as a `reconciliation_matches` row with `matcher_version="v1"`, `created_by_user_id=NULL`, and the bucketed `confidence` (HIGH/MEDIUM/LOW). Re-running on a reconciliation that already has matches returns `409 reconciliation.matches_exist` per the locked decision — user rejects individual matches or DELETEs and recreates for a fresh pass.
+- **`POST /v1/reconciliations/{id}/matches/{match_id}/reject`** — delete a match row, return the line + transaction to the unmatched pool. Mirrors `ReconciliationMatchRepository.reject`.
+- **`POST /v1/reconciliations/{id}/complete`** — strict balance check: `sum(match.match_amount) == ending_balance - starting_balance`. On pass, hands off to `ReconciliationRepository.complete()` (the **only** writer of `transactions.reconciliation_id` + `reconciled_at` per ADR §Q7 — architecture-test enforced). On fail, `409 reconciliation.unbalanced` carries `expected_net`, `matched_net`, and `residual` as extension fields so the client can show the user exactly how much is unaccounted-for.
+- **`DELETE /v1/reconciliations/{id}?cascade=true`** — un-reconcile. Requires explicit `?cascade=true` (omitting it returns `400 reconciliation.cascade_required` to gate the destructive intent). New `ReconciliationRepository.revert()` method nulls `transactions.reconciliation_id` + `reconciled_at`, clears `statement_lines.reconciliation_match_id` (no FK to cascade), then deletes the reconciliation row (cascade-deletes matches via the P5.1 FK).
+- **Service module** `tulip_api.services.reconciliation_match` with `auto_match()` and `complete()` async + sync entry points. Mirrors P5.4.a's pattern: services flush only; the router wraps a single `commit()` around the audit-log row + the persisted matches so any mid-flight failure rolls back atomically.
+- **Storage adapter** `_tx_to_domain(storage_tx, postings)` materialises a domain `Transaction` (with `Posting` tuple) from a storage row + its posting list — the matcher operates on domain types only, but `TransactionRepository.list_headers()` returns storage rows. The adapter is small and lives in the service module rather than core (no domain → storage cycle).
+- **Domain ↔ storage `MatchConfidence` translation** — both layers have a `MatchConfidence` enum with the same string values; the service module owns the explicit mapping table so the boundary is grep-able.
+- **No `transactions.reconciliation_id` write outside `ReconciliationRepository`** — verified by `test_architecture_no_direct_reconciled_at_writes`. The architecture test was extended to allowlist the new router + service files (which pass `reconciliation_id` as the FK column on `reconciliation_matches`, never to write the denorm on `transactions` — same kwarg-name collision the existing `repositories/reconciliation_match.py` carve-out already documents).
+- **Audit-log entries** — `reconciliation_create`, `reconciliation_revert`, `reconciliation_auto_match`, `reconciliation_match_reject`, `reconciliation_complete`. Each carries enough state to reconstruct the action without consulting the live row (the row may be gone post-revert).
+- **Tests**: 7 service tests + 15 router tests + 2 storage-layer tests = 24 new (1061 → 1090 passing).
+
+### P5.4.c — Manual match + carry-forward — queued
+
+`POST /v1/reconciliations/{id}/matches` (manual), carry-forward CRUD endpoints. Lets the user resolve residuals that auto-match can't pick up + carry unmatched ledger transactions to the next reconciliation.
 
 ---
 

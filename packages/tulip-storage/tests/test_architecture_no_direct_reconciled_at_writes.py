@@ -47,6 +47,13 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         "tulip-storage/src/tulip_storage/models/transaction.py",
         "tulip-storage/src/tulip_storage/migrations/versions/"
         "20260505_1000_f4a6b9c2e7d3_add_imports_reconciliations.py",
+        # The reconciliation API surface (P5.4.b) reads/passes
+        # ``reconciliation_id`` as the entity identifier (path param, FK
+        # column on reconciliation_matches, audit-log entity_id, etc.) —
+        # never as a write to ``transactions.reconciliation_id``. Same
+        # collision the AST checker can't disambiguate without context.
+        "tulip-api/src/tulip_api/routers/reconciliations.py",
+        "tulip-api/src/tulip_api/services/reconciliation_match.py",
     }
 )
 
