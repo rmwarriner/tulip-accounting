@@ -28,6 +28,7 @@ from tulip_cli.commands.pool_actions import (
 from tulip_cli.commands.pool_actions import (
     transfer as transfer_command,
 )
+from tulip_cli.commands.reconcile import reconcile_app
 from tulip_cli.commands.refills import refills_app
 from tulip_cli.commands.register import register as register_command
 from tulip_cli.commands.sinking_funds import sinking_funds_app
@@ -116,6 +117,7 @@ app.add_typer(refills_app, name="refills")
 # for back-compat with P5.2.a/b examples that used the singular form.
 app.add_typer(imports_app, name="imports")
 app.add_typer(imports_app, name="import")
+app.add_typer(reconcile_app, name="reconcile")
 
 
 if __name__ == "__main__":

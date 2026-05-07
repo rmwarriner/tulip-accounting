@@ -51,6 +51,7 @@ from tulip_api.schemas.reconciliation import (
     MatchRead,
     ReconciliationCreate,
     ReconciliationInboxResponse,
+    ReconciliationListResponse,
     ReconciliationRead,
     StatementLineInbox,
 )
@@ -135,6 +136,28 @@ def _to_match_read(match: object) -> MatchRead:
         created_by_user_id=match.created_by_user_id,  # type: ignore[attr-defined]
         created_at=match.created_at,  # type: ignore[attr-defined]
     )
+
+
+@router.get(
+    "",
+    response_model=ReconciliationListResponse,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
+    },
+)
+def list_reconciliations(
+    account_id: UUID | None = None,
+    status: ReconciliationStatus | None = None,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> ReconciliationListResponse:
+    """List reconciliations in this household, newest statement period first."""
+    rows = ReconciliationRepository(session, claims.household_id).list_for_household(
+        account_id=account_id, status=status
+    )
+    return ReconciliationListResponse(items=[_to_read(r) for r in rows])
 
 
 @router.post(
