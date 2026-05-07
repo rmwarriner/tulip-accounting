@@ -118,3 +118,25 @@ class CompleteResponse(BaseModel):
     status: str
     completed_at: datetime
     affected_transaction_count: int
+
+
+class ManualMatchCreate(BaseModel):
+    """Request body for ``POST /v1/reconciliations/{id}/matches`` (manual match)."""
+
+    statement_line_id: UUID
+    ledger_transaction_id: UUID
+    match_amount: Decimal
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class CarryForwardCreate(BaseModel):
+    """Request body for ``POST /v1/reconciliations/{id}/carry-forward``."""
+
+    transaction_ids: list[UUID] = Field(min_length=1)
+
+
+class CarryForwardResponse(BaseModel):
+    """Response for ``POST /v1/reconciliations/{id}/carry-forward``."""
+
+    reconciliation_id: UUID
+    transaction_ids: list[UUID]

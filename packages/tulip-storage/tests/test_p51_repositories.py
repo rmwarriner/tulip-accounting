@@ -599,6 +599,92 @@ class TestReconciliationAndMatch:
         with pytest.raises(LookupError):
             ReconciliationRepository(session, household.id).revert(uuid4())
 
+    def test_set_carry_forward_links_tx_to_recon(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+    ):
+        """set_carry_forward(tx_id, recon_id) sets carried_forward_from_reconciliation_id."""
+        tx = _seed_posted_tx(session, household.id, account)
+        recon = ReconciliationRepository(session, household.id).create(
+            account_id=account.id,
+            statement_period_start=date(2026, 5, 1),
+            statement_period_end=date(2026, 5, 31),
+            statement_starting_balance=Decimal("0"),
+            statement_ending_balance=Decimal("-12.50"),
+            currency="USD",
+        )
+        session.commit()
+        repo = ReconciliationRepository(session, household.id)
+        repo.set_carry_forward(tx.id, recon.id)
+        session.commit()
+        loaded = TransactionRepository(session, household.id).get(tx.id)
+        assert loaded.carried_forward_from_reconciliation_id == recon.id
+
+    def test_clear_carry_forward_nulls_link(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+    ):
+        tx = _seed_posted_tx(session, household.id, account)
+        recon = ReconciliationRepository(session, household.id).create(
+            account_id=account.id,
+            statement_period_start=date(2026, 5, 1),
+            statement_period_end=date(2026, 5, 31),
+            statement_starting_balance=Decimal("0"),
+            statement_ending_balance=Decimal("-12.50"),
+            currency="USD",
+        )
+        repo = ReconciliationRepository(session, household.id)
+        repo.set_carry_forward(tx.id, recon.id)
+        session.commit()
+        repo.clear_carry_forward(tx.id)
+        session.commit()
+        loaded = TransactionRepository(session, household.id).get(tx.id)
+        assert loaded.carried_forward_from_reconciliation_id is None
+
+    def test_set_carry_forward_missing_tx_raises(
+        self, session: Session, household: Household, account: Account
+    ):
+        from uuid import uuid4
+
+        recon = ReconciliationRepository(session, household.id).create(
+            account_id=account.id,
+            statement_period_start=date(2026, 5, 1),
+            statement_period_end=date(2026, 5, 31),
+            statement_starting_balance=Decimal("0"),
+            statement_ending_balance=Decimal("0"),
+            currency="USD",
+        )
+        with pytest.raises(LookupError):
+            ReconciliationRepository(session, household.id).set_carry_forward(uuid4(), recon.id)
+
+    def test_revert_nulls_carry_forward_links(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+    ):
+        """revert() also nulls carried_forward_from_reconciliation_id pointers."""
+        tx = _seed_posted_tx(session, household.id, account)
+        repo = ReconciliationRepository(session, household.id)
+        recon = repo.create(
+            account_id=account.id,
+            statement_period_start=date(2026, 5, 1),
+            statement_period_end=date(2026, 5, 31),
+            statement_starting_balance=Decimal("0"),
+            statement_ending_balance=Decimal("-12.50"),
+            currency="USD",
+        )
+        repo.set_carry_forward(tx.id, recon.id)
+        session.commit()
+        repo.revert(recon.id)
+        session.commit()
+        loaded = TransactionRepository(session, household.id).get(tx.id)
+        assert loaded.carried_forward_from_reconciliation_id is None
+
 
 # ---- CsvProfile ----------------------------------------------------------
 

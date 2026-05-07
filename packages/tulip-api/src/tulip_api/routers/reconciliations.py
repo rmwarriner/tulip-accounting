@@ -28,16 +28,26 @@ from tulip_api.errors import (
     ReconciliationAccountAlreadyInProgressError,
     ReconciliationCurrencyMismatchError,
     ReconciliationInvalidStateError,
+    ReconciliationLineAlreadyMatchedError,
+    ReconciliationLineAmountMismatchError,
+    ReconciliationLineNotInBatchError,
     ReconciliationMatchesExistError,
     ReconciliationMatchNotFoundError,
     ReconciliationNotFoundError,
+    ReconciliationTxAccountMismatchError,
+    ReconciliationTxNotFoundError,
+    ReconciliationTxNotInPeriodError,
     ReconciliationUnbalancedError,
+    StatementLineNotFoundError,
     problem_response,
 )
 from tulip_api.schemas.reconciliation import (
     AutoMatchResponse,
+    CarryForwardCreate,
+    CarryForwardResponse,
     CompleteResponse,
     LedgerTransactionInbox,
+    ManualMatchCreate,
     MatchRead,
     ReconciliationCreate,
     ReconciliationInboxResponse,
@@ -47,10 +57,21 @@ from tulip_api.schemas.reconciliation import (
 from tulip_api.services.reconciliation_match import (
     AutoMatchAlreadyRunError,
     AutoMatchInvalidStateError,
+    CarryForwardTxNotFoundError,
+    CarryForwardTxNotInPeriodError,
     CompleteInvalidStateError,
     CompleteUnbalancedError,
+    ManualMatchAmountMismatchError,
+    ManualMatchLineAlreadyMatchedError,
+    ManualMatchLineNotFoundError,
+    ManualMatchLineNotInBatchError,
+    ManualMatchTxAccountMismatchError,
+    ManualMatchTxNotFoundError,
+    add_carry_forward,
     auto_match,
     complete,
+    manual_match,
+    remove_carry_forward,
 )
 from tulip_storage.models import ReconciliationStatus
 from tulip_storage.repositories import (
@@ -511,4 +532,237 @@ def complete_endpoint(
         status=refreshed.status.value,
         completed_at=refreshed.completed_at,  # type: ignore[arg-type]
         affected_transaction_count=result.affected_transaction_count,
+    )
+
+
+@router.post(
+    "/{reconciliation_id}/matches",
+    response_model=MatchRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "request.body_invalid",
+            "reconciliation.line_not_in_batch",
+            "reconciliation.line_amount_mismatch",
+            "reconciliation.tx_account_mismatch",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response(
+            "reconciliation.not_found",
+            "import.line.not_found",
+            "reconciliation.transaction_not_found",
+        ),
+        409: problem_response(
+            "reconciliation.invalid_state",
+            "reconciliation.line_already_matched",
+        ),
+        422: problem_response("validation.failed"),
+    },
+)
+async def create_manual_match(
+    reconciliation_id: UUID,
+    body: ManualMatchCreate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MatchRead:
+    """Create a manual match — used when auto-match missed a pairing.
+
+    Per ADR §Q9: manual matches set ``created_by_user_id``, leave
+    ``confidence`` and ``matcher_version`` NULL.
+    """
+    repo = ReconciliationRepository(session, claims.household_id)
+    recon = repo.get(reconciliation_id)
+    if recon is None:
+        raise ReconciliationNotFoundError()
+
+    try:
+        match = await manual_match(
+            session=session,
+            household_id=claims.household_id,
+            reconciliation=recon,
+            statement_line_id=body.statement_line_id,
+            ledger_transaction_id=body.ledger_transaction_id,
+            match_amount=body.match_amount,
+            currency=body.currency,
+            actor_user_id=claims.user_id,
+        )
+    except CompleteInvalidStateError as exc:
+        raise ReconciliationInvalidStateError(
+            current_status=exc.current_status, action="create-manual-match"
+        ) from exc
+    except ManualMatchLineNotFoundError as exc:
+        raise StatementLineNotFoundError() from exc
+    except ManualMatchLineNotInBatchError as exc:
+        raise ReconciliationLineNotInBatchError(
+            statement_line_id=str(exc.statement_line_id),
+            expected_batch_id=str(exc.expected_batch_id),
+        ) from exc
+    except ManualMatchLineAlreadyMatchedError as exc:
+        raise ReconciliationLineAlreadyMatchedError(
+            statement_line_id=str(exc.statement_line_id),
+            existing_match_id=str(exc.existing_match_id),
+        ) from exc
+    except ManualMatchAmountMismatchError as exc:
+        raise ReconciliationLineAmountMismatchError(
+            statement_line_id=str(exc.statement_line_id),
+            line_amount=str(exc.line_amount),
+            match_amount=str(exc.match_amount),
+        ) from exc
+    except ManualMatchTxNotFoundError as exc:
+        raise ReconciliationTxNotFoundError() from exc
+    except ManualMatchTxAccountMismatchError as exc:
+        raise ReconciliationTxAccountMismatchError(
+            ledger_transaction_id=str(exc.ledger_transaction_id),
+            expected_account_id=str(exc.expected_account_id),
+        ) from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="reconciliation_match_create_manual",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="reconciliation_match",
+        entity_id=match.id,
+        after={
+            "reconciliation_id": str(reconciliation_id),
+            "statement_line_id": str(body.statement_line_id),
+            "ledger_transaction_id": str(body.ledger_transaction_id),
+        },
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "reconciliation_match.manual_created",
+        match_id=str(match.id),
+        reconciliation_id=str(reconciliation_id),
+    )
+    return _to_match_read(match)
+
+
+@router.post(
+    "/{reconciliation_id}/carry-forward",
+    response_model=CarryForwardResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "request.body_invalid",
+            "reconciliation.tx_not_in_period",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response(
+            "reconciliation.not_found",
+            "reconciliation.transaction_not_found",
+        ),
+        409: problem_response("reconciliation.invalid_state"),
+        422: problem_response("validation.failed"),
+    },
+)
+def add_carry_forward_endpoint(
+    reconciliation_id: UUID,
+    body: CarryForwardCreate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> CarryForwardResponse:
+    """Mark in-period ledger transactions as carry-forward to the next reconciliation."""
+    repo = ReconciliationRepository(session, claims.household_id)
+    recon = repo.get(reconciliation_id)
+    if recon is None:
+        raise ReconciliationNotFoundError()
+
+    try:
+        added = add_carry_forward(
+            session=session,
+            household_id=claims.household_id,
+            reconciliation=recon,
+            transaction_ids=body.transaction_ids,
+        )
+    except CompleteInvalidStateError as exc:
+        raise ReconciliationInvalidStateError(
+            current_status=exc.current_status, action="add-carry-forward"
+        ) from exc
+    except CarryForwardTxNotFoundError as exc:
+        raise ReconciliationTxNotFoundError() from exc
+    except CarryForwardTxNotInPeriodError as exc:
+        raise ReconciliationTxNotInPeriodError(
+            ledger_transaction_id=str(exc.ledger_transaction_id),
+            tx_date=exc.tx_date,
+            period_start=exc.period_start,
+            period_end=exc.period_end,
+        ) from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="reconciliation_carry_forward_add",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="reconciliation",
+        entity_id=reconciliation_id,
+        after={"transaction_ids": [str(t) for t in added]},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "reconciliation.carry_forward_added",
+        reconciliation_id=str(reconciliation_id),
+        count=len(added),
+    )
+    return CarryForwardResponse(reconciliation_id=reconciliation_id, transaction_ids=added)
+
+
+@router.delete(
+    "/{reconciliation_id}/carry-forward/{transaction_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response(
+            "reconciliation.not_found",
+            "reconciliation.transaction_not_found",
+        ),
+        409: problem_response("reconciliation.invalid_state"),
+    },
+)
+def remove_carry_forward_endpoint(
+    reconciliation_id: UUID,
+    transaction_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Un-mark a transaction's carry-forward link."""
+    repo = ReconciliationRepository(session, claims.household_id)
+    recon = repo.get(reconciliation_id)
+    if recon is None:
+        raise ReconciliationNotFoundError()
+
+    try:
+        remove_carry_forward(
+            session=session,
+            household_id=claims.household_id,
+            reconciliation=recon,
+            transaction_id=transaction_id,
+        )
+    except CompleteInvalidStateError as exc:
+        raise ReconciliationInvalidStateError(
+            current_status=exc.current_status, action="remove-carry-forward"
+        ) from exc
+    except CarryForwardTxNotFoundError as exc:
+        raise ReconciliationTxNotFoundError() from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="reconciliation_carry_forward_remove",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="reconciliation",
+        entity_id=reconciliation_id,
+        before={"transaction_id": str(transaction_id)},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "reconciliation.carry_forward_removed",
+        reconciliation_id=str(reconciliation_id),
+        transaction_id=str(transaction_id),
     )

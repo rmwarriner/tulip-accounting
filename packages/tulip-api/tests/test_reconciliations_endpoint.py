@@ -527,3 +527,189 @@ class TestDeleteReconciliation:
         # Reconciliation gone.
         gone = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h)
         assert_problem(gone, status=404, code="reconciliation.not_found")
+
+
+# ---- POST /v1/reconciliations/{id}/matches (manual) ----------------------
+
+
+class TestManualMatch:
+    def test_creates_manual_match(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        # Find a line + a matching tx by date.
+        from decimal import Decimal as _D
+
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        line = next(
+            line
+            for line in inbox["unmatched_statement_lines"]
+            if _D(line["amount"]) == _D("-42.17")
+        )
+        tx = next(tx for tx in inbox["unmatched_ledger_transactions"] if tx["date"] == "2026-05-12")
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/matches",
+            headers=auth_h,
+            json={
+                "statement_line_id": line["id"],
+                "ledger_transaction_id": tx["id"],
+                "match_amount": "-42.17",
+                "currency": "USD",
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["confidence"] is None
+        assert body["matcher_version"] is None
+        assert body["created_by_user_id"] is not None
+
+    def test_amount_mismatch_returns_400(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        line = inbox["unmatched_statement_lines"][0]
+        tx = inbox["unmatched_ledger_transactions"][0]
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/matches",
+            headers=auth_h,
+            json={
+                "statement_line_id": line["id"],
+                "ledger_transaction_id": tx["id"],
+                "match_amount": "0.01",  # wrong
+                "currency": "USD",
+            },
+        )
+        assert_problem(r, status=400, code="reconciliation.line_amount_mismatch")
+
+    def test_already_matched_returns_409(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        # Auto-match populates matches; manual match on the same line must 409.
+        client.post(f"/v1/reconciliations/{recon['id']}/auto-match", headers=auth_h)
+        # Pick a matched line by querying the batch's lines via /imports.
+        batch = client.get(f"/v1/imports/{parsed_batch}", headers=auth_h).json()
+        line_id = batch["lines"][0]["id"]
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/matches",
+            headers=auth_h,
+            json={
+                "statement_line_id": line_id,
+                "ledger_transaction_id": matching_ledger_txs[0],
+                "match_amount": "-42.17",
+                "currency": "USD",
+            },
+        )
+        assert_problem(r, status=409, code="reconciliation.line_already_matched")
+
+
+# ---- POST/DELETE /v1/reconciliations/{id}/carry-forward[/{tx_id}] --------
+
+
+class TestCarryForwardEndpoints:
+    def test_add_marks_in_period_tx(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/carry-forward",
+            headers=auth_h,
+            json={"transaction_ids": [matching_ledger_txs[0]]},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["transaction_ids"] == [matching_ledger_txs[0]]
+
+    def test_add_out_of_period_returns_400(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+    ):
+        # Create a tx outside the May period.
+        # Need a second account (expense) for the balanced posting.
+        ex = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Misc", "type": "expense", "currency": "USD", "code": "5500"},
+        ).json()
+        out_tx = client.post(
+            "/v1/transactions",
+            headers=auth_h,
+            json={
+                "date": "2026-06-15",
+                "description": "Out of period",
+                "postings": [
+                    {"account_id": checking_account, "amount": "-5.00", "currency": "USD"},
+                    {"account_id": ex["id"], "amount": "5.00", "currency": "USD"},
+                ],
+            },
+        ).json()
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/carry-forward",
+            headers=auth_h,
+            json={"transaction_ids": [out_tx["id"]]},
+        )
+        assert_problem(r, status=400, code="reconciliation.tx_not_in_period")
+
+    def test_remove_clears_link(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        client.post(
+            f"/v1/reconciliations/{recon['id']}/carry-forward",
+            headers=auth_h,
+            json={"transaction_ids": [matching_ledger_txs[0]]},
+        )
+        r = client.delete(
+            f"/v1/reconciliations/{recon['id']}/carry-forward/{matching_ledger_txs[0]}",
+            headers=auth_h,
+        )
+        assert r.status_code == 204, r.text
+
+    def test_complete_with_carry_forward_balances(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ):
+        """Carry-forward both txs (sum 1457.83); /complete should balance with 0 matches."""
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        client.post(
+            f"/v1/reconciliations/{recon['id']}/carry-forward",
+            headers=auth_h,
+            json={"transaction_ids": matching_ledger_txs},
+        )
+        r = client.post(f"/v1/reconciliations/{recon['id']}/complete", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "complete"
