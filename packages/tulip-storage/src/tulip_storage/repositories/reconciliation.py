@@ -212,11 +212,79 @@ class ReconciliationRepository:
             .values(reconciliation_id=None, reconciled_at=None)
         )
 
+        # Also null any carry-forward links pointing at this reconciliation —
+        # carry-forward is "this tx was counted in reconciliation X"; when X
+        # is reverted, the audit trail breaks (P5.4.c).
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.carried_forward_from_reconciliation_id == reconciliation_id,
+            )
+            .values(carried_forward_from_reconciliation_id=None)
+        )
+
         # Delete the reconciliation row — cascades reconciliation_matches.
         self._session.execute(
             delete(Reconciliation).where(
                 Reconciliation.household_id == self._household_id,
                 Reconciliation.id == reconciliation_id,
             )
+        )
+        self._session.flush()
+
+    def set_carry_forward(self, transaction_id: UUID, reconciliation_id: UUID) -> None:
+        """Mark a transaction as carry-forward from this reconciliation.
+
+        Single chokepoint for ``transactions.carried_forward_from_reconciliation_id``
+        writes (architecture-test enforced). Per ADR-0004 §Q3: a ledger
+        transaction in the period that the user wants to defer to the
+        next reconciliation gets pinned here so the current reconciliation's
+        balance check ignores it but the audit trail records "this tx was
+        counted in reconciliation X."
+
+        Raises:
+            LookupError: ``transaction_id`` does not exist in this household.
+
+        """
+        tx = self._session.get(Transaction, (self._household_id, transaction_id))
+        if tx is None:
+            raise LookupError(
+                f"transaction {transaction_id} not found in household {self._household_id}"
+            )
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.id == transaction_id,
+            )
+            .values(carried_forward_from_reconciliation_id=reconciliation_id)
+        )
+        self._session.flush()
+
+    def clear_carry_forward(self, transaction_id: UUID) -> None:
+        """Un-mark a transaction's carry-forward link.
+
+        Single chokepoint for nulling
+        ``transactions.carried_forward_from_reconciliation_id``. Caller is
+        responsible for verifying the user intent — this method does not
+        check whether the transaction was actually carried forward.
+
+        Raises:
+            LookupError: ``transaction_id`` does not exist in this household.
+
+        """
+        tx = self._session.get(Transaction, (self._household_id, transaction_id))
+        if tx is None:
+            raise LookupError(
+                f"transaction {transaction_id} not found in household {self._household_id}"
+            )
+        self._session.execute(
+            update(Transaction)
+            .where(
+                Transaction.household_id == self._household_id,
+                Transaction.id == transaction_id,
+            )
+            .values(carried_forward_from_reconciliation_id=None)
         )
         self._session.flush()

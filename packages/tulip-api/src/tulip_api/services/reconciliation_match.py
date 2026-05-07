@@ -62,7 +62,12 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-    from tulip_storage.models import Posting, Reconciliation, Transaction
+    from tulip_storage.models import (
+        Posting,
+        Reconciliation,
+        ReconciliationMatch,
+        Transaction,
+    )
 
 
 _MATCHER_VERSION = "v1"
@@ -109,17 +114,111 @@ class AutoMatchInvalidStateError(ValueError):
 
 
 class CompleteUnbalancedError(ValueError):
-    """Raised when /complete is called but matched amount != ending - starting."""
+    """Raised when /complete is called but matched + carry_forward != ending - starting."""
 
-    def __init__(self, *, expected_net: Decimal, matched_net: Decimal, residual: Decimal) -> None:
+    def __init__(
+        self,
+        *,
+        expected_net: Decimal,
+        matched_net: Decimal,
+        carry_forward_net: Decimal,
+        residual: Decimal,
+    ) -> None:
         """Build with the imbalance figures for the typed error response."""
         super().__init__(
             f"reconciliation does not balance: expected_net={expected_net}, "
-            f"matched_net={matched_net}, residual={residual}"
+            f"matched_net={matched_net}, carry_forward_net={carry_forward_net}, "
+            f"residual={residual}"
         )
         self.expected_net = expected_net
         self.matched_net = matched_net
+        self.carry_forward_net = carry_forward_net
         self.residual = residual
+
+
+class ManualMatchLineNotFoundError(LookupError):
+    """Raised when the statement_line_id doesn't exist in this household."""
+
+
+class ManualMatchTxNotFoundError(LookupError):
+    """Raised when the ledger_transaction_id doesn't exist in this household."""
+
+
+class ManualMatchLineNotInBatchError(ValueError):
+    """Raised when the statement line is from a different batch than the recon's source."""
+
+    def __init__(self, statement_line_id: UUID, expected_batch_id: UUID) -> None:
+        """Build with line + expected batch."""
+        super().__init__(
+            f"statement_line {statement_line_id} not in expected batch {expected_batch_id}"
+        )
+        self.statement_line_id = statement_line_id
+        self.expected_batch_id = expected_batch_id
+
+
+class ManualMatchLineAlreadyMatchedError(ValueError):
+    """Raised when the statement line already has a match."""
+
+    def __init__(self, statement_line_id: UUID, existing_match_id: UUID) -> None:
+        """Build with line + existing match."""
+        super().__init__(
+            f"statement_line {statement_line_id} already matched to {existing_match_id}"
+        )
+        self.statement_line_id = statement_line_id
+        self.existing_match_id = existing_match_id
+
+
+class ManualMatchAmountMismatchError(ValueError):
+    """Raised when match_amount != line.amount (P5.4.c rejects partial-of-one)."""
+
+    def __init__(
+        self,
+        statement_line_id: UUID,
+        line_amount: Decimal,
+        match_amount: Decimal,
+    ) -> None:
+        """Build with the figures."""
+        super().__init__(f"line.amount={line_amount} != match_amount={match_amount}")
+        self.statement_line_id = statement_line_id
+        self.line_amount = line_amount
+        self.match_amount = match_amount
+
+
+class ManualMatchTxAccountMismatchError(ValueError):
+    """Raised when the ledger tx has no posting on the reconciliation's account."""
+
+    def __init__(self, ledger_transaction_id: UUID, expected_account_id: UUID) -> None:
+        """Build with the tx + account."""
+        super().__init__(
+            f"transaction {ledger_transaction_id} has no posting on account {expected_account_id}"
+        )
+        self.ledger_transaction_id = ledger_transaction_id
+        self.expected_account_id = expected_account_id
+
+
+class CarryForwardTxNotFoundError(LookupError):
+    """Raised when the ledger_transaction_id doesn't exist in this household."""
+
+
+class CarryForwardTxNotInPeriodError(ValueError):
+    """Raised when a carry-forward tx falls outside the reconciliation's period."""
+
+    def __init__(
+        self,
+        ledger_transaction_id: UUID,
+        tx_date: str,
+        period_start: str,
+        period_end: str,
+    ) -> None:
+        """Build with the tx + period bounds."""
+        super().__init__(
+            f"transaction {ledger_transaction_id} dated {tx_date} is outside "
+            f"period {period_start}..{period_end}"
+        )
+        self.ledger_transaction_id = ledger_transaction_id
+        self.tx_date = tx_date
+        self.period_start = period_start
+        self.period_end = period_end
 
 
 class CompleteInvalidStateError(ValueError):
@@ -306,19 +405,190 @@ def complete(
     match_repo = ReconciliationMatchRepository(session, household_id)
     matches = match_repo.list_for_reconciliation(reconciliation.id)
     matched_net = sum((m.match_amount for m in matches), Decimal("0"))
+
+    # Carry-forward txs (ledger txs in the period the user has deferred to
+    # the next reconciliation) reduce the expected net for THIS reconciliation:
+    # the bank counts them in ending_balance, but the user has explicitly
+    # said "this isn't mine yet". Sum their bank-side posting amounts.
+    carry_forward_net = _carry_forward_net(
+        session=session,
+        household_id=household_id,
+        reconciliation=reconciliation,
+    )
+
     expected_net = (
         reconciliation.statement_ending_balance - reconciliation.statement_starting_balance
     )
-    residual = expected_net - matched_net
+    residual = expected_net - (matched_net + carry_forward_net)
     if residual != 0:
         raise CompleteUnbalancedError(
             expected_net=expected_net,
             matched_net=matched_net,
+            carry_forward_net=carry_forward_net,
             residual=residual,
         )
 
     ReconciliationRepository(session, household_id).complete(reconciliation.id)
     return CompleteResult(affected_transaction_count=len(matches))
+
+
+def _carry_forward_net(
+    *, session: Session, household_id: UUID, reconciliation: Reconciliation
+) -> Decimal:
+    """Sum of the bank-side posting amounts of carry-forward txs for this recon."""
+    from sqlalchemy import select
+
+    from tulip_storage.models import Posting, Transaction
+
+    rows = session.execute(
+        select(Posting.amount)
+        .join(
+            Transaction,
+            (Transaction.id == Posting.transaction_id)
+            & (Transaction.household_id == Posting.household_id),
+        )
+        .where(
+            Transaction.household_id == household_id,
+            Transaction.carried_forward_from_reconciliation_id == reconciliation.id,
+            Posting.account_id == reconciliation.account_id,
+        )
+    ).all()
+    return sum((Decimal(r[0]) for r in rows), Decimal("0"))
+
+
+async def manual_match(
+    *,
+    session: Session,
+    household_id: UUID,
+    reconciliation: Reconciliation,
+    statement_line_id: UUID,
+    ledger_transaction_id: UUID,
+    match_amount: Decimal,
+    currency: str,
+    actor_user_id: UUID,
+) -> ReconciliationMatch:
+    """Persist a manual match (user-resolved pairing).
+
+    Validates four invariants before persisting:
+
+    - The statement line exists.
+    - The line belongs to the reconciliation's source batch.
+    - The line is not already matched.
+    - The line's amount equals ``match_amount`` (no partial-of-one in v1).
+    - The ledger transaction exists.
+    - The transaction has at least one posting on the reconciliation's account.
+
+    Raises:
+        CompleteInvalidStateError: ``reconciliation.status`` is not IN_PROGRESS.
+        ManualMatchLineNotFoundError / ManualMatchTxNotFoundError:
+            referenced row doesn't exist.
+        ManualMatchLineNotInBatchError: line is from a different batch.
+        ManualMatchLineAlreadyMatchedError: line already has a match.
+        ManualMatchAmountMismatchError: match_amount != line.amount.
+        ManualMatchTxAccountMismatchError: tx has no posting on recon's account.
+
+    """
+    if reconciliation.status is not ReconciliationStatus.IN_PROGRESS:
+        raise CompleteInvalidStateError(reconciliation.status)
+
+    lines_repo = StatementLineRepository(session, household_id)
+    line = lines_repo.get(statement_line_id)
+    if line is None:
+        raise ManualMatchLineNotFoundError(f"statement_line {statement_line_id} not found")
+    if line.import_batch_id != reconciliation.source_import_batch_id:
+        raise ManualMatchLineNotInBatchError(
+            statement_line_id,
+            reconciliation.source_import_batch_id,  # type: ignore[arg-type]
+        )
+    if line.reconciliation_match_id is not None:
+        raise ManualMatchLineAlreadyMatchedError(statement_line_id, line.reconciliation_match_id)
+    if line.amount != match_amount:
+        raise ManualMatchAmountMismatchError(statement_line_id, line.amount, match_amount)
+
+    tx_repo = TransactionRepository(session, household_id)
+    tx = tx_repo.get(ledger_transaction_id)
+    if tx is None:
+        raise ManualMatchTxNotFoundError(f"transaction {ledger_transaction_id} not found")
+    postings = tx_repo.list_postings(ledger_transaction_id)
+    if not any(p.account_id == reconciliation.account_id for p in postings):
+        raise ManualMatchTxAccountMismatchError(ledger_transaction_id, reconciliation.account_id)
+
+    match_repo = ReconciliationMatchRepository(session, household_id)
+    match = match_repo.create(
+        reconciliation_id=reconciliation.id,
+        statement_line_id=statement_line_id,
+        ledger_transaction_id=ledger_transaction_id,
+        match_amount=match_amount,
+        currency=currency,
+        confidence=None,  # manual — null per ADR §Q9
+        matcher_version=None,  # manual — null per ADR §Q9
+        created_by_user_id=actor_user_id,
+    )
+    return match
+
+
+def add_carry_forward(
+    *,
+    session: Session,
+    household_id: UUID,
+    reconciliation: Reconciliation,
+    transaction_ids: list[UUID],
+) -> list[UUID]:
+    """Mark each ledger transaction as carry-forward from this reconciliation.
+
+    Validates each transaction exists and falls within the reconciliation's
+    period. Per the locked decision: out-of-period carry-forward is
+    rejected — would let the user paper over real reconciliation problems.
+
+    Raises:
+        CompleteInvalidStateError: ``reconciliation.status`` is not IN_PROGRESS.
+        CarryForwardTxNotFoundError: a transaction_id is missing.
+        CarryForwardTxNotInPeriodError: a transaction's date is out-of-period.
+
+    """
+    if reconciliation.status is not ReconciliationStatus.IN_PROGRESS:
+        raise CompleteInvalidStateError(reconciliation.status)
+
+    tx_repo = TransactionRepository(session, household_id)
+    recon_repo = ReconciliationRepository(session, household_id)
+    period_start = reconciliation.statement_period_start
+    period_end = reconciliation.statement_period_end
+    for tx_id in transaction_ids:
+        tx = tx_repo.get(tx_id)
+        if tx is None:
+            raise CarryForwardTxNotFoundError(f"transaction {tx_id} not found")
+        if not (period_start <= tx.date <= period_end):
+            raise CarryForwardTxNotInPeriodError(
+                tx_id,
+                tx.date.isoformat(),
+                period_start.isoformat(),
+                period_end.isoformat(),
+            )
+        recon_repo.set_carry_forward(tx_id, reconciliation.id)
+    return list(transaction_ids)
+
+
+def remove_carry_forward(
+    *,
+    session: Session,
+    household_id: UUID,
+    reconciliation: Reconciliation,
+    transaction_id: UUID,
+) -> None:
+    """Un-mark a single transaction's carry-forward link.
+
+    Raises:
+        CompleteInvalidStateError: ``reconciliation.status`` is not IN_PROGRESS.
+        CarryForwardTxNotFoundError: transaction_id is missing.
+
+    """
+    if reconciliation.status is not ReconciliationStatus.IN_PROGRESS:
+        raise CompleteInvalidStateError(reconciliation.status)
+
+    tx = TransactionRepository(session, household_id).get(transaction_id)
+    if tx is None:
+        raise CarryForwardTxNotFoundError(f"transaction {transaction_id} not found")
+    ReconciliationRepository(session, household_id).clear_carry_forward(transaction_id)
 
 
 def _account_currency_for_batch(*, session: Session, household_id: UUID, batch_id: UUID) -> str:

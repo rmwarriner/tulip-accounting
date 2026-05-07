@@ -1295,6 +1295,142 @@ class ReconciliationAccountAlreadyInProgressError(TulipProblem):
         )
 
 
+class ReconciliationLineAlreadyMatchedError(TulipProblem):
+    """A manual match was attempted on a statement line that already has a match (P5.4.c).
+
+    Per the locked decision: manual match doesn't auto-reject prior matches.
+    The user must explicitly reject the existing match before creating a
+    new one.
+    """
+
+    def __init__(self, *, statement_line_id: str, existing_match_id: str) -> None:
+        """Build the reconciliation.line_already_matched problem (409)."""
+        super().__init__(
+            code="reconciliation.line_already_matched",
+            title="Statement line already matched",
+            status=409,
+            detail=(
+                "This statement line already has a match. Reject the existing "
+                "match first, then re-create with the corrected pairing."
+            ),
+            extensions={
+                "statement_line_id": statement_line_id,
+                "existing_match_id": existing_match_id,
+            },
+        )
+
+
+class ReconciliationLineNotInBatchError(TulipProblem):
+    """A manual match referenced a line outside the reconciliation's source batch (P5.4.c)."""
+
+    def __init__(self, *, statement_line_id: str, expected_batch_id: str) -> None:
+        """Build the reconciliation.line_not_in_batch problem (400)."""
+        super().__init__(
+            code="reconciliation.line_not_in_batch",
+            title="Statement line not in reconciliation's batch",
+            status=400,
+            detail=(
+                "The statement line belongs to a different import batch than this "
+                "reconciliation's source batch. Pick a line from the correct batch."
+            ),
+            extensions={
+                "statement_line_id": statement_line_id,
+                "expected_batch_id": expected_batch_id,
+            },
+        )
+
+
+class ReconciliationLineAmountMismatchError(TulipProblem):
+    """A manual match's match_amount disagrees with the line's amount (P5.4.c).
+
+    P5.4.c rejects partial-of-one matches per ADR §Q3 — the match_amount
+    must equal the line's amount exactly. Partial matching is deferred
+    past v1.
+    """
+
+    def __init__(self, *, statement_line_id: str, line_amount: str, match_amount: str) -> None:
+        """Build the reconciliation.line_amount_mismatch problem (400)."""
+        super().__init__(
+            code="reconciliation.line_amount_mismatch",
+            title="Match amount doesn't match the statement line's amount",
+            status=400,
+            detail=(
+                f"Statement line amount is {line_amount}, but the match was "
+                f"submitted with {match_amount}. Partial-of-one matching isn't "
+                "supported in v1; the amounts must agree exactly."
+            ),
+            extensions={
+                "statement_line_id": statement_line_id,
+                "line_amount": line_amount,
+                "match_amount": match_amount,
+            },
+        )
+
+
+class ReconciliationTxAccountMismatchError(TulipProblem):
+    """A manual match referenced a tx with no posting on the reconciliation's account (P5.4.c)."""
+
+    def __init__(self, *, ledger_transaction_id: str, expected_account_id: str) -> None:
+        """Build the reconciliation.tx_account_mismatch problem (400)."""
+        super().__init__(
+            code="reconciliation.tx_account_mismatch",
+            title="Ledger transaction has no posting on the reconciliation's account",
+            status=400,
+            detail=(
+                "Manual match requires the ledger transaction to have at least "
+                "one posting on the reconciliation's bank account. Pick a "
+                "different transaction."
+            ),
+            extensions={
+                "ledger_transaction_id": ledger_transaction_id,
+                "expected_account_id": expected_account_id,
+            },
+        )
+
+
+class ReconciliationTxNotInPeriodError(TulipProblem):
+    """A carry-forward request referenced a tx outside the reconciliation's period (P5.4.c)."""
+
+    def __init__(
+        self,
+        *,
+        ledger_transaction_id: str,
+        tx_date: str,
+        period_start: str,
+        period_end: str,
+    ) -> None:
+        """Build the reconciliation.tx_not_in_period problem (400)."""
+        super().__init__(
+            code="reconciliation.tx_not_in_period",
+            title="Transaction is outside the reconciliation's period",
+            status=400,
+            detail=(
+                f"Transaction date {tx_date} is outside the reconciliation's "
+                f"window {period_start}..{period_end}. Carry-forward is only "
+                "valid for in-period ledger transactions."
+            ),
+            extensions={
+                "ledger_transaction_id": ledger_transaction_id,
+                "tx_date": tx_date,
+                "period_start": period_start,
+                "period_end": period_end,
+            },
+        )
+
+
+class ReconciliationTxNotFoundError(TulipProblem):
+    """A carry-forward / match request referenced a missing ledger transaction (P5.4.c)."""
+
+    def __init__(self) -> None:
+        """Build the reconciliation.transaction_not_found problem (404)."""
+        super().__init__(
+            code="reconciliation.transaction_not_found",
+            title="Ledger transaction not found",
+            status=404,
+            detail="No ledger transaction with that ID exists in this household.",
+        )
+
+
 class ReconciliationCascadeRequiredError(TulipProblem):
     """DELETE /v1/reconciliations/{id} called without ``?cascade=true`` (P5.4.b).
 

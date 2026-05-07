@@ -100,6 +100,30 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "source": "import_batch",
     },
     # ReconciliationCascadeRequiredError takes no args.
+    "ReconciliationLineAlreadyMatchedError": {
+        "statement_line_id": "<statement-line-uuid>",
+        "existing_match_id": "<match-uuid>",
+    },
+    "ReconciliationLineNotInBatchError": {
+        "statement_line_id": "<statement-line-uuid>",
+        "expected_batch_id": "<batch-uuid>",
+    },
+    "ReconciliationLineAmountMismatchError": {
+        "statement_line_id": "<statement-line-uuid>",
+        "line_amount": "-42.17",
+        "match_amount": "-40.00",
+    },
+    "ReconciliationTxAccountMismatchError": {
+        "ledger_transaction_id": "<transaction-uuid>",
+        "expected_account_id": "<account-uuid>",
+    },
+    "ReconciliationTxNotInPeriodError": {
+        "ledger_transaction_id": "<transaction-uuid>",
+        "tx_date": "2026-04-15",
+        "period_start": "2026-05-01",
+        "period_end": "2026-05-31",
+    },
+    # ReconciliationTxNotFoundError takes no args.
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),

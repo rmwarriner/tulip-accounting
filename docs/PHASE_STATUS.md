@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-06 · `main` @ **P5.4.b in flight** (reconciliation envelope + auto-match)
+**Last updated:** 2026-05-07 · `main` @ **P5.4.c in flight** (manual match + carry-forward)
 
 ---
 
@@ -16,9 +16,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 - **Post-Phase-3 enhancements:** balance + trial-balance endpoints (#31), account nesting end-to-end (#42), interactive `tulip add --edit` (#43)
 - **Pre-Phase-4 docs:** threat-model checkpoint shipped (#56, [docs/THREAT_MODEL.md](THREAT_MODEL.md)). Transaction void / PENDING-only edit (#55) deliberately deferred to Phase 5 alongside reconciliation. Deep security/privacy audits deliberately deferred — see [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) (privacy: pre-Phase 6; deep security: Phase 8; pre-cloud re-audit: Phase 9).
 - **Phase 4 (envelopes + sinking funds):** ✅ **complete** — all seven slices merged 2026-05-02. P4.0 (#60), P4.1.a (#62), P4.1.b (#63), P4.2 (#66), P4.3.a (#68 — closes #7 via [ADR-0002](adrs/0002-scheduler-primitive.md)), P4.3.b (#69), P4.3.c (#70).
-- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), and P5.4.b (reconciliation envelope + auto-match) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slices land manual match + carry-forward (P5.4.c) and the `tulip reconcile` CLI (P5.4.d) — closing Phase 5.
+- **Phase 5 (importers + reconciliation):** in flight — P5.0 (#55), P5.1 (storage layer), P5.2.a/b/c (OFX / QIF / CSV importers), P5.3 (matcher + categorizer DI seam), P5.4.a (apply / promote endpoints + CLI), P5.4.b (reconciliation envelope + auto-match), and P5.4.c (manual match + carry-forward) implemented per [ADR-0004](adrs/0004-reconciliation.md). The remaining P5.4 sub-slice is **P5.4.d** (the `tulip reconcile` CLI) — closing Phase 5.
 
-**Tests:** 1090 passing · **CI:** green on `main`
+**Tests:** 1113 passing · **CI:** green on `main`
 
 ---
 
@@ -515,9 +515,26 @@ Second sub-slice of P5.4: server-side reconciliation envelope CRUD + the auto-ma
 - **Audit-log entries** — `reconciliation_create`, `reconciliation_revert`, `reconciliation_auto_match`, `reconciliation_match_reject`, `reconciliation_complete`. Each carries enough state to reconstruct the action without consulting the live row (the row may be gone post-revert).
 - **Tests**: 7 service tests + 15 router tests + 2 storage-layer tests = 24 new (1061 → 1090 passing).
 
-### P5.4.c — Manual match + carry-forward — queued
+### P5.4.c — Manual match + carry-forward — ✅ *(2026-05-07)*
 
-`POST /v1/reconciliations/{id}/matches` (manual), carry-forward CRUD endpoints. Lets the user resolve residuals that auto-match can't pick up + carry unmatched ledger transactions to the next reconciliation.
+Third sub-slice of P5.4. Lets the user resolve residuals auto-match can't pick up (manual match) and exclude in-flight ledger transactions from the current period's balance check (carry-forward — e.g., a check the bank hasn't cashed yet). The `tulip reconcile` CLI (P5.4.d) closes Phase 5.
+
+- **`POST /v1/reconciliations/{id}/matches`** — body `{statement_line_id, ledger_transaction_id, match_amount, currency}`. Persists a manual match: `created_by_user_id` set, `matcher_version=NULL`, `confidence=NULL` per ADR §Q9. Validates four invariants before insert (locked decision: cheap insurance against typo'd UUIDs):
+  - Statement line exists and belongs to the reconciliation's source batch (`400 reconciliation.line_not_in_batch` otherwise).
+  - Statement line not already matched (`409 reconciliation.line_already_matched` — locked decision: user must explicitly reject the prior match first).
+  - `match_amount == line.amount` exactly (`400 reconciliation.line_amount_mismatch` — partial-of-one matching deferred past v1 per ADR §Q3).
+  - Ledger transaction exists and has at least one posting on the reconciliation's account (`400 reconciliation.tx_account_mismatch`).
+- **`POST /v1/reconciliations/{id}/carry-forward`** — body `{transaction_ids: [UUID]}`. Marks ledger transactions as carry-forward via `transactions.carried_forward_from_reconciliation_id`. Validates each tx exists and falls within `[period_start, period_end]` — locked decision: out-of-period rejected (`400 reconciliation.tx_not_in_period`) so the user can't paper over real reconciliation problems.
+- **`DELETE /v1/reconciliations/{id}/carry-forward/{transaction_id}`** — un-mark.
+- **`/complete` balance equation updated** to `sum(matched) + sum(carry_forward) == ending - starting`. Carry-forward txs deduct from the expected net for *this* reconciliation: the bank counts them in `ending_balance`, but the user has explicitly said "this isn't mine yet" — so their bank-side posting amounts are subtracted. Carry-forward sums use a session-scoped query (no new repo method); the math is per-reconciliation and doesn't merit caching.
+- **`ReconciliationRepository.set_carry_forward(tx_id, recon_id)`** + **`clear_carry_forward(tx_id)`** — the single chokepoint for `carried_forward_from_reconciliation_id` writes (architecture-test-enforced — same module that owns `complete()` and `revert()`).
+- **`revert()` extension**: now also nulls carry-forward links pointing at the deleted reconciliation. Carry-forward is "this tx was counted in reconciliation X"; when X is reverted, that audit-trail link breaks and gets cleared. Mirrors how `transactions.reconciliation_id` is nulled in the same method.
+- **Audit-log entries**: `reconciliation_match_create_manual`, `reconciliation_carry_forward_add`, `reconciliation_carry_forward_remove`. The `_manual` suffix on the match-create action distinguishes user-driven matches from `reconciliation_auto_match` (which writes one row covering the whole batch).
+- **Tests**: 8 service tests + 7 router tests + 4 storage-layer tests + 1 inbox-shape test = ~20 new (1090 → **1113 passing**).
+
+### P5.4.d — `tulip reconcile` CLI — queued
+
+Closes Phase 5. Imperative CLI subcommands per the locked decision (no Textual TUI for v1): `tulip reconcile create`, `tulip reconcile show`, `tulip reconcile auto-match`, `tulip reconcile match`, `tulip reconcile reject`, `tulip reconcile carry-forward`, `tulip reconcile complete`, `tulip reconcile delete`. Wraps the existing endpoints; no new server-side work.
 
 ---
 
