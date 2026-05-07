@@ -6,9 +6,9 @@ the OFX path; QIF and CSV land in P5.2.b/c. The handler:
 1. Validates content_type + size cap (defense-in-depth before slurping).
 2. Hashes the bytes; if the hash already exists for this household and
    account, returns ``import.duplicate_file`` (409). The ADR specifies a
-   ``?force=true`` override, but the underlying unique index in P5.1
-   forbids re-creating an ``import_batches`` row referencing the same
-   attachment for the same account; force-mode is tracked as a follow-up.
+   ``?force=true`` override (#114): the duplicate check is application-
+   level, the underlying index is non-unique, and the audit log records
+   the override.
 3. Persists the encrypted bytes via ``AttachmentRepository``.
 4. Creates the ``import_batches`` row.
 5. Calls the format-specific parser (``tulip_importers.ofx.parse``) and
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.config import get_settings
@@ -165,6 +165,14 @@ async def upload_import(
             "source_format='csv'; ignored otherwise."
         ),
     ),
+    force: bool = Query(
+        default=False,
+        description=(
+            "When true, skip the same-file/same-account duplicate check and "
+            "create a second import batch referencing the existing attachment. "
+            "Per ADR-0004 §Q6. The audit log records the override."
+        ),
+    ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchSummary:
@@ -220,11 +228,13 @@ async def upload_import(
         attachment_root=settings.attachment_root,
     )
 
-    # Idempotency: same hash + same account = same batch.
+    # Idempotency: same hash + same account = same batch, unless ?force=true
+    # explicitly opts out (ADR-0004 §Q6). The audit log records the override
+    # so the admin trail is honest about the duplicate.
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
     existing_attachment = attachment_repo.find_by_hash(content_hash)
     batch_repo = ImportBatchRepository(session, claims.household_id)
-    if existing_attachment is not None:
+    if existing_attachment is not None and not force:
         existing_batch = batch_repo.find_for_attachment(
             account_id=account_id,
             attachment_id=existing_attachment.id,
@@ -323,6 +333,7 @@ async def upload_import(
             "source_format": source_format,
             "source_filename": file.filename or default_filename,
             "line_count": len(parsed_lines),
+            "force": force,
         },
         request_id=_request_uuid(request),
     )
