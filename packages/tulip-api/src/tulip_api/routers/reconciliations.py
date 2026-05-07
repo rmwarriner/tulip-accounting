@@ -274,38 +274,14 @@ def get_reconciliation(
     # #127: a line whose ``reconciliation_match_id`` points at a match in a
     # prior completed reconciliation has already been accounted for elsewhere.
     # Exclude it from this reconciliation's inbox so the user isn't asked to
-    # re-match a line that's already taken.
-    from sqlalchemy import select as _select
-
-    from tulip_storage.models import (
-        Reconciliation as _Reconciliation,
-    )
-    from tulip_storage.models import (
-        ReconciliationMatch as _ReconciliationMatch,
-    )
-    from tulip_storage.models import (
-        ReconciliationStatus as _ReconciliationStatus,
-    )
-
-    prior_completed_match_ids: set[UUID] = set()
+    # re-match a line that's already taken. Storage owns the join; the
+    # architecture test bans model imports outside repositories.
     candidate_match_ids = {
         line.reconciliation_match_id for line in all_lines if line.reconciliation_match_id
     }
-    if candidate_match_ids:
-        rows = session.execute(
-            _select(_ReconciliationMatch.id)
-            .join(
-                _Reconciliation,
-                (_Reconciliation.id == _ReconciliationMatch.reconciliation_id)
-                & (_Reconciliation.household_id == _ReconciliationMatch.household_id),
-            )
-            .where(
-                _ReconciliationMatch.household_id == claims.household_id,
-                _ReconciliationMatch.id.in_(candidate_match_ids),
-                _Reconciliation.status == _ReconciliationStatus.COMPLETE,
-            )
-        ).all()
-        prior_completed_match_ids = {row[0] for row in rows}
+    prior_completed_match_ids = ReconciliationMatchRepository(
+        session, claims.household_id
+    ).filter_to_completed_recons(candidate_match_ids)
 
     unmatched_lines = [
         line
