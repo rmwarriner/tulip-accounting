@@ -100,7 +100,12 @@ Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.
 - **Envelopes + sinking funds + pools (Phase 4):** `GET/POST/PATCH/DELETE /v1/envelopes[/{id}]`, `GET/POST/PATCH/DELETE /v1/sinking-funds[/{id}]`, `GET /v1/pools/{id}/balance`, `POST /v1/pools/{id}/{refill,transfer,budget-inflow}`, `GET/POST/PATCH/DELETE /v1/refill-schedules[/{id}]`
 - **Importers + reconciliation (Phase 5):** `POST /v1/imports[?force=true]`, `GET /v1/imports/{id}`, `POST /v1/imports/{id}/{apply,lines/{line_id}/promote}`, `GET/POST/PATCH/DELETE /v1/imports/profiles[/{id_or_name}]` (CSV column-mapping profiles, YAML round-trip), `GET/POST/DELETE /v1/reconciliations[/{id}][?cascade=true]`, `POST /v1/reconciliations/{id}/{auto-match,complete,matches,carry-forward}`, `POST /v1/reconciliations/{id}/matches/{id}/reject`, `DELETE /v1/reconciliations/{id}/carry-forward/{tx_id}`
 
-Every non-2xx response is `application/problem+json` per RFC 9457. In production, supply `TULIP_JWT_SECRET` and `TULIP_MASTER_KEY` from a secret store rather than generating fresh on every start (existing tokens and field-encrypted columns won't validate after a restart with new secrets).
+Every non-2xx response is `application/problem+json` per RFC 9457. In production, supply `TULIP_JWT_SECRET` and the master key from a secret store rather than generating fresh on every start (existing tokens and field-encrypted columns won't validate after a restart with new secrets). The master key can come from one of two sources, in this order of precedence:
+
+1. **`TULIP_MASTER_KEY`** — base64-encoded 32 bytes, inline in the environment. Convenient for `docker run -e ...` and CI.
+2. **`TULIP_KEY_FILE`** — path to a file containing the base64-encoded 32 bytes. The file **must** be `chmod 0600` (owner-only RW); any group or other access bit refuses boot with a typed error. This is the recommended path for self-hosted internal-beta deploys via Docker secrets (#132).
+
+If neither is set, an ephemeral key is generated and a warning is logged — fine for tests and dev, fatal for production.
 
 ### Running the CLI
 
