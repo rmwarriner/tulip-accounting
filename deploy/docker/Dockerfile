@@ -53,9 +53,18 @@ ENV PATH="/opt/tulip/.venv/bin:$PATH" \
     TULIP_DATABASE_URL=sqlite:////var/lib/tulip/db/tulip.db \
     TULIP_ATTACHMENT_ROOT=/var/lib/tulip/attachments
 
-# Non-root user. uid 1000 is conventional and lines up with most host
-# accounts so bind-mounted volumes don't have ownership pain.
-RUN groupadd --system --gid 1000 tulip \
+# `gosu` lets the entrypoint drop privileges from root to `tulip` after
+# reading root-owned Docker secrets. We tried Docker's own uid/gid/mode
+# overrides on secrets, but compose v2 ignores them outside swarm mode
+# (warning emitted, no effect on CI's Linux runners). The standard Docker
+# pattern for this is "entrypoint runs as root, sets up env, exec's the
+# real workload as a non-root user via gosu." Image still runs as the
+# `tulip` user end-to-end; root only exists for the duration of the
+# entrypoint preamble.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1000 tulip \
     && useradd --system --uid 1000 --gid tulip --create-home --home-dir /var/lib/tulip tulip \
     && mkdir -p /var/lib/tulip/db /var/lib/tulip/attachments \
     && touch /var/lib/tulip/db/.keep /var/lib/tulip/attachments/.keep \
@@ -72,11 +81,12 @@ COPY --from=builder --chown=tulip:tulip /opt/tulip /opt/tulip
 
 WORKDIR /opt/tulip
 
-COPY --chown=tulip:tulip deploy/docker/entrypoint.sh /usr/local/bin/tulip-entrypoint
+COPY deploy/docker/entrypoint.sh /usr/local/bin/tulip-entrypoint
 RUN chmod 0755 /usr/local/bin/tulip-entrypoint
 
-USER tulip
-
+# Image starts as root so the entrypoint can read root-owned Docker
+# secrets. The entrypoint drops to `tulip` via `gosu` before exec'ing
+# alembic / uvicorn — see entrypoint.sh.
 EXPOSE 8000
 
 VOLUME ["/var/lib/tulip/db", "/var/lib/tulip/attachments"]

@@ -1,39 +1,49 @@
 #!/usr/bin/env sh
 # Tulip Accounting — container entrypoint
 #
-# Runs as user `tulip` in the runtime image. Three jobs, in order:
+# Starts as root so it can read root-owned Docker secrets at
+# /run/secrets/..., then drops to the non-root `tulip` user via `gosu`
+# for alembic + uvicorn. Compose v2 outside swarm mode ignores secret
+# uid/gid/mode overrides, so root-then-drop is the portable pattern.
 #
-#   1. If TULIP_JWT_SECRET_FILE is set (compose path; the secret comes
-#      from /run/secrets/...), promote its contents into TULIP_JWT_SECRET
-#      so the API config loader (which reads the env var directly) sees
-#      it. Same trick TULIP_KEY_FILE uses for the master key, except the
-#      JWT secret config doesn't yet have a file-store path; we do the
-#      env-promotion in the container instead.
+# Three jobs, in order:
 #
-#   2. Run `alembic upgrade head` against TULIP_DATABASE_URL so a fresh
-#      volume is always migration-current. Crucially, this happens before
-#      the API binds to its port — the docker-compose --wait gate then
-#      waits for /health, by which point the schema is guaranteed up.
+#   1. Promote TULIP_KEY_FILE / TULIP_JWT_SECRET_FILE (if set) into
+#      TULIP_MASTER_KEY / TULIP_JWT_SECRET env vars by reading the
+#      file as root, then unset the *_FILE vars so the API's
+#      file-store permission gate (#132) doesn't fire — the gate
+#      protects against on-disk key files an attacker might read
+#      from the host filesystem; Docker secrets live in container-
+#      private tmpfs and have a different threat model.
 #
-#   3. exec the original CMD (uvicorn).
+#   2. Run `alembic upgrade head` against TULIP_DATABASE_URL as the
+#      `tulip` user (the volume is tulip-owned per the Dockerfile).
+#
+#   3. exec the CMD (uvicorn) as `tulip`.
 #
 # All three steps are idempotent.
 
 set -eu
 
-# ---- 1. JWT secret from file (if configured) -------------------------------
+# ---- 1. Secret promotion (root-only; the *_FILE vars need root read) ------
+if [ -n "${TULIP_KEY_FILE:-}" ] && [ -f "${TULIP_KEY_FILE}" ]; then
+    TULIP_MASTER_KEY="$(cat "${TULIP_KEY_FILE}")"
+    export TULIP_MASTER_KEY
+    unset TULIP_KEY_FILE
+fi
+
 if [ -n "${TULIP_JWT_SECRET_FILE:-}" ] && [ -f "${TULIP_JWT_SECRET_FILE}" ]; then
     TULIP_JWT_SECRET="$(cat "${TULIP_JWT_SECRET_FILE}")"
     export TULIP_JWT_SECRET
+    unset TULIP_JWT_SECRET_FILE
 fi
 
-# ---- 2. Migrate to head ----------------------------------------------------
+# ---- 2. Migrate as the tulip user (writes to the tulip-owned volume) -----
 # Skip migration when TULIP_SKIP_MIGRATION=1 — used by tests or by
-# operators running `docker compose run` for one-off commands that
-# don't need (or shouldn't trigger) schema work.
+# operators running `docker compose run` for one-off commands.
 if [ "${TULIP_SKIP_MIGRATION:-0}" != "1" ]; then
-    alembic -c packages/tulip-storage/alembic.ini upgrade head
+    gosu tulip alembic -c packages/tulip-storage/alembic.ini upgrade head
 fi
 
-# ---- 3. Hand off to the original CMD --------------------------------------
-exec "$@"
+# ---- 3. Hand off to the CMD as the tulip user ----------------------------
+exec gosu tulip "$@"

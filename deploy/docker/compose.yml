@@ -58,20 +58,15 @@ services:
       # Useful diagnostic for `tulip doctor` (#135):
       TULIP_DEPLOYMENT: docker-compose
     secrets:
-      # Explicit uid/gid/mode overrides because Docker mounts secrets
-      # as root:root 0444 by default; the non-root `tulip` user can't
-      # read them, and 0444 also fails the #132 0600-or-stricter gate
-      # on the master key.
-      - source: tulip-master-key
-        target: tulip-master-key
-        uid: "1000"
-        gid: "1000"
-        mode: 0400
-      - source: tulip-jwt-secret
-        target: tulip-jwt-secret
-        uid: "1000"
-        gid: "1000"
-        mode: 0400
+      # Default ownership/mode (root:root 0444) is fine: the entrypoint
+      # runs as root long enough to read the secrets, then drops to the
+      # non-root `tulip` user for alembic + uvicorn via gosu. Compose v2
+      # outside swarm mode ignores per-service secret uid/gid/mode
+      # overrides — the root-then-drop pattern is portable across
+      # compose versions and across host uid mismatches (CI runner,
+      # Linux home server, macOS dev box).
+      - tulip-master-key
+      - tulip-jwt-secret
     volumes:
       - tulip-db:/var/lib/tulip/db
       - tulip-attachments:/var/lib/tulip/attachments
