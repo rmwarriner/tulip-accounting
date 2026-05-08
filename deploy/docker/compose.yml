@@ -58,8 +58,20 @@ services:
       # Useful diagnostic for `tulip doctor` (#135):
       TULIP_DEPLOYMENT: docker-compose
     secrets:
-      - tulip-master-key
-      - tulip-jwt-secret
+      # Explicit uid/gid/mode overrides because Docker mounts secrets
+      # as root:root 0444 by default; the non-root `tulip` user can't
+      # read them, and 0444 also fails the #132 0600-or-stricter gate
+      # on the master key.
+      - source: tulip-master-key
+        target: tulip-master-key
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: tulip-jwt-secret
+        target: tulip-jwt-secret
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
     volumes:
       - tulip-db:/var/lib/tulip/db
       - tulip-attachments:/var/lib/tulip/attachments
