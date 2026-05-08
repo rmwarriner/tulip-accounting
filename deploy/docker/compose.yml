@@ -1,0 +1,85 @@
+# Tulip Accounting — docker compose for self-hosted internal-beta deploy
+#
+# Per #134 + locked decisions in #121:
+# - Single-service (the API). The CLI runs on the host or in a transient
+#   `docker compose run --rm` invocation; it's a network client.
+# - Persistent volumes for the SQLite DB and attachment root so a
+#   `docker compose down` + up cycle preserves user data.
+# - Master key + JWT secret injected via Docker secrets at /run/secrets/...
+#   The TULIP_KEY_FILE path is the same `--secret`-mount target the
+#   #132 file-store gate validates (chmod 0400 owner-only after
+#   docker-compose mounts it; passes the 0600-or-stricter check).
+#
+# First-run setup (also documented in QUICKSTART once #138 lands):
+#
+#   1. Generate the secret material:
+#
+#        mkdir -p deploy/docker/secrets
+#        python -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' \
+#          > deploy/docker/secrets/master-key
+#        python -c 'import secrets; print(secrets.token_urlsafe(48))' \
+#          > deploy/docker/secrets/jwt-secret
+#        chmod 0400 deploy/docker/secrets/*
+#
+#   2. Boot:
+#
+#        docker compose -f deploy/docker/compose.yml up --build --wait
+#
+#   3. Use:
+#
+#        TULIP_API_URL=http://127.0.0.1:8000 uv run tulip register --email me@... --household Mine
+#
+# Tear-down preserves the volumes:
+#
+#   docker compose -f deploy/docker/compose.yml down
+#
+# To wipe data (irreversible):
+#
+#   docker compose -f deploy/docker/compose.yml down -v
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: tulip-accounting:dev
+    container_name: tulip-api
+    restart: unless-stopped
+    ports:
+      # 127.0.0.1 by default — internal-beta is single-machine, no
+      # public exposure. Override in a compose.override.yml or change
+      # to 0.0.0.0 for behind-Tailscale / behind-Caddy deployments.
+      - "127.0.0.1:8000:8000"
+    environment:
+      # File-store paths are baked into the image; override via
+      # compose.override.yml if you've remapped the volume mountpoints.
+      TULIP_KEY_FILE: /run/secrets/tulip-master-key
+      TULIP_JWT_SECRET_FILE: /run/secrets/tulip-jwt-secret
+      # Useful diagnostic for `tulip doctor` (#135):
+      TULIP_DEPLOYMENT: docker-compose
+    secrets:
+      - tulip-master-key
+      - tulip-jwt-secret
+    volumes:
+      - tulip-db:/var/lib/tulip/db
+      - tulip-attachments:/var/lib/tulip/attachments
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  tulip-db:
+  tulip-attachments:
+
+secrets:
+  tulip-master-key:
+    file: ./secrets/master-key
+  tulip-jwt-secret:
+    file: ./secrets/jwt-secret
