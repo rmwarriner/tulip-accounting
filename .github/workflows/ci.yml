@@ -326,6 +326,11 @@ jobs:
         run: |
           docker compose -f deploy/docker/compose.yml up --build --wait --wait-timeout 120
 
+      - name: Container logs (always, for diagnostics)
+        if: always()
+        run: |
+          docker compose -f deploy/docker/compose.yml logs --no-color --tail 200 api || true
+
       - name: Verify /health responds
         run: |
           curl --fail --silent --retry 3 --retry-delay 2 \

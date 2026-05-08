@@ -58,7 +58,12 @@ ENV PATH="/opt/tulip/.venv/bin:$PATH" \
 RUN groupadd --system --gid 1000 tulip \
     && useradd --system --uid 1000 --gid tulip --create-home --home-dir /var/lib/tulip tulip \
     && mkdir -p /var/lib/tulip/db /var/lib/tulip/attachments \
+    && touch /var/lib/tulip/db/.keep /var/lib/tulip/attachments/.keep \
     && chown -R tulip:tulip /var/lib/tulip
+# `.keep` files force Docker to populate the named volumes with the
+# directory contents (and ownership) on first mount. Without them, the
+# mount overlays an empty root-owned directory and the non-root `tulip`
+# user can't write the SQLite DB file.
 
 # Copy the venv + source. Source is needed at runtime because uv installs
 # workspace packages in editable mode by default (the .venv has .pth
