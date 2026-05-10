@@ -564,6 +564,10 @@ PR #30. Closed #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL p
 
 Closed #141. The runner's `Clock` returns UTC (per ADR-0002 §6, "every other path uses real `datetime.now(UTC)`"); the `envelope_refill` handler stored shadow tx dates as `clock().date()` accordingly. The envelope/sinking-fund balance endpoints, however, defaulted `as_of = date.today()` — server-local. For any negative-offset timezone, between UTC midnight and local midnight the local "today" lags the handler's UTC "today", so a freshly-posted refill was filtered out by the `tx.date <= as_of` predicate. Surfaced as a flake on `test_run_due_executes_handler` between 17:00 PT and 23:59 PT. Fix: three balance-endpoint callsites (`envelopes.py`, `sinking_funds.py`) now use `datetime.now(UTC).date()`; deterministic regression test in `test_refill_schedules_endpoints.py::TestRunDue::test_run_due_balance_uses_utc_today_not_local` pins the local helper to a far-past date so the bug, if reintroduced, fails the test at any wall-clock time.
 
+### `tulip periods` CLI — ✅ *(2026-05-10)*
+
+Closed #136 (Hardening Tier 3). Period soft-close was a storage-layer primitive only; now exposed via `GET /v1/periods`, `POST /v1/periods/{id}/close`, `POST /v1/periods/{id}/reopen` (admin-gated for the mutating routes; idempotent on already-closed/already-open). New `tulip periods {list, close, reopen}` CLI commands consume the endpoints; the existing `period.closed` 400 path on transaction writes is unchanged — this slice only ships the status-flip surface. New `period.not_found` (404) error class. Tests: 10 API endpoint tests (list, close, reopen, idempotency, 404, role-gated, close-blocks-writes, round-trip-unblocks-writes) + 4 CLI subprocess integration tests against `live_api`.
+
 ### `tulip doctor` smoke / first-run verification — ✅ *(2026-05-10)*
 
 Closed #135 (Hardening Tier 2). New `tulip doctor` CLI command runs five checks against the configured API and exits 0 / 1 / 2 (locked design decision per the issue: 0 = all good, 1 = warning, 2 = hard failure — overrides the CLI's general-purpose `EXIT_*` constants for this command only):

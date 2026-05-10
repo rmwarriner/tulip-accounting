@@ -498,6 +498,19 @@ class PeriodClosedError(TulipProblem):
         )
 
 
+class PeriodNotFoundError(TulipProblem):
+    """A period lookup either missed or hit a row not in this household."""
+
+    def __init__(self) -> None:
+        """Build the period.not_found problem (#136)."""
+        super().__init__(
+            code="period.not_found",
+            title="Period not found",
+            status=404,
+            detail="No period with that ID exists in this household.",
+        )
+
+
 class TransactionNotFoundError(TulipProblem):
     """A transaction lookup either missed or hit a row not in this household."""
 
