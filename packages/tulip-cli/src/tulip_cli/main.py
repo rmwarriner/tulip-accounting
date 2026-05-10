@@ -25,6 +25,7 @@ from tulip_cli.commands.balance import balance as balance_command
 from tulip_cli.commands.doctor import doctor as doctor_command
 from tulip_cli.commands.envelopes import envelopes_app
 from tulip_cli.commands.imports import imports_app
+from tulip_cli.commands.periods import periods_app
 from tulip_cli.commands.pool_actions import (
     budget_inflow as budget_inflow_command,
 )
@@ -117,6 +118,7 @@ app.add_typer(auth_app, name="auth")
 app.add_typer(accounts_app, name="accounts")
 app.add_typer(transactions_app, name="transactions")
 app.add_typer(envelopes_app, name="envelopes")
+app.add_typer(periods_app, name="periods")
 app.add_typer(sinking_funds_app, name="sinking-funds")
 app.add_typer(refills_app, name="refills")
 # Register `imports` (canonical, plural) and keep `import` as an alias
