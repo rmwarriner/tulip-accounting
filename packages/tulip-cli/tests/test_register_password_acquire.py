@@ -8,12 +8,25 @@ I/O.
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterable, Iterator
 
 from tulip_cli.commands.register import (
     PASSWORD_MIN_LENGTH,
     _acquire_password_interactive,
+    _read_password_from_stdin,
 )
+
+
+class _FakeStream(io.StringIO):
+    """StringIO with a controllable ``isatty()`` for branching tests."""
+
+    def __init__(self, content: str, *, tty: bool) -> None:
+        super().__init__(content)
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
 
 
 def _scripted_prompt(answers: Iterable[str]) -> Iterator[str]:
@@ -82,3 +95,22 @@ def test_acquire_password_validates_then_confirms_in_that_order() -> None:
     # confirmation prompt should appear exactly once — after a valid pw,
     # not after the short one.
     assert seen_prompts == ["Password", "Password", "Repeat for confirmation"]
+
+
+def test_read_password_from_stdin_emits_hint_when_tty() -> None:
+    """Interactive shell with no redirection: emit a hint so the CLI doesn't look hung."""
+    stream = _FakeStream("hunter2hunter2\n", tty=True)
+    notices: list[str] = []
+    result = _read_password_from_stdin(stream=stream, notice=notices.append)
+    assert result == "hunter2hunter2"
+    assert len(notices) == 1
+    assert "password" in notices[0].lower()
+
+
+def test_read_password_from_stdin_silent_when_piped() -> None:
+    """Pipe / heredoc: no hint, scripts get a clean stderr."""
+    stream = _FakeStream("hunter2hunter2\n", tty=False)
+    notices: list[str] = []
+    result = _read_password_from_stdin(stream=stream, notice=notices.append)
+    assert result == "hunter2hunter2"
+    assert notices == []

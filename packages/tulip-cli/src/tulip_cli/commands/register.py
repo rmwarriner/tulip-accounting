@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Annotated, Final
+from typing import Annotated, Final, TextIO
 
 import typer
 
@@ -25,6 +25,10 @@ _PASSWORDS_DIFFER_MESSAGE: Final[str] = "Passwords didn't match. Please try agai
 
 PromptFn = Callable[..., str]
 NoticeFn = Callable[[str], None]
+
+_PASSWORD_STDIN_TTY_HINT: Final[str] = (
+    "Enter password (input is visible; omit --password-stdin to hide):"  # noqa: S105 — UI hint, not a credential
+)
 
 
 def _acquire_password_interactive(
@@ -56,12 +60,26 @@ def _acquire_password_interactive(
         return password
 
 
-def _read_password_from_stdin() -> str:
-    return sys.stdin.readline().rstrip("\n")
-
-
 def _notice(message: str) -> None:
     typer.echo(message, err=True)
+
+
+def _read_password_from_stdin(
+    *,
+    stream: TextIO | None = None,
+    notice: NoticeFn = _notice,
+) -> str:
+    """Read one line of password from ``stream`` (default: real stdin).
+
+    When ``stream`` is a TTY (no redirection), emit a one-line hint to
+    ``notice`` first — without it, the CLI sits silently waiting and
+    looks hung. Pipe / heredoc callers (the script-friendly path) see no
+    extra output.
+    """
+    src = sys.stdin if stream is None else stream
+    if src.isatty():
+        notice(_PASSWORD_STDIN_TTY_HINT)
+    return src.readline().rstrip("\n")
 
 
 def register(
