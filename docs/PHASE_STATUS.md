@@ -564,6 +564,23 @@ PR #30. Closed #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL p
 
 Closed #141. The runner's `Clock` returns UTC (per ADR-0002 §6, "every other path uses real `datetime.now(UTC)`"); the `envelope_refill` handler stored shadow tx dates as `clock().date()` accordingly. The envelope/sinking-fund balance endpoints, however, defaulted `as_of = date.today()` — server-local. For any negative-offset timezone, between UTC midnight and local midnight the local "today" lags the handler's UTC "today", so a freshly-posted refill was filtered out by the `tx.date <= as_of` predicate. Surfaced as a flake on `test_run_due_executes_handler` between 17:00 PT and 23:59 PT. Fix: three balance-endpoint callsites (`envelopes.py`, `sinking_funds.py`) now use `datetime.now(UTC).date()`; deterministic regression test in `test_refill_schedules_endpoints.py::TestRunDue::test_run_due_balance_uses_utc_today_not_local` pins the local helper to a far-past date so the bug, if reintroduced, fails the test at any wall-clock time.
 
+### `tulip doctor` smoke / first-run verification — ✅ *(2026-05-10)*
+
+Closed #135 (Hardening Tier 2). New `tulip doctor` CLI command runs five checks against the configured API and exits 0 / 1 / 2 (locked design decision per the issue: 0 = all good, 1 = warning, 2 = hard failure — overrides the CLI's general-purpose `EXIT_*` constants for this command only):
+
+1. **API reachability** — `GET /health` returns 200.
+2. **Master-key loaded** — `master_key_source != "ephemeral"`; ephemeral fallback is a hard failure.
+3. **Migration head** — DB's alembic revision matches the head bundled in the running API package; mismatch is a warning ("run `alembic upgrade head`").
+4. **Attachment-root writable** — API probe creates and removes a zero-byte file at `attachment_root`.
+5. **Token store** — CLI-side check that the token-store path is reachable; missing/empty is a warning, not a failure (user might just need to log in).
+
+Supporting changes:
+
+- New unauthenticated endpoint `GET /v1/system/diagnostics` aggregates probes 2–4 server-side and is consumed by the CLI. Booleans only — no paths or key bytes leak. Auth-free by design so the doctor runs *before* any user has registered.
+- New `tulip_storage.migrations_meta.expected_alembic_head()` helper reads the bundled migrations directory via alembic's `ScriptDirectory` so the API can compare DB head to wheel head without invoking the alembic CLI.
+- `Settings.master_key_source: Literal["env", "file", "ephemeral"]` tracks which env path produced the key.
+- Brief mention added to README; full QUICKSTART integration deferred to [#138](https://github.com/rmwarriner/tulip-accounting/issues/138).
+
 ---
 
 ## Reference: full phase roadmap

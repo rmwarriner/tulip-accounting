@@ -37,6 +37,7 @@ from tulip_api.routers import (
     refill_schedules,
     reports,
     sinking_funds,
+    system,
     transactions,
     well_known_errors,
 )
@@ -116,6 +117,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     # Top-level health probe — kept off /v1 so monitors don't break across
     # major-version cuts.
     app.include_router(health.router)
+    app.include_router(system.router)
     app.include_router(well_known_errors.router)
     app.include_router(auth.router)
     app.include_router(accounts.router)

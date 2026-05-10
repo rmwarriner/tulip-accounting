@@ -22,6 +22,7 @@ from tulip_cli.commands.backup_restore import (
     restore_command,
 )
 from tulip_cli.commands.balance import balance as balance_command
+from tulip_cli.commands.doctor import doctor as doctor_command
 from tulip_cli.commands.envelopes import envelopes_app
 from tulip_cli.commands.imports import imports_app
 from tulip_cli.commands.pool_actions import (
@@ -126,6 +127,7 @@ app.add_typer(reconcile_app, name="reconcile")
 app.command("backup")(backup_command)
 app.command("restore")(restore_command)
 app.command("backup-inspect")(manifest_command)
+app.command("doctor")(doctor_command)
 
 
 if __name__ == "__main__":

@@ -130,3 +130,43 @@ class TestMasterKeyFile:
             s = Settings()
         assert len(s.master_key) == 32
         mock_log.warning.assert_called_once()
+
+
+class TestMasterKeySource:
+    """``Settings.master_key_source`` reports which env path was used (#135).
+
+    Surfaced through ``GET /v1/system/diagnostics`` so the doctor CLI can
+    flag the ephemeral fallback as a hard failure.
+    """
+
+    def test_env_source_when_master_key_env_var_set(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TULIP_MASTER_KEY", base64.b64encode(b"\x01" * 32).decode("ascii"))
+        assert Settings().master_key_source == "env"
+
+    def test_file_source_when_only_key_file_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        from pathlib import Path
+
+        monkeypatch.delenv("TULIP_MASTER_KEY", raising=False)
+        key_file = Path(tmp_path) / "master.key"
+        key_file.write_text(base64.b64encode(b"\x02" * 32).decode("ascii"))
+        key_file.chmod(0o600)
+        monkeypatch.setenv("TULIP_KEY_FILE", str(key_file))
+        assert Settings().master_key_source == "file"
+
+    def test_ephemeral_source_when_neither_set(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("TULIP_MASTER_KEY", raising=False)
+        monkeypatch.delenv("TULIP_KEY_FILE", raising=False)
+        with patch("tulip_api.config.log"):  # silence the warning
+            assert Settings().master_key_source == "ephemeral"
+
+    def test_env_source_wins_when_both_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        from pathlib import Path
+
+        monkeypatch.setenv("TULIP_MASTER_KEY", base64.b64encode(b"\x06" * 32).decode("ascii"))
+        key_file = Path(tmp_path) / "master.key"
+        key_file.write_text(base64.b64encode(b"\x07" * 32).decode("ascii"))
+        key_file.chmod(0o600)
+        monkeypatch.setenv("TULIP_KEY_FILE", str(key_file))
+        # Mirrors the resolution order: env wins over file for both
+        # the bytes and the source label.
+        assert Settings().master_key_source == "env"
