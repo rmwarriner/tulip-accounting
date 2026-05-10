@@ -34,13 +34,19 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
     return TulipClient(config, token_store=default_token_store(), as_json=as_json)
 
 
-def _render_table(sfs: list[dict[str, Any]]) -> None:
+def _render_table(
+    sfs: list[dict[str, Any]],
+    balances: dict[str, str] | None = None,
+) -> None:
+    """Render sinking funds; balance from the batched lookup (#137)."""
+    balances = balances or {}
     table = Table(show_header=True, show_lines=False)
     table.add_column("name")
     table.add_column("currency")
     table.add_column("target")
     table.add_column("target_date")
     table.add_column("strategy")
+    table.add_column("balance", justify="right")
     for sf in sfs:
         table.add_row(
             sf.get("name") or "",
@@ -48,8 +54,20 @@ def _render_table(sfs: list[dict[str, Any]]) -> None:
             sf.get("target_amount") or "",
             sf.get("target_date") or "",
             sf.get("contribution_strategy") or "",
+            balances.get(sf.get("id", ""), "—"),
         )
     Console().print(table)
+
+
+def _fetch_balances(client: TulipClient, pool_ids: list[str]) -> dict[str, str]:
+    if not pool_ids:
+        return {}
+    response = client.post(
+        "/v1/pools/balances",
+        json={"pool_ids": pool_ids},
+        authenticated=True,
+    )
+    return {row["pool_id"]: str(row["balance"]) for row in response.json()}
 
 
 def _render_sinking_fund(sf: dict[str, Any], balance: dict[str, Any] | None = None) -> None:
@@ -71,25 +89,28 @@ def _render_sinking_fund(sf: dict[str, Any], balance: dict[str, Any] | None = No
 
 @sinking_funds_app.command("list")
 def list_sinking_funds(ctx: typer.Context) -> None:
-    """List active sinking funds visible to the logged-in user."""
+    """List active sinking funds visible to the logged-in user (#137: with inline balances)."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     try:
         with _client(config, as_json=as_json) as client:
             response = client.get("/v1/sinking-funds", authenticated=True)
+            sfs = response.json()
+            balances = _fetch_balances(client, [s["id"] for s in sfs])
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
     if as_json:
-        sys.stdout.write(response.text + "\n")
+        for sf in sfs:
+            sf["balance"] = balances.get(sf.get("id", ""))
+        sys.stdout.write(json.dumps(sfs) + "\n")
         return
 
-    sfs = response.json()
     if not sfs:
         typer.echo("No sinking funds. Run `tulip sinking-funds add` to create one.")
         return
-    _render_table(sfs)
+    _render_table(sfs, balances)
 
 
 @sinking_funds_app.command("add")

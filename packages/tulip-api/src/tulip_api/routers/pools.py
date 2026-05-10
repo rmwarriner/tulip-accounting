@@ -15,6 +15,7 @@ via :func:`tulip_api.routers._pool_helpers.post_user_initiated_shadow_tx`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -22,7 +23,7 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, Request, status
 
-from tulip_api.auth.deps import require_role
+from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     PoolInflowCurrencyUnknownError,
@@ -40,6 +41,7 @@ from tulip_api.routers._pool_helpers import (
 from tulip_api.schemas.pool import (
     BudgetInflowRequest,
     PoolBalanceRead,
+    PoolBalancesRequest,
     TransferRequest,
 )
 from tulip_core.allocation import (
@@ -236,6 +238,53 @@ def declare_budget_inflow(
         balance=balance,
         as_of=body.date,
     )
+
+
+@router.post(
+    "/balances",
+    response_model=list[PoolBalanceRead],
+    responses={
+        401: problem_response("auth.unauthorized"),
+        422: problem_response("validation.failed"),
+    },
+)
+def get_pool_balances(
+    body: PoolBalancesRequest,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> list[PoolBalanceRead]:
+    """Batched pool balance lookup (#137).
+
+    Returns one ``PoolBalanceRead`` per requested pool id that exists in
+    the caller's household. Foreign-tenant ids and ids that don't exist
+    are silently omitted (mirrors the per-pool ``get`` semantics — 404s
+    aren't useful here because the typical caller is rendering a list
+    that may include rows it just learned about). Pools with no postings
+    return ``balance = 0`` quantized to the pool's currency.
+    """
+    pool_repo = AllocationPoolRepository(session, claims.household_id)
+    pools = pool_repo.list_by_ids(body.pool_ids)
+    if not pools:
+        return []
+
+    shadow_repo = ShadowTransactionRepository(session, claims.household_id)
+    as_of = datetime.now(UTC).date()
+    balances_map = shadow_repo.balances_for_pools([p.id for p in pools], as_of=as_of)
+    out: list[PoolBalanceRead] = []
+    for pool in pools:
+        currency_map = balances_map.get(pool.id, {})
+        raw = currency_map.get(pool.currency, Decimal(0))
+        balance = Money(raw, pool.currency).quantize_to_currency().amount
+        out.append(
+            PoolBalanceRead(
+                pool_id=pool.id,
+                name=pool.name,
+                currency=pool.currency,
+                balance=balance,
+                as_of=as_of,
+            )
+        )
+    return out
 
 
 def _request_uuid(request: Request) -> UUID | None:
