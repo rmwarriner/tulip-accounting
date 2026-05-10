@@ -374,6 +374,107 @@ class TestTransfer:
         assert Decimal(bal["balance"]) == Decimal("100.00")
 
 
+class TestBatchedBalances:
+    """``POST /v1/pools/balances`` (#137) — batched balance lookup."""
+
+    def test_returns_balances_for_known_pools(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        env_a = _make_envelope(client, auth_h, "EnvA")
+        env_b = _make_envelope(client, auth_h, "EnvB")
+
+        # Seed inflow + transfer some into EnvA so its balance is non-zero.
+        client.post(
+            "/v1/pools/budget-inflow",
+            headers=auth_h,
+            json={
+                "amount": "500",
+                "currency": "USD",
+                "date": date.today().isoformat(),
+                "description": "Salary",
+            },
+        ).raise_for_status()
+        client.post(
+            f"/v1/envelopes/{env_a}/refill",
+            headers=auth_h,
+            json={
+                "amount": "120",
+                "date": date.today().isoformat(),
+                "description": "manual refill",
+            },
+        ).raise_for_status()
+
+        r = client.post(
+            "/v1/pools/balances",
+            headers=auth_h,
+            json={"pool_ids": [env_a, env_b]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        by_id = {row["pool_id"]: row for row in body}
+        assert Decimal(by_id[env_a]["balance"]) == Decimal("120.00")
+        assert Decimal(by_id[env_b]["balance"]) == Decimal("0.00")
+        assert by_id[env_a]["currency"] == "USD"
+        assert by_id[env_a]["name"] == "EnvA"
+
+    def test_empty_pool_ids_returns_empty_list(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.post("/v1/pools/balances", headers=auth_h, json={"pool_ids": []})
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_silently_drops_unknown_ids(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        env = _make_envelope(client, auth_h, "Real")
+        r = client.post(
+            "/v1/pools/balances",
+            headers=auth_h,
+            json={"pool_ids": [env, str(uuid4())]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["pool_id"] == env
+
+    def test_other_household_pools_are_invisible(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """Tenant scoping: a pool created in another household is silently dropped."""
+        # Make the first household's envelope.
+        env_mine = _make_envelope(client, auth_h, "Mine")
+
+        # Register a second household with its own envelope.
+        client.post(
+            "/v1/auth/register",
+            json={
+                "email": "other@example.com",
+                "password": "correct horse battery staple",
+                "display_name": "Other",
+                "household_name": "Other",
+            },
+        ).raise_for_status()
+        other_login = client.post(
+            "/v1/auth/login",
+            json={"email": "other@example.com", "password": "correct horse battery staple"},
+        ).json()
+        other_h = {"Authorization": f"Bearer {other_login['access_token']}"}
+        env_theirs = _make_envelope(client, other_h, "Theirs")
+
+        # Caller A asks for both ids; only its own appears.
+        r = client.post(
+            "/v1/pools/balances",
+            headers=auth_h,
+            json={"pool_ids": [env_mine, env_theirs]},
+        )
+        assert r.status_code == 200
+        ids = [row["pool_id"] for row in r.json()]
+        assert ids == [env_mine]
+
+    def test_unauthenticated_returns_401(self, client: TestClient) -> None:
+        r = client.post("/v1/pools/balances", json={"pool_ids": []})
+        assert r.status_code == 401
+
+
 class TestPoolUnauthenticated:
     def test_inflow_without_token_returns_401(self, client: TestClient):
         r = client.post(

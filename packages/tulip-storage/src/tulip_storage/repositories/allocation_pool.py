@@ -76,6 +76,26 @@ class AllocationPoolRepository:
             )
         ).scalar_one_or_none()
 
+    def list_by_ids(self, pool_ids: list[UUID]) -> list[AllocationPool]:
+        """Fetch pools by id in a single query, tenant-scoped.
+
+        Pool ids that don't belong to this household are silently
+        omitted from the result — matches the behaviour of the per-pool
+        ``get`` lookup. Empty input returns ``[]`` without a query.
+        """
+        if not pool_ids:
+            return []
+        return list(
+            self._session.execute(
+                select(AllocationPool).where(
+                    AllocationPool.household_id == self._household_id,
+                    AllocationPool.id.in_(pool_ids),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     def list_active(self) -> list[AllocationPool]:
         """Return all active pools in this household, including system pools."""
         return list(

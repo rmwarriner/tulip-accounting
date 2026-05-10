@@ -37,6 +37,24 @@ class PoolBalanceRead(BaseModel):
     as_of: date_type
 
 
+class PoolBalancesRequest(BaseModel):
+    """Body for ``POST /v1/pools/balances`` (#137).
+
+    Pool ids that don't belong to the caller's household are silently
+    omitted from the response — same tenant-scoping behaviour as the
+    per-pool balance endpoint. Empty ``pool_ids`` returns an empty list.
+    """
+
+    pool_ids: list[UUID] = Field(
+        max_length=500,
+        description=(
+            "Pool UUIDs to look up. Capped at 500 per request to keep the "
+            "single SQL query bounded; the typical use case (one ``tulip "
+            "envelopes list`` invocation) needs <50."
+        ),
+    )
+
+
 class TransferRequest(BaseModel):
     """Body for ``POST /v1/pools/{src_pool_id}/transfer``.
 

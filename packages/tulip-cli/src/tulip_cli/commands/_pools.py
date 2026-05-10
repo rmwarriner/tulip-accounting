@@ -179,3 +179,30 @@ def _resolve_pool(client: TulipClient, identifier: str) -> dict[str, Any]:
             exit_code=EXIT_USER,
         )
     return dict(matches[0])
+
+
+def _summarize_refill_rule(rule: dict[str, Any] | None) -> str:
+    """One-line description of an envelope's ``refill_rule`` (#137).
+
+    Returns ``"—"`` for envelopes with no rule. Each strategy gets a
+    compact form keyed by what a user actually scans for: the per-cycle
+    amount or percentage.
+    """
+    if not rule:
+        return "—"
+    strategy = rule.get("strategy")
+    if strategy == "fixed_amount":
+        return f"fixed: {rule.get('amount', '?')} {rule.get('currency', '')}".rstrip()
+    if strategy == "fill_to_amount":
+        return f"target: {rule.get('amount', '?')} {rule.get('currency', '')}".rstrip()
+    if strategy == "percentage_of_income":
+        # Stored as a decimal fraction (e.g. 0.05 for 5%).
+        pct = rule.get("percentage")
+        if pct is None:
+            return "pct-inflow"
+        try:
+            display = f"{float(pct) * 100:g}%"
+        except (TypeError, ValueError):
+            display = str(pct)
+        return f"pct-inflow: {display}"
+    return str(strategy or "—")

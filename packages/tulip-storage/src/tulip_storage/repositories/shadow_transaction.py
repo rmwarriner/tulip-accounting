@@ -169,6 +169,51 @@ class ShadowTransactionRepository:
         rows = self._session.execute(query).all()
         return {ccy: Decimal(str(bal)) for ccy, bal in rows}
 
+    def balances_for_pools(
+        self,
+        pool_ids: list[UUID],
+        *,
+        as_of: date_type | None = None,
+    ) -> dict[UUID, dict[str, Decimal]]:
+        """Return ``{pool_id: {currency: net amount}}`` for ``pool_ids`` in one query.
+
+        Tenant-scoped on ``household_id``: pool ids belonging to other
+        households are silently absent from the result. The map only
+        includes pool ids that have at least one POSTED shadow posting;
+        callers should default missing pools to zero.
+
+        Empty ``pool_ids`` returns ``{}`` without issuing a query.
+
+        Used by ``POST /v1/pools/balances`` to feed the inline balance
+        column on ``tulip {envelopes,sinking-funds} list`` (#137) without
+        the per-row HTTP fan-out the original P4.2 list shape avoided.
+        """
+        if not pool_ids:
+            return {}
+        query = (
+            select(
+                ShadowPosting.pool_id,
+                ShadowPosting.currency,
+                func.coalesce(func.sum(ShadowPosting.amount), 0).label("balance"),
+            )
+            .join(
+                ShadowTransaction,
+                ShadowTransaction.id == ShadowPosting.shadow_transaction_id,
+            )
+            .where(
+                ShadowPosting.household_id == self._household_id,
+                ShadowPosting.pool_id.in_(pool_ids),
+                ShadowTransaction.status.in_(_BALANCE_STATUSES),
+            )
+            .group_by(ShadowPosting.pool_id, ShadowPosting.currency)
+        )
+        if as_of is not None:
+            query = query.where(ShadowTransaction.date <= as_of)
+        result: dict[UUID, dict[str, Decimal]] = {}
+        for pid, ccy, bal in self._session.execute(query).all():
+            result.setdefault(pid, {})[ccy] = Decimal(str(bal))
+        return result
+
     def void(self, shadow_tx_id: UUID, *, voided_at: datetime) -> ShadowTransaction:
         """Flip a POSTED shadow transaction's status to VOIDED.
 

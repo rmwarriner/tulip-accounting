@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from tulip_cli.auth.tokens import default_token_store
-from tulip_cli.commands._pools import _resolve_envelope
+from tulip_cli.commands._pools import _resolve_envelope, _summarize_refill_rule
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
 from tulip_cli.http import TulipClient
@@ -38,14 +38,20 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
     return TulipClient(config, token_store=default_token_store(), as_json=as_json)
 
 
-def _render_table(envelopes: list[dict[str, Any]]) -> None:
-    """Render envelopes as a Rich table to stdout (no balance fetch — N+1)."""
+def _render_table(
+    envelopes: list[dict[str, Any]],
+    balances: dict[str, str] | None = None,
+) -> None:
+    """Render envelopes as a Rich table; balance comes from the batched lookup (#137)."""
+    balances = balances or {}
     table = Table(show_header=True, show_lines=False)
     table.add_column("name")
     table.add_column("currency")
     table.add_column("period")
     table.add_column("rollover")
     table.add_column("budget")
+    table.add_column("balance", justify="right")
+    table.add_column("refill")
     for env in envelopes:
         table.add_row(
             env.get("name") or "",
@@ -53,8 +59,22 @@ def _render_table(envelopes: list[dict[str, Any]]) -> None:
             env.get("budget_period") or "",
             env.get("rollover_policy") or "",
             env.get("budget_amount") or "—",
+            balances.get(env.get("id", ""), "—"),
+            _summarize_refill_rule(env.get("refill_rule")),
         )
     Console().print(table)
+
+
+def _fetch_balances(client: TulipClient, pool_ids: list[str]) -> dict[str, str]:
+    """POST /v1/pools/balances and flatten to ``{pool_id: balance_str}``. Empty on no ids."""
+    if not pool_ids:
+        return {}
+    response = client.post(
+        "/v1/pools/balances",
+        json={"pool_ids": pool_ids},
+        authenticated=True,
+    )
+    return {row["pool_id"]: str(row["balance"]) for row in response.json()}
 
 
 def _render_envelope(envelope: dict[str, Any], balance: dict[str, Any] | None = None) -> None:
@@ -77,25 +97,28 @@ def _render_envelope(envelope: dict[str, Any], balance: dict[str, Any] | None = 
 
 @envelopes_app.command("list")
 def list_envelopes(ctx: typer.Context) -> None:
-    """List active envelopes visible to the logged-in user."""
+    """List active envelopes visible to the logged-in user (#137: with inline balances)."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     try:
         with _client(config, as_json=as_json) as client:
             response = client.get("/v1/envelopes", authenticated=True)
+            envelopes = response.json()
+            balances = _fetch_balances(client, [e["id"] for e in envelopes])
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
     if as_json:
-        sys.stdout.write(response.text + "\n")
+        for env in envelopes:
+            env["balance"] = balances.get(env.get("id", ""))
+        sys.stdout.write(json.dumps(envelopes) + "\n")
         return
 
-    envelopes = response.json()
     if not envelopes:
         typer.echo("No envelopes. Run `tulip envelopes add` to create one.")
         return
-    _render_table(envelopes)
+    _render_table(envelopes, balances)
 
 
 @envelopes_app.command("add")

@@ -129,6 +129,38 @@ def test_envelopes_list_json(authed_session: str, access_token: str) -> None:
     assert payload[0]["name"] == "Groceries"
 
 
+@pytest.mark.integration
+def test_envelopes_list_shows_populated_balance(authed_session: str, access_token: str) -> None:
+    """#137 acceptance: list shows the actual envelope balance after a refill."""
+    env = _create_envelope(authed_session, access_token, name="Groceries")
+    # Seed money into the household and refill the envelope.
+    httpx.post(
+        f"{authed_session}/v1/pools/budget-inflow",
+        headers={"authorization": f"Bearer {access_token}"},
+        json={
+            "amount": "500",
+            "currency": "USD",
+            "date": "2026-05-01",
+            "description": "Salary",
+        },
+        timeout=10,
+    ).raise_for_status()
+    httpx.post(
+        f"{authed_session}/v1/envelopes/{env['id']}/refill",
+        headers={"authorization": f"Bearer {access_token}"},
+        json={"amount": "120", "date": "2026-05-01", "description": "manual"},
+        timeout=10,
+    ).raise_for_status()
+
+    json_out = _run_cli("--json", "envelopes", "list", api_url=authed_session)
+    body = json.loads(json_out.stdout)
+    assert body[0]["balance"] == "120.00"
+
+    human = _run_cli("envelopes", "list", api_url=authed_session)
+    assert "120.00" in human.stdout
+    assert "balance" in human.stdout.lower()
+
+
 # ---- add -----------------------------------------------------------
 
 

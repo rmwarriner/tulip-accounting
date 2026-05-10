@@ -105,6 +105,22 @@ def test_sinking_funds_list_when_empty(authed_session: str) -> None:
 
 
 @pytest.mark.integration
+def test_sinking_funds_list_includes_balance_column(authed_session: str, access_token: str) -> None:
+    """#137: human + JSON list both surface the inline balance (0.00 here, no funding)."""
+    _create_sinking_fund(authed_session, access_token, name="Vacation")
+
+    human = _run_cli("sinking-funds", "list", api_url=authed_session)
+    assert human.returncode == 0, human.stderr
+    assert "balance" in human.stdout.lower()
+    assert "Vacation" in human.stdout
+    assert "0.00" in human.stdout
+
+    json_out = _run_cli("--json", "sinking-funds", "list", api_url=authed_session)
+    body = json.loads(json_out.stdout)
+    assert body[0]["balance"] == "0.00"
+
+
+@pytest.mark.integration
 def test_sinking_funds_add_minimal(authed_session: str) -> None:
     result = _run_cli(
         "sinking-funds",
