@@ -6,6 +6,7 @@ through transfer or — eventually — a scheduled-tx runner in P4.3).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from datetime import date as date_type
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -302,7 +303,7 @@ def get_sinking_fund_balance(
     if not filter_for_role(pool, claims):
         raise SinkingFundNotFoundError()
 
-    effective_as_of = as_of or date_type.today()
+    effective_as_of = as_of or datetime.now(UTC).date()
     raw = ShadowTransactionRepository(session, claims.household_id).balance_for_pool(
         pool.id, currency=pool.currency, as_of=effective_as_of
     )
