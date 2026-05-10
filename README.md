@@ -140,6 +140,8 @@ uv run tulip reconcile complete "$RECON_ID"       # strict balance check, denorm
 
 Other top-level commands: `tulip envelopes`, `tulip sinking-funds`, `tulip refills`, `tulip transfer`, `tulip refill`, `tulip budget-inflow`, `tulip transactions {show,edit,void,delete}`, `tulip imports {profiles,apply}`. Each takes `--help`; the surface mirrors the API endpoints listed above.
 
+`tulip doctor` runs five smoke checks against the configured API (reachability, master-key loaded, migration head, attachment-root writable, token store reachable) and exits 0 / 1 / 2 for all-good / warnings / hard failure. Run it first when something looks off; full QUICKSTART integration lands with [#138](https://github.com/rmwarriner/tulip-accounting/issues/138).
+
 ## Development discipline
 
 This project follows test-driven development. Every feature ships with tests written **before** the implementation (red → green → refactor). PRs that don't include tests for new code paths are rejected by CI policy.

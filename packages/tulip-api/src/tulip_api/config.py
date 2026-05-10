@@ -9,8 +9,13 @@ import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 log = logging.getLogger("tulip_api.config")
+
+#: Where the master key came from. Surfaced in ``GET /v1/system/diagnostics``
+#: so the doctor CLI can flag ephemeral fallback as a hard failure (#135).
+MasterKeySource = Literal["env", "file", "ephemeral"]
 
 
 def _default_jwt_secret() -> str:
@@ -99,6 +104,21 @@ def _default_master_key() -> bytes:
     return secrets.token_bytes(32)
 
 
+def _default_master_key_source() -> MasterKeySource:
+    """Side-effect-free peek at which env source is configured.
+
+    Mirrors the resolution order in :func:`_default_master_key` but does
+    not load files, decode keys, or emit warnings — it's a pure inspection
+    of env vars. Side effects belong to ``_default_master_key`` so they
+    fire exactly once per ``Settings()`` construction.
+    """
+    if os.environ.get("TULIP_MASTER_KEY") is not None:
+        return "env"
+    if os.environ.get("TULIP_KEY_FILE"):
+        return "file"
+    return "ephemeral"
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Read-only runtime settings."""
@@ -106,6 +126,7 @@ class Settings:
     database_url: str = field(default_factory=_default_db_url)
     jwt_secret: str = field(default_factory=_default_jwt_secret)
     master_key: bytes = field(default_factory=_default_master_key)
+    master_key_source: MasterKeySource = field(default_factory=_default_master_key_source)
     attachment_root: Path = field(default_factory=_default_attachment_root)
 
 
