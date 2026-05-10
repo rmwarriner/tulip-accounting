@@ -10,6 +10,7 @@ transaction (Unallocated -X / envelope +X) — see
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from datetime import date as date_type
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -356,7 +357,7 @@ def get_envelope_balance(
     if not filter_for_role(pool, claims):
         raise EnvelopeNotFoundError()
 
-    effective_as_of = as_of or date_type.today()
+    effective_as_of = as_of or datetime.now(UTC).date()
     raw = ShadowTransactionRepository(session, claims.household_id).balance_for_pool(
         pool.id, currency=pool.currency, as_of=effective_as_of
     )
@@ -427,8 +428,10 @@ def refill_envelope(
 
     session.commit()
 
-    # Return the envelope's new balance for ergonomics.
-    effective_as_of = date_type.today()
+    # Return the envelope's new balance for ergonomics. UTC to match
+    # the runner's clock (#141) — the user-supplied body.date is also
+    # interpreted in UTC by the shadow ledger.
+    effective_as_of = datetime.now(UTC).date()
     raw = ShadowTransactionRepository(session, claims.household_id).balance_for_pool(
         pool.id, currency=pool.currency, as_of=effective_as_of
     )

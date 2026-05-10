@@ -560,6 +560,10 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 
 PR #30. Closed #26. Surfaced during P3.2.a smoke testing when a SQLAlchemy URL parse error escaped the Problem Details middleware and emitted Starlette's default `text/plain` 500. New `InternalServerError` (`server.internal_error`, 500) `TulipProblem` subclass; `install_problem_handlers` registers a fourth handler for the `Exception` base. Exception text and tracebacks stay in logs; clients get a generic detail with a `request_id` for support correlation.
 
+### Balance endpoints: resolve "today" via UTC, not server-local — ✅ *(2026-05-10)*
+
+Closed #141. The runner's `Clock` returns UTC (per ADR-0002 §6, "every other path uses real `datetime.now(UTC)`"); the `envelope_refill` handler stored shadow tx dates as `clock().date()` accordingly. The envelope/sinking-fund balance endpoints, however, defaulted `as_of = date.today()` — server-local. For any negative-offset timezone, between UTC midnight and local midnight the local "today" lags the handler's UTC "today", so a freshly-posted refill was filtered out by the `tx.date <= as_of` predicate. Surfaced as a flake on `test_run_due_executes_handler` between 17:00 PT and 23:59 PT. Fix: three balance-endpoint callsites (`envelopes.py`, `sinking_funds.py`) now use `datetime.now(UTC).date()`; deterministic regression test in `test_refill_schedules_endpoints.py::TestRunDue::test_run_due_balance_uses_utc_today_not_local` pins the local helper to a far-past date so the bug, if reintroduced, fails the test at any wall-clock time.
+
 ---
 
 ## Reference: full phase roadmap

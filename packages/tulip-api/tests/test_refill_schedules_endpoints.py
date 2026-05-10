@@ -284,6 +284,64 @@ class TestRunDue:
         assert r.status_code == 200
         assert r.json()["fired"] == 0
 
+    def test_run_due_balance_uses_utc_today_not_local(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        app,
+        session_maker,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Regression for #141: balance endpoint must resolve "today" via UTC.
+
+        The runner stores ``shadow_tx.date = clock().date()`` (UTC). If
+        the balance endpoint defaults ``as_of`` to local ``date.today()``,
+        a refill posted at e.g. 00:30 UTC ends up filtered out for the
+        rest of the day in any negative-offset timezone — the existing
+        ``test_run_due_executes_handler`` flakes on PT clocks between
+        17:00 and 23:59 PT for this reason.
+
+        We pin the endpoint's local-time function to a far-past date so
+        the bug, if reintroduced, deterministically zeros the balance.
+        The fix bypasses ``date_type.today()`` entirely (reads
+        ``datetime.now(UTC).date()`` directly), so the patch is inert
+        post-fix.
+        """
+        from datetime import date as _date
+
+        from tulip_api.routers import envelopes as envelopes_module
+        from tulip_storage.runner.handlers import make_envelope_refill_handler
+
+        class _PinnedToFarPast:
+            @staticmethod
+            def today() -> _date:
+                return _date(1970, 1, 1)
+
+        monkeypatch.setattr(envelopes_module, "date_type", _PinnedToFarPast)
+
+        app.state.runner.register_handler(
+            "envelope_refill", make_envelope_refill_handler(session_maker)
+        )
+
+        env_id = _make_envelope_with_rule(client, auth_h)
+        client.post(
+            f"/v1/envelopes/{env_id}/refill-schedule",
+            headers=auth_h,
+            json={
+                "rrule": "FREQ=MONTHLY",
+                "start_at": date.today().isoformat() + "T00:00:00+00:00",
+            },
+        )
+        r = client.post("/v1/scheduled-jobs/run-due", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.json()["fired"] == 1
+
+        bal_r = client.get(f"/v1/envelopes/{env_id}/balance", headers=auth_h)
+        assert bal_r.status_code == 200
+        from decimal import Decimal
+
+        assert Decimal(bal_r.json()["balance"]) == Decimal("250.00")
+
 
 # ---- Unauthenticated ---------------------------------------------------
 
