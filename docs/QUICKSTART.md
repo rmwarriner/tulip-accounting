@@ -327,6 +327,103 @@ Doctor should report `master key loaded from file`.
 
 ---
 
+## 10. Cookbook: enabling AI (optional)
+
+Phase 6 added four AI capabilities: transaction categorisation during
+imports, natural-language queries over your ledger, nightly forecast +
+anomaly notifications, and AI-suggested budget proposals you approve
+manually. Every capability is opt-in: a fresh household has no provider
+key, so no provider is contacted until you set one. All four capabilities
+respect a server-enforced monthly cost cap and a per-user sliding-window
+rate limit (per [ADR-0005](adrs/0005-ai-integration.md)).
+
+**Step 1.** Add a provider key. Tulip uses [litellm](https://docs.litellm.ai)
+under the hood, so any litellm-supported provider works. Anthropic,
+OpenAI, and local Ollama are the common targets. Keys are
+field-encrypted at rest with the master key:
+
+```bash
+uv run tulip ai set-key --provider anthropic --key-stdin <<< 'sk-ant-...'
+```
+
+(or `--provider ollama` with an empty value if running local-only against
+`http://localhost:11434`).
+
+**Step 2.** Configure household defaults. The defaults are conservative
+(no cost cap, default redaction profile, all capabilities permissive).
+Tighten them:
+
+```bash
+uv run tulip ai config set default_provider anthropic
+uv run tulip ai config set default_model claude-opus-4-7
+uv run tulip ai config set monthly_cost_cap_usd 10.00
+uv run tulip ai config set cost_cap_behaviour degrade   # or hard_fail
+uv run tulip ai config set rate_limit_per_hour 60       # per user
+uv run tulip ai config set fallback_provider ollama     # used on cost-cap degrade
+```
+
+The `degrade` behaviour swaps to the fallback provider (typically Ollama)
+when the monthly cap is exceeded — the audit row records `provider=ollama`
+explicitly per the [ADR-0005 §Q7 "no silent fallback" rule](adrs/0005-ai-integration.md).
+`hard_fail` instead raises a structured error and stops the call.
+
+Disable individual capabilities if a household member is uncomfortable
+with them:
+
+```bash
+uv run tulip ai config set-capability nl_query policy disabled
+uv run tulip ai config set-capability agentic profile strict
+```
+
+**Step 3.** Verify. `tulip ai status` renders the full resolved policy
+with month-to-date spend, fallback semantics, and rate-limit budget:
+
+```bash
+uv run tulip ai status
+```
+
+The output flags the cost-cap-only fallback semantics inline and warns
+if you've turned on `log_prompts` (which stores full prompts +
+responses in `ai_invocations` for forensics — privacy cost is real,
+hence the warning).
+
+**Step 4.** Try the capabilities. With a key + a non-disabled policy
+in place:
+
+- **Auto-categorise on import.** Re-run `tulip imports apply $BATCH_ID`
+  on a new batch; lines now arrive with AI-proposed account codes (still
+  PENDING — you review before they move to POSTED).
+- **Natural-language query.**
+  ```bash
+  uv run tulip ai ask "how much did I spend on groceries last month?"
+  ```
+  The CLI prints the model's textual answer + the underlying SQL (which
+  ran against a read-only view, never the writable ledger).
+- **Suggest an envelope budget.**
+  ```bash
+  ENV_ID=$(uv run tulip --json envelopes list | jq -r '.[0].id')
+  uv run tulip ai suggest-budget --envelope "$ENV_ID"
+  ```
+  Creates a `pending_proposal` row with `created_by_kind=ai_agent`.
+  Review with `tulip ai proposals`, approve with
+  `tulip ai approve <UUID>` (writes the change with
+  `actor_kind=ai_agent` on the audit row), or reject with
+  `tulip ai reject <UUID>`.
+- **Forecast + anomaly notifications.** These fire from the nightly
+  `daily_insights` scheduler job. Read your inbox via
+  `tulip notifications list`; dismiss noisy ones with
+  `tulip notifications dismiss <UUID>`. (The runner-side wiring of
+  the AI forecaster is a deploy-time toggle; see PHASE_STATUS P6.5.c
+  for the slot.)
+
+**Turning AI off** is symmetric. `tulip ai forget-key --provider X`
+removes the encrypted key blob; without a key, every capability writes
+a `provider_error` / `no api key configured` audit row and silently
+falls back to "AI unconfigured" behaviour. No data destruction; safe to
+toggle on and off as you experiment.
+
+---
+
 ## What's next
 
 - Run `tulip --help` to discover commands not covered here: `envelopes`,

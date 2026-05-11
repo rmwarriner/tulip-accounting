@@ -1,6 +1,6 @@
 # Tulip Accounting — Architectural Specification (v1)
 
-**Status:** Ready for handoff to Claude Code (Phases 0–5 complete; Phase 6 ADR pending)
+**Status:** Phases 0–6 complete (ADR-0005 AI integration shipped end-to-end). Internal-beta ready. Phase 7 (reports + journal export/import) is the next slice.
 **Document version:** 1.1
 **Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh)
 
@@ -487,10 +487,10 @@ API keys are stored encrypted (field-level) per household. Per-user keys are als
 
 ### 6.2 Capabilities (all four, first-class)
 
-1. **Auto-categorization.** Classifier sees payee + amount + date + (optional) memo. Returns suggested account code and (optional) envelope. User reviews on import. Fallback: rule-based regex matcher tracked per household (also useful for offline/local-only mode).
-2. **Natural-language query.** User asks a question; system constructs a SQL query against a read-only view of their data; AI summarizes results. Query is logged; raw rows are returned to the user alongside the summary so they can verify.
-3. **Forecasting & anomaly detection.** Periodic job (daily) scans for anomalies (spending >2σ above rolling mean per envelope) and generates forecasts (envelope-runout dates, sinking-fund-on-track flags). Results are stored as `notifications`, not auto-acted-upon.
-4. **Agentic workflows.** AI may *propose* journal entries, restated budgets, or sinking-fund plans. Proposals are stored as `pending_proposals` and require explicit user approval. Once approved, they execute through the same accounting engine path as user-initiated actions, with the audit log noting `actor_kind=ai_agent` and the originating proposal id.
+1. **`categorize`.** `AICategorizer` plugs into the `Categorizer` Protocol DI seam from P5.3. Classifier sees payee + amount + date + currency + chart of accounts. Returns suggested account code and a confidence score. User reviews on import. Failures fall back silently to `Imbalance:Unknown` so importer flow never blocks on a flaky provider.
+2. **`nl_query`.** Two-turn flow per ADR-0005 §Q3: turn 1 emits SQL against a read-only AI view, `tulip_ai.sql_safety.validate_and_rewrite` (built on sqlglot) enforces SELECT-only + tenant-scope + a row cap; turn 2 summarises the results. Raw rows are returned to the user alongside the summary so they can verify.
+3. **`forecast` + anomaly detection.** Periodic `daily_insights` job (via the ADR-0002 runner) scans for anomalies (spending >2σ above rolling mean per envelope) and generates forecasts (envelope-runout dates, sinking-fund-on-track via `AIForecastCapability`). Results land in `notifications`; nothing auto-acts. Sinking-fund + envelope variants share a single `ForecastRequest` dataclass.
+4. **`agentic` workflows.** AI proposes journal entries, restated budgets, or sinking-fund plans via `AIProposalCapability`. Proposals are stored as `pending_proposals` and require explicit user approval. Once approved, they execute through the same accounting engine path as user-initiated actions, with the audit log noting `actor_kind=ai_agent`, `metadata.proposal_id`, and `ai_invocation_id` linking back to the originating AI call. v1 ships one executor (`envelope_budget_update`); new kinds register one function in `tulip_api.services.proposal_executor._EXECUTORS`.
 
 ### 6.3 Privacy Posture
 
@@ -505,9 +505,12 @@ Users can ratchet their own restriction *up* (more cautious than tenant policy) 
 
 ### 6.4 Audit & Cost Controls
 
-- Every AI invocation produces an `ai_invocations` row with provider, model, token counts, cost estimate, and outcome.
-- Per-household monthly cost cap (default $10/mo, configurable). Cap reached → capability degrades to local-only or disabled until reset.
-- Per-user rate limit (default 60 invocations/hour) to limit blast radius of a runaway loop or compromised credential.
+- Every AI invocation produces an `ai_invocations` row with provider, model, token counts, cost estimate, latency, outcome, and a SHA-256 hash of the redacted prompt (`prompt_hash`). Prompt bodies are NOT persisted by default; opt in via `households.ai_policy.log_prompts=true`.
+- Per-household monthly cost cap (default: unconfigured / unlimited; admin opts in via `tulip ai config set monthly_cost_cap_usd ...`). Cap reached → behaviour governed by `cost_cap_behaviour`:
+  - `degrade` (default when set): swap to `fallback_provider` (typically Ollama). Audit row records `provider=ollama` explicitly — per ADR-0005 §Q7 this is the only place a provider swap is permitted, and it's logged as a budget signal not a silent failover.
+  - `hard_fail`: raise `AICostCapped`; no swap.
+- Per-user rate limit (default 60 invocations/hour, sliding window) to bound the blast radius of a runaway loop or compromised credential. Configurable via `households.ai_policy.rate_limit_per_hour`.
+- Both gates run **pre-call** via `tulip_ai.cost.enforce_pre_call`. Blocked calls still write an `ai_invocations` row with `outcome=rate_limited` / `outcome=cost_capped` so capped capacity is observable.
 
 ### 6.5 Tenant AI Policy (`households.ai_policy` JSON shape)
 
@@ -515,19 +518,23 @@ Users can ratchet their own restriction *up* (more cautious than tenant policy) 
 {
   "default_provider": "anthropic",
   "default_model": "claude-opus-4-7",
-  "fallback_provider": "ollama",
-  "fallback_model": "llama3.1:70b",
+  "profile": "default",
   "monthly_cost_cap_usd": "10.00",
+  "cost_cap_behaviour": "degrade",
+  "rate_limit_per_hour": 60,
+  "fallback_provider": "ollama",
+  "fallback_model": "llama3:70b",
+  "log_prompts": false,
   "capabilities": {
-    "categorization":   { "policy": "permissive",        "provider": null, "model": null },
-    "nl_query":         { "policy": "permissive",        "provider": null, "model": null },
-    "forecasting":      { "policy": "permissive",        "provider": null, "model": null },
-    "agentic":          { "policy": "requires_approval", "provider": null, "model": null }
+    "categorize": { "policy": "permissive",        "provider": null, "model": null, "profile": null },
+    "nl_query":   { "policy": "permissive",        "provider": null, "model": null, "profile": null },
+    "forecast":   { "policy": "permissive",        "provider": null, "model": null, "profile": null },
+    "agentic":    { "policy": "requires_approval", "provider": null, "model": null, "profile": null }
   }
 }
 ```
 
-`provider`/`model` null means "use household default." Per-capability override allows e.g. agentic to always use a local model.
+Capability-level `null` inherits the household default. `profile` selects a redaction profile (`default` / `strict` / `local_only`); `local_only` pins the resolved provider to `fallback_provider` regardless of other config. Edit via `tulip ai config show / set / clear / set-capability / log-prompts`; the API surface is admin-only `GET/PUT /v1/ai/config` + `PUT /v1/ai/config/capabilities/{capability}`.
 
 ---
 
@@ -959,13 +966,17 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **P5.4.d** — `tulip reconcile` CLI (10 subcommands wrapping the endpoints) + new `GET /v1/reconciliations` list endpoint.
 - ✅ **Cleanup**: PR #129 (#127 — inbox surfacing prior-completed-recon lines), PR #130 (#114 — relax `import_batch` idempotency index, wire `?force=true`); #118 closed wontfix.
 
-### Phase 6 — AI integration
-- ✅ **P6.0** — Privacy audit / data-flow contract: [ADR-0005](adrs/0005-ai-integration.md). Closes #102. Resolves nine open questions (module structure, BYOK surface, per-capability prompt contracts, redaction profiles, policy resolution, audit-log shape, cost-cap enforcement, failure modes, slice ordering). No code; design only.
-- **P6.1** — `tulip-ai` package skeleton: `LitellmAdapter`, `PromptRedactor`, `AIInvocationWriter`, `AICategorizer` plugging into the existing `Categorizer` DI seam (P5.3). Migration for `ai_invocations`, `households.{ai_policy, ai_keys_encrypted}`, `users.ai_keys_encrypted`. CLI: `tulip ai {set-key, forget-key, list-keys, config, status, preview}`. API: `POST /v1/ai/preview`. End-to-end: register → set key → import OFX → categorize via AI → accept.
-- **P6.2** — NL query: read-only AI view + two-turn (SQL emission, summarisation) flow. `tulip ai ask`, `POST /v1/ai/ask`.
-- **P6.3** — Forecasting + anomaly detection via the runner (ADR-0002). New `notifications` table.
-- **P6.4** — Agentic proposals. `pending_proposals` table, `actor_kind=ai_agent` audit rows on approve.
-- **P6.5** — Polish + cost-cap behaviours UI + opt-in `log_prompts` toggle. Closes Phase 6.
+### Phase 6 — AI integration ✅ complete
+- ✅ **P6.0** — Privacy audit / data-flow contract: [ADR-0005](adrs/0005-ai-integration.md). Closes #102.
+- ✅ **P6.1** — `tulip-ai` package skeleton: `LitellmAdapter`, `PromptRedactor`, `AIInvocationWriter`, `AICategorizer` plugging into the `Categorizer` DI seam (P5.3). Migration for `ai_invocations`, `households.{ai_policy, ai_keys_encrypted}`, `users.ai_keys_encrypted`. CLI: `tulip ai {set-key, forget-key, list-keys, status, preview}`. API: `POST /v1/ai/preview`.
+- ✅ **P6.2** — NL query: read-only AI view + two-turn (SQL emission → summarisation) flow with `sqlglot`-validated SQL. `tulip ai ask`, `POST /v1/ai/ask`.
+- ✅ **P6.3** — Daily-insights scheduler + anomaly detector + `notifications` inbox (PR #156). `tulip notifications list/dismiss`.
+- ✅ **P6.3.b** — `AIForecastCapability` + forecaster wiring slot on the daily-insights handler (PR #157).
+- ✅ **P6.4** — Agentic proposals: `pending_proposals` table, `tulip ai propose/approve/reject`, `actor_kind=ai_agent` audit rows on approve (PR #158).
+- ✅ **P6.4.b** — AI-driven proposal generation: `AIProposalCapability` + `tulip ai suggest-budget` (PR #159).
+- ✅ **P6.5.a** — Pre-call cost-cap + per-user rate-limit chokepoint + `degrade`/`hard_fail` cost_cap_behaviour with explicit-audited fallback swap (PR #161).
+- ✅ **P6.5.b** — `tulip ai config` editor + `log_prompts` toggle + `tulip ai status` fallback-semantics callout. `GET/PUT /v1/ai/config` + `PUT /v1/ai/config/capabilities/{capability}` admin surface (PR #163).
+- ✅ **P6.5.c** — Sinking-fund forecast extension to the daily-insights handler via a single `ForecastRequest` dataclass (PR #171). Phase 6 closes.
 
 ### Phase 7 — Reports + journal export/import
 - All v1 reports rendered as HTML and PDF (weasyprint)

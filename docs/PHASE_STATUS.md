@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-07 · `main` @ **Phase 5 complete + cleanup PRs landed** (#127, #114, #118 closed)
+**Last updated:** 2026-05-11 · `main` @ **Phase 6 complete** (P6.0–P6.5.c shipped)
 
 ---
 
@@ -24,7 +24,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Phase 6 (AI integration):** ✅ shipped — P6.0–P6.5.c complete (ADR + categorize + NL query + daily-insights/anomaly + envelope AI forecast + sinking-fund AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability` (envelopes + sinking funds), `AIProposalCapability`, the proposal executor registry, the shared `enforce_pre_call` gate, and the `GET|PUT /v1/ai/config` admin surface. The daily-insights handler now forecasts both envelopes and sinking funds via a single `ForecastRequest` dataclass; production wiring of the forecaster into the runner is the only remaining no-op slot, intentionally deferred to a deploy-time toggle. Phase 6 closes.
 
-**Tests:** 1362 passing · **CI:** green on `main`
+**Tests:** 1426 passing · **CI:** green on `main`
+
+**Next:** Phase 7 — reports + journal export/import (per [ARCHITECTURE.md §10](ARCHITECTURE.md)). All v1 reports rendered as HTML + PDF, hledger-compatible journal export, basic journal import. Phase 7 entry is unblocked; no pre-phase gate.
 
 ---
 
