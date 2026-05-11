@@ -32,6 +32,11 @@ from tulip_storage.models.notification import (
     NotificationKind,
     NotificationSeverity,
 )
+from tulip_storage.models.pending_proposal import (
+    PendingProposal,
+    ProposalCreatorKind,
+    ProposalStatus,
+)
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
 from tulip_storage.models.reconciliation import Reconciliation, ReconciliationStatus
@@ -80,10 +85,13 @@ __all__ = [
     "Notification",
     "NotificationKind",
     "NotificationSeverity",
+    "PendingProposal",
     "Period",
     "PeriodStatus",
     "PoolType",
     "Posting",
+    "ProposalCreatorKind",
+    "ProposalStatus",
     "Reconciliation",
     "ReconciliationMatch",
     "ReconciliationStatus",

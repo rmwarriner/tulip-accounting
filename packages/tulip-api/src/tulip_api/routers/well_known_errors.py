@@ -42,6 +42,14 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "reason": "Transaction does not balance: USD postings sum to 1.00 instead of 0."
     },
     "PeriodClosedError": {"reason": "Period 2025-12-31 is closed."},
+    "ProposalAlreadyDecidedError": {"current_status": "approved"},
+    "ProposalPayloadInvalidError": {
+        "reason": (
+            "envelope_budget_update payload must include envelope_id (UUID) "
+            "and new_budget_amount (decimal)"
+        )
+    },
+    "UnsupportedProposalKindError": {"kind": "transfer_pools"},
     "PoolNotFoundError": {"pool_id": "<pool-uuid>"},
     "PoolInactiveError": {"pool_id": "<pool-uuid>"},
     "PoolCurrencyMismatchError": {

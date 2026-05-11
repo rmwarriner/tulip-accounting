@@ -36,6 +36,7 @@ from tulip_api.routers import (
     notifications,
     periods,
     pools,
+    proposals,
     reconciliations,
     refill_schedules,
     reports,
@@ -155,6 +156,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(transactions.router)
     app.include_router(periods.router)
     app.include_router(notifications.router)
+    app.include_router(proposals.router)
     app.include_router(envelopes.router)
     app.include_router(sinking_funds.router)
     app.include_router(pools.router)

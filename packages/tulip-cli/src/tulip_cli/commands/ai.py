@@ -201,6 +201,153 @@ def ask(
         typer.echo(json.dumps(body["rows"], indent=2, ensure_ascii=False))
 
 
+@ai_app.command("propose")
+def propose(
+    ctx: typer.Context,
+    kind: Annotated[
+        str,
+        typer.Option(
+            "--kind",
+            help="Proposal kind (e.g. envelope_budget_update).",
+        ),
+    ],
+    title: Annotated[str, typer.Option("--title", help="Short headline.")],
+    payload: Annotated[
+        str,
+        typer.Option(
+            "--payload",
+            help="JSON object describing the change. Kind-specific shape.",
+        ),
+    ],
+    rationale: Annotated[
+        str,
+        typer.Option("--rationale", help="Optional free-text justification."),
+    ] = "",
+) -> None:
+    """Create a pending proposal (manual; AI-generated proposals land in P6.4.b)."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        payload_obj = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"--payload must be valid JSON: {exc}") from exc
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                "/v1/ai/proposals",
+                json={
+                    "kind": kind,
+                    "title": title,
+                    "payload": payload_obj,
+                    "rationale": rationale,
+                },
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    body = response.json()
+    typer.echo(f"Created proposal {body['id']} ({body['kind']}): {body['title']}")
+
+
+@ai_app.command("proposals")
+def list_proposals(
+    ctx: typer.Context,
+    status: Annotated[
+        str,
+        typer.Option(
+            "--status",
+            help="Filter: pending / approved / rejected. Empty string for all.",
+        ),
+    ] = "pending",
+) -> None:
+    """List proposals for the household, newest first."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(
+                "/v1/ai/proposals",
+                authenticated=True,
+                params={"status": status},
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    rows = response.json()
+    if not rows:
+        typer.echo("No proposals.")
+        return
+    for r in rows:
+        typer.echo(f"  {r['id'][:8]}  {r['kind']:32s}  {r['status']:10s}  {r['title']}")
+
+
+@ai_app.command("approve")
+def approve_proposal(
+    ctx: typer.Context,
+    proposal_id: Annotated[str, typer.Argument(help="Proposal UUID.")],
+    note: Annotated[str, typer.Option("--note", help="Optional decision note.")] = "",
+) -> None:
+    """Approve a proposal and execute its change."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    body: dict[str, str] = {"note": note} if note else {}
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                f"/v1/ai/proposals/{proposal_id}/approve",
+                json=body,
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    body_json = response.json()
+    typer.echo(f"Approved proposal {body_json['id']} ({body_json['kind']}).")
+
+
+@ai_app.command("reject")
+def reject_proposal(
+    ctx: typer.Context,
+    proposal_id: Annotated[str, typer.Argument(help="Proposal UUID.")],
+    note: Annotated[str, typer.Option("--note", help="Optional decision note.")] = "",
+) -> None:
+    """Reject a proposal. No state change beyond the proposal row."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    body: dict[str, str] = {"note": note} if note else {}
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                f"/v1/ai/proposals/{proposal_id}/reject",
+                json=body,
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    body_json = response.json()
+    typer.echo(f"Rejected proposal {body_json['id']} ({body_json['kind']}).")
+
+
 @ai_app.command("preview")
 def preview(
     ctx: typer.Context,

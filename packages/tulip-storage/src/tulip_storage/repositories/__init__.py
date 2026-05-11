@@ -18,6 +18,7 @@ from tulip_storage.repositories.csv_profile import CsvProfileRepository
 from tulip_storage.repositories.envelope import EnvelopeRepository
 from tulip_storage.repositories.import_batch import ImportBatchRepository
 from tulip_storage.repositories.notification import NotificationRepository
+from tulip_storage.repositories.pending_proposal import PendingProposalRepository
 from tulip_storage.repositories.period import PeriodRepository
 from tulip_storage.repositories.reconciliation import ReconciliationRepository
 from tulip_storage.repositories.reconciliation_match import (
@@ -39,6 +40,7 @@ __all__ = [
     "EnvelopeRepository",
     "ImportBatchRepository",
     "NotificationRepository",
+    "PendingProposalRepository",
     "PeriodRepository",
     "ReconciliationMatchRepository",
     "ReconciliationRepository",

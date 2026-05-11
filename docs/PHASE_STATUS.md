@@ -22,9 +22,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0–P6.3 + P6.3.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`. Next: P6.4 (agentic proposals) or P6.5 (polish + cost-cap enforcement + app-factory wiring of the daily_insights forecaster).
+- **Phase 6 (AI integration):** in flight — P6.0–P6.4 shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals infrastructure with `envelope_budget_update` executor + `actor_kind=ai_agent` audit pattern). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, plus the proposal executor registry. Next: P6.4.b (AI-driven proposal generation) or P6.5 (polish + cost-cap enforcement + sinking-fund forecast + `tulip ai config`).
 
-**Tests:** 1340 passing · **CI:** green on `main`
+**Tests:** 1362 passing · **CI:** green on `main`
 
 ---
 
@@ -561,6 +561,44 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.4 — Agentic proposals + `actor_kind=ai_agent` audit signal — ✅ *(2026-05-11)*
+
+Fourth Phase 6 slice — the architecturally novel one. Establishes the proposal queue, the approve/reject workflow, the `actor_kind=ai_agent` audit pattern locked by [ARCHITECTURE.md §6.2](ARCHITECTURE.md) + [THREAT_MODEL.md §5.3](THREAT_MODEL.md), and one end-to-end executable proposal kind: `envelope_budget_update`. AI-driven proposal *generation* lands as P6.4.b — this slice ships the infrastructure both AI- and human-created proposals share.
+
+**Storage**:
+- New `pending_proposals` table per ADR-0005 §Q9. Columns: `kind / title / rationale / payload(JSON) / status / created_by_kind / created_by_user_id / ai_invocation_id / decided_at / decided_by_user_id / decision_note`. Composite PK on `(household_id, id)`; index on `(household_id, status)` for the inbox listing.
+- `PendingProposal` model + `ProposalStatus` / `ProposalCreatorKind` enums.
+- `PendingProposalRepository`: `create / get / list_by_status / mark_decided` (idempotent on same-status, refuses to transition out of a terminal state).
+
+**Executor pattern**:
+- `tulip_api.services.proposal_executor` — a dispatch registry mapping proposal kinds to executor functions. `execute_approved_proposal(session, *, household_id, proposal, decided_by_user_id, request_id)` looks up the kind's executor, runs it, and writes the audit row with `actor_kind=ai_agent` (if proposal was AI-created) or `actor_kind=user` (if human-created). The audit row's `metadata` carries the originating `proposal_id` and `proposal_kind` per the locked ARCHITECTURE §6.2 rule.
+- v1 ships one executor: `_execute_envelope_budget_update` updates `envelope.budget_amount` on the targeted envelope. Payload validation rejects malformed input with a typed Problem Details. New kinds: register one function.
+- `supported_proposal_kinds()` exposes the allowlist for `GET /v1/ai/proposals/kinds` and the CLI's discoverability.
+
+**HTTP**:
+- `POST /v1/ai/proposals` — create. `ai_invocation_id` presence flips `created_by_kind` to `ai_agent` server-side.
+- `GET /v1/ai/proposals[?status=...]` — list (default filter `pending`); empty string disables the filter.
+- `GET /v1/ai/proposals/kinds` — supported-kinds allowlist for the executor registry.
+- `POST /v1/ai/proposals/{id}/approve` — runs the executor, stamps status. Failures (unsupported kind, invalid payload, envelope vanished) leave the proposal PENDING with a typed error.
+- `POST /v1/ai/proposals/{id}/reject` — stamps status; idempotent on already-rejected.
+
+New errors: `proposal.not_found` (404), `proposal.already_decided` (409), `proposal.unsupported_kind` (400), `proposal.payload_invalid` (400).
+
+**CLI** (`tulip ai`, four new subcommands): `propose --kind --title --payload <json>`, `proposals [--status]`, `approve UUID [--note]`, `reject UUID [--note]`.
+
+**Tests** — +17 API endpoint tests covering:
+- Creator-kind plumbing (user vs ai_agent based on `ai_invocation_id` presence).
+- Listing filter behaviour (default pending, empty=all, kinds endpoint).
+- Approve happy path (envelope's `budget_amount` actually updated).
+- **The locked audit rule**: AI-created proposal → `actor_kind=ai_agent` audit row with `metadata.proposal_id` link. User-created → `actor_kind=user`. Both verified end-to-end through the real `AuditLog` table.
+- Approve failure modes: unknown ID (404), already-decided (409), unsupported kind (400), invalid payload (400).
+- Reject happy path + idempotency on already-rejected.
+- Auth gates on both endpoints.
+
+**Deferred to P6.4.b**:
+- AI-driven proposal generation — a capability that takes a "goal" (e.g., "review last month's spending and suggest envelope budget adjustments"), emits structured proposals, and writes them as `created_by_kind=ai_agent`. The infrastructure is ready; just needs the prompt + capability class.
+- More executor kinds (`categorize_lines`, `transfer_pools`, etc.) — same registry pattern.
 
 ### P6.3.b — AI forecast capability + handler integration — ✅ *(2026-05-11)*
 
