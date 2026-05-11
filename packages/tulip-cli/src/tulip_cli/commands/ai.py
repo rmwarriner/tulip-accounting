@@ -153,7 +153,31 @@ def status(ctx: typer.Context) -> None:
     typer.echo(f"  default model:    {body.get('default_model') or '(unset)'}")
     cap = body.get("monthly_cost_cap_usd")
     typer.echo(f"  monthly cap USD:  {cap if cap is not None else '(unlimited)'}")
-    typer.echo(f"  log prompts:      {body.get('log_prompts')}")
+    if cap is not None:
+        mtd = body.get("month_to_date_spend_usd")
+        typer.echo(f"  spent this month: {mtd if mtd is not None else '0'}")
+    typer.echo(f"  cost cap behaviour: {body.get('cost_cap_behaviour', 'degrade')}")
+    typer.echo(f"  rate limit / hour:  {body.get('rate_limit_per_hour', 60)}")
+    fallback_provider = body.get("fallback_provider")
+    fallback_model = body.get("fallback_model")
+    if fallback_provider:
+        typer.echo(
+            f"  fallback provider:  {fallback_provider}"
+            f"{f' ({fallback_model})' if fallback_model else ''}"
+        )
+        typer.echo(
+            "    NOTE: applies on cost-cap degrade ONLY. Provider 5xx errors "
+            "do NOT silently fall back (ADR-0005 §Q8)."
+        )
+    else:
+        typer.echo("  fallback provider:  (unset)")
+    log_prompts = body.get("log_prompts")
+    typer.echo(f"  log prompts:      {log_prompts}")
+    if log_prompts:
+        typer.echo(
+            "    WARNING: prompts + responses are stored in ai_invocations. "
+            "Forensic value, privacy cost (ADR-0005 §Q6)."
+        )
     providers = ", ".join(body.get("providers_with_keys") or []) or "(none)"
     typer.echo(f"  providers w/keys: {providers}")
     typer.echo("  capabilities:")
@@ -444,3 +468,243 @@ def preview(
     typer.echo(f"model:    {body.get('model') or '(unset)'}")
     typer.echo("payload:")
     typer.echo(json.dumps(body.get("payload"), indent=2, ensure_ascii=False))
+
+
+# --- P6.5.b: `tulip ai config` editor -------------------------------------
+
+config_app = typer.Typer(
+    name="config",
+    help="Edit the household ai_policy JSON (admin-only).",
+    no_args_is_help=True,
+)
+ai_app.add_typer(config_app)
+
+# Whitelisted household-level keys for `set` / `clear`. Maps user-facing
+# name to the wire-level field name (currently 1:1; the indirection lets
+# us rename without breaking the CLI surface).
+_HOUSEHOLD_KEYS: dict[str, str] = {
+    "default_provider": "default_provider",
+    "default_model": "default_model",
+    "profile": "profile",
+    "monthly_cost_cap_usd": "monthly_cost_cap_usd",
+    "cost_cap_behaviour": "cost_cap_behaviour",
+    "rate_limit_per_hour": "rate_limit_per_hour",
+    "fallback_provider": "fallback_provider",
+    "fallback_model": "fallback_model",
+    "log_prompts": "log_prompts",
+}
+
+# Same idea for `set-capability`.
+_CAPABILITY_FIELDS: dict[str, str] = {
+    "policy": "policy",
+    "provider": "provider",
+    "model": "model",
+    "profile": "profile",
+}
+
+_CAPABILITIES = ("categorize", "nl_query", "forecast", "agentic")
+
+
+def _coerce_set_value(key: str, value: str) -> object:
+    """Coerce a raw CLI string to the wire-level type for ``key``.
+
+    The API accepts a string for ``monthly_cost_cap_usd`` (so the
+    ``__CLEAR__`` sentinel can share the field) and a bool / int / str
+    for the others. The empty string is the "clear" sentinel.
+    """
+    if value == "" or value == "__CLEAR__":
+        return "__CLEAR__"
+    if key == "log_prompts":
+        if value.lower() in ("true", "1", "on", "yes"):
+            return True
+        if value.lower() in ("false", "0", "off", "no"):
+            return False
+        raise typer.BadParameter(f"log_prompts must be true/false, got {value!r}")
+    if key == "rate_limit_per_hour":
+        try:
+            n = int(value)
+        except ValueError as exc:
+            raise typer.BadParameter(f"rate_limit_per_hour must be int, got {value!r}") from exc
+        return n
+    return value
+
+
+@config_app.command("show")
+def config_show(ctx: typer.Context) -> None:
+    """Print the household-level ai_policy + per-capability overrides."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get("/v1/ai/config", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    typer.echo("AI config (household-level):")
+    for name in _HOUSEHOLD_KEYS:
+        value = body.get(name)
+        typer.echo(f"  {name:24s} = {value if value is not None else '(unset)'}")
+    typer.echo("Per-capability overrides:")
+    for cap in _CAPABILITIES:
+        cfg = (body.get("capabilities") or {}).get(cap) or {}
+        non_default = {k: v for k, v in cfg.items() if v is not None}
+        if non_default:
+            typer.echo(f"  {cap}: {json.dumps(non_default, ensure_ascii=False)}")
+        else:
+            typer.echo(f"  {cap}: (inherit)")
+
+
+@config_app.command("set")
+def config_set(
+    ctx: typer.Context,
+    key: Annotated[str, typer.Argument(help="Household-level key, e.g. default_provider.")],
+    value: Annotated[
+        str,
+        typer.Argument(help="New value. Empty string or '__CLEAR__' removes the key."),
+    ],
+) -> None:
+    """Set one household-level ai_policy key."""
+    if key not in _HOUSEHOLD_KEYS:
+        typer.echo(
+            f"unknown key {key!r}. Known: {', '.join(sorted(_HOUSEHOLD_KEYS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    coerced = _coerce_set_value(key, value)
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.put(
+                "/v1/ai/config",
+                json={key: coerced},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    typer.echo(
+        f"ai config: set {key} = {coerced!r}"
+        if coerced != "__CLEAR__"
+        else f"ai config: cleared {key}"
+    )
+
+
+@config_app.command("clear")
+def config_clear(
+    ctx: typer.Context,
+    key: Annotated[str, typer.Argument(help="Household-level key to clear.")],
+) -> None:
+    """Remove one household-level ai_policy key. Idempotent."""
+    if key not in _HOUSEHOLD_KEYS:
+        typer.echo(
+            f"unknown key {key!r}. Known: {', '.join(sorted(_HOUSEHOLD_KEYS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.put(
+                "/v1/ai/config",
+                json={key: "__CLEAR__"},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    typer.echo(f"ai config: cleared {key}")
+
+
+@config_app.command("set-capability")
+def config_set_capability(
+    ctx: typer.Context,
+    capability: Annotated[
+        str,
+        typer.Argument(help="One of categorize / nl_query / forecast / agentic."),
+    ],
+    field: Annotated[str, typer.Argument(help="One of policy / provider / model / profile.")],
+    value: Annotated[
+        str,
+        typer.Argument(help="New value. Empty string or '__CLEAR__' removes the override."),
+    ],
+) -> None:
+    """Override one ai_policy field for a single capability."""
+    if capability not in _CAPABILITIES:
+        typer.echo(
+            f"unknown capability {capability!r}. Known: {', '.join(_CAPABILITIES)}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if field not in _CAPABILITY_FIELDS:
+        typer.echo(
+            f"unknown field {field!r}. Known: {', '.join(sorted(_CAPABILITY_FIELDS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    coerced: object = value if value != "" else "__CLEAR__"
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.put(
+                f"/v1/ai/config/capabilities/{capability}",
+                json={field: coerced},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    typer.echo(f"ai config: {capability}.{field} = {coerced!r}")
+
+
+@config_app.command("log-prompts")
+def config_log_prompts(
+    ctx: typer.Context,
+    state: Annotated[
+        str, typer.Argument(help="Either 'on' or 'off' (sets ai_policy.log_prompts).")
+    ],
+) -> None:
+    """Toggle ai_policy.log_prompts. Prints a warning when turning it on."""
+    if state not in ("on", "off"):
+        typer.echo(f"state must be 'on' or 'off', got {state!r}", err=True)
+        raise typer.Exit(1)
+    enable = state == "on"
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.put(
+                "/v1/ai/config",
+                json={"log_prompts": enable},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    typer.echo(f"ai config: log_prompts = {enable}")
+    if enable:
+        typer.echo(
+            "WARNING: full prompts + responses will now be stored in ai_invocations. "
+            "Forensic value, privacy cost (ADR-0005 §Q6).",
+            err=True,
+        )

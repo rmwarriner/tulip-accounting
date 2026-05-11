@@ -22,7 +22,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0–P6.5.a shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint with `degrade`/`hard_fail` behaviour). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry and the shared `enforce_pre_call` gate. Next: P6.5.b (`tulip ai config` + `log_prompts` + `status` polish) and P6.5.c (sinking-fund forecast extension).
+- **Phase 6 (AI integration):** in flight — P6.0–P6.5.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry, the shared `enforce_pre_call` gate, and the new `GET|PUT /v1/ai/config` admin surface. Next: P6.5.c (sinking-fund forecast extension) — final Phase 6 slice.
 
 **Tests:** 1362 passing · **CI:** green on `main`
 
@@ -561,6 +561,69 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.5.b — `tulip ai config` editor + `log_prompts` toggle + status polish — ✅ *(2026-05-11)*
+
+Second Phase-6 wind-down slice. Ships the operator surface deferred from
+P6.1 + the fallback-semantics callout ADR-0005 §"Negative" #3 calls
+out. No migration — everything rides on the existing
+`households.ai_policy` JSON column.
+
+**HTTP** (admin-only):
+- `GET /v1/ai/config` returns the raw household-level fields
+  (`default_provider`, `default_model`, `profile`, `monthly_cost_cap_usd`,
+  `cost_cap_behaviour`, `rate_limit_per_hour`, `fallback_provider`,
+  `fallback_model`, `log_prompts`) plus a per-capability overrides view.
+  For the fully-resolved view, `GET /v1/ai/status` still answers — and
+  now includes the same six P6.5.a-related fields plus a `month_to_date_spend_usd`
+  field surfaced from `tulip_ai.cost.check_cost_cap` when a cap is configured.
+- `PUT /v1/ai/config` accepts a partial patch with the sentinel
+  `"__CLEAR__"` (or empty string for the Decimal-typed
+  `monthly_cost_cap_usd`) to remove a key. Pydantic `extra="forbid"`
+  rejects unknown keys with 422.
+- `PUT /v1/ai/config/capabilities/{capability}` patches per-capability
+  overrides under `ai_policy.capabilities[capability]`. Unknown
+  capability/path values, unknown fields, and out-of-space values
+  (`policy`, `profile`) return typed 422s.
+
+**CLI** — new `tulip ai config` sub-typer:
+- `tulip ai config show` — table view of household-level + per-capability overrides.
+- `tulip ai config set <key> <value>` — whitelisted set with type
+  coercion (`log_prompts` accepts true/false/on/off/yes/no,
+  `rate_limit_per_hour` parses to int, empty value clears).
+- `tulip ai config clear <key>` — convenience wrapper for `set <key> ""`.
+- `tulip ai config set-capability <capability> <field> <value>` —
+  per-capability override (`policy / provider / model / profile`).
+- `tulip ai config log-prompts {on|off}` — convenience wrapper that
+  also emits the ADR-0005 §Q6 privacy warning to stderr when toggled on.
+
+**`tulip ai status` polish**:
+- Surfaces `cost_cap_behaviour`, `rate_limit_per_hour`,
+  `fallback_provider` (+ model), and the month-to-date spend when a cap
+  is configured.
+- When `fallback_provider` is set, prints the locked
+  ARCHITECTURE/ADR §Q8 callout: "applies on cost-cap degrade ONLY.
+  Provider 5xx errors do NOT silently fall back."
+- When `log_prompts=true`, prints the privacy-vs-forensic-value warning
+  inline.
+
+**Schema additions**:
+- `AIConfigRead`, `AIConfigCapability`, `AIConfigPatch`,
+  `AIConfigCapabilityPatch` in `tulip_api.schemas.ai`.
+- `CLEAR_SENTINEL = "__CLEAR__"` (shared between schemas and router).
+- `AIStatusRead` extended with the new fields + `month_to_date_spend_usd`
+  (backwards-compatible; default `None`).
+
+**Tests** — +20 across two layers:
+- API endpoint integration (14): config show defaults, set, clear via
+  sentinel, full cost-cap round trip, empty-string clears the cap,
+  unknown household-level key 422, invalid behaviour 422, unknown
+  capability 422, unknown field 422, set + clear per-capability
+  override round-trip, status reflects all P6.5.a fields with
+  defaults, status reflects the cap round-trip.
+- CLI integration (3): full `set/show/clear/log-prompts` round-trip,
+  `status` includes the fallback-cost-cap-only callout, unknown-key
+  CLI rejection.
 
 ### P6.5.a — Pre-call cost-cap + rate-limit chokepoint — ✅ *(2026-05-11)*
 

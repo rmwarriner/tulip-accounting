@@ -162,6 +162,17 @@ class TulipClient:
         """``PATCH path`` against the configured API."""
         return self.request("PATCH", path, authenticated=authenticated, json=json, headers=headers)
 
+    def put(
+        self,
+        path: str,
+        *,
+        authenticated: bool = False,
+        json: object = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """``PUT path`` against the configured API."""
+        return self.request("PUT", path, authenticated=authenticated, json=json, headers=headers)
+
     def delete(
         self,
         path: str,
