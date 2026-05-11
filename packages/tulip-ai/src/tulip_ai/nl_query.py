@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from tulip_ai.adapters import ProviderAdapter
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
+from tulip_ai.cost import PreCallApproval, enforce_pre_call
 from tulip_ai.errors import AIProviderError
 from tulip_ai.policy import resolve_policy
 from tulip_ai.redaction import RedactionProfile
@@ -276,13 +277,52 @@ class AINLQueryCapability:
                     error="No AI key configured for this household.",
                 )
 
+            gate = enforce_pre_call(
+                session,
+                household_id=household_id,
+                user_id=actor_user_id,
+                rate_limit_per_hour=policy.rate_limit_per_hour,
+                monthly_cost_cap_usd=policy.monthly_cost_cap_usd,
+                cost_cap_behaviour=policy.cost_cap_behaviour,
+                fallback_provider=policy.fallback_provider,
+                fallback_model=policy.fallback_model,
+                primary_provider=policy.provider,
+                primary_model=policy.model,
+            )
+            if not isinstance(gate, PreCallApproval):
+                writer.write(
+                    AIInvocationRecord(
+                        household_id=household_id,
+                        capability="nl_query",
+                        policy_resolved=policy.level,
+                        profile=policy.profile,
+                        provider=policy.provider,
+                        model=policy.model,
+                        outcome=gate.outcome,
+                        prompt_hash=hash_prompt_payload({"question": question}),
+                        actor_user_id=actor_user_id,
+                        response_text=gate.reason[:500],
+                    )
+                )
+                session.commit()
+                return NLAnswer(
+                    summary="",
+                    rows=[],
+                    sql=None,
+                    error=gate.reason,
+                )
+
+        call_provider = gate.provider or ""
+        call_model = gate.model or ""
+        call_api_key = api_key if not gate.degraded else None
+
         # --- Turn 1: emit SQL ----------------------------------------------
         turn1_msgs = _build_turn1_messages(question, samples=None)
         try:
             turn1 = await self._adapter.chat(
-                provider=policy.provider or "",
-                model=policy.model or "",
-                api_key=api_key,
+                provider=call_provider,
+                model=call_model,
+                api_key=call_api_key,
                 messages=turn1_msgs,
                 max_tokens=400,
             )
@@ -292,8 +332,8 @@ class AINLQueryCapability:
                 actor_user_id=actor_user_id,
                 policy_level=policy.level,
                 profile=policy.profile,
-                provider=policy.provider,
-                model=policy.model,
+                provider=call_provider,
+                model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload({"turn": 1, "question": question}),
                 response_text=str(exc)[:500],
@@ -311,8 +351,8 @@ class AINLQueryCapability:
                 actor_user_id=actor_user_id,
                 policy_level=policy.level,
                 profile=policy.profile,
-                provider=policy.provider,
-                model=policy.model,
+                provider=call_provider,
+                model=call_model,
                 tokens_in=turn1.tokens_in,
                 tokens_out=turn1.tokens_out,
                 cost_estimate_usd=turn1.cost_estimate_usd,
@@ -335,8 +375,8 @@ class AINLQueryCapability:
             actor_user_id=actor_user_id,
             policy_level=policy.level,
             profile=policy.profile,
-            provider=policy.provider,
-            model=policy.model,
+            provider=call_provider,
+            model=call_model,
             tokens_in=turn1.tokens_in,
             tokens_out=turn1.tokens_out,
             cost_estimate_usd=turn1.cost_estimate_usd,
@@ -360,9 +400,9 @@ class AINLQueryCapability:
         turn2_msgs = _build_turn2_messages(question, redacted)
         try:
             turn2 = await self._adapter.chat(
-                provider=policy.provider or "",
-                model=policy.model or "",
-                api_key=api_key,
+                provider=call_provider,
+                model=call_model,
+                api_key=call_api_key,
                 messages=turn2_msgs,
                 max_tokens=400,
             )
@@ -372,8 +412,8 @@ class AINLQueryCapability:
                 actor_user_id=actor_user_id,
                 policy_level=policy.level,
                 profile=policy.profile,
-                provider=policy.provider,
-                model=policy.model,
+                provider=call_provider,
+                model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload({"turn": 2, "rows_count": len(redacted)}),
                 response_text=str(exc)[:500],
@@ -390,8 +430,8 @@ class AINLQueryCapability:
             actor_user_id=actor_user_id,
             policy_level=policy.level,
             profile=policy.profile,
-            provider=policy.provider,
-            model=policy.model,
+            provider=call_provider,
+            model=call_model,
             tokens_in=turn2.tokens_in,
             tokens_out=turn2.tokens_out,
             cost_estimate_usd=turn2.cost_estimate_usd,

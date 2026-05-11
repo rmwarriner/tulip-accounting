@@ -10,6 +10,13 @@ from tulip_ai.adapters import (
 )
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
 from tulip_ai.categorize import AICategorizer, build_categorize_prompt
+from tulip_ai.cost import (
+    DEFAULT_RATE_LIMIT_PER_HOUR,
+    CostDecision,
+    RateDecision,
+    check_cost_cap,
+    check_rate_limit,
+)
 from tulip_ai.errors import (
     AICapDisabled,
     AICostCapped,
@@ -48,6 +55,7 @@ from tulip_ai.sql_safety import (
 
 __all__ = [
     "AI_VIEWS",
+    "DEFAULT_RATE_LIMIT_PER_HOUR",
     "AICapDisabled",
     "AICategorizer",
     "AICostCapped",
@@ -62,6 +70,7 @@ __all__ = [
     "CategorizeExample",
     "CategorizePromptPayload",
     "ChartEntry",
+    "CostDecision",
     "ForecastPromptPayload",
     "ForecastResult",
     "LitellmAdapter",
@@ -70,6 +79,7 @@ __all__ = [
     "ProposedChange",
     "ProviderAdapter",
     "ProviderResponse",
+    "RateDecision",
     "RecordingAdapter",
     "RedactionProfile",
     "ResolvedPolicy",
@@ -79,6 +89,8 @@ __all__ = [
     "bucket_time_series",
     "build_categorize_prompt",
     "build_forecast_prompt",
+    "check_cost_cap",
+    "check_rate_limit",
     "hash_prompt_payload",
     "resolve_policy",
     "schema_card",

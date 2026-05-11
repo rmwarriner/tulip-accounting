@@ -94,3 +94,38 @@ class TestCostCap:
         h = {"monthly_cost_cap_usd": "not a number"}
         r = resolve_policy(h, None, "categorize")
         assert r.monthly_cost_cap_usd is None
+
+    def test_default_behaviour_is_degrade(self) -> None:
+        r = resolve_policy({}, None, "categorize")
+        assert r.cost_cap_behaviour == "degrade"
+
+    def test_explicit_hard_fail(self) -> None:
+        r = resolve_policy({"cost_cap_behaviour": "hard_fail"}, None, "categorize")
+        assert r.cost_cap_behaviour == "hard_fail"
+
+    def test_garbage_behaviour_falls_back_to_degrade(self) -> None:
+        r = resolve_policy({"cost_cap_behaviour": "nuke"}, None, "categorize")
+        assert r.cost_cap_behaviour == "degrade"
+
+
+class TestRateLimit:
+    def test_default_is_60(self) -> None:
+        r = resolve_policy({}, None, "categorize")
+        assert r.rate_limit_per_hour == 60
+
+    def test_explicit_override(self) -> None:
+        r = resolve_policy({"rate_limit_per_hour": 5}, None, "categorize")
+        assert r.rate_limit_per_hour == 5
+
+    def test_garbage_falls_back_to_60(self) -> None:
+        r = resolve_policy({"rate_limit_per_hour": "many"}, None, "categorize")
+        assert r.rate_limit_per_hour == 60
+
+    def test_zero_or_negative_falls_back_to_60(self) -> None:
+        assert (
+            resolve_policy({"rate_limit_per_hour": 0}, None, "categorize").rate_limit_per_hour == 60
+        )
+        assert (
+            resolve_policy({"rate_limit_per_hour": -5}, None, "categorize").rate_limit_per_hour
+            == 60
+        )

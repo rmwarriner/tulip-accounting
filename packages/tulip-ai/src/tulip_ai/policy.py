@@ -20,6 +20,7 @@ from tulip_ai.redaction import RedactionProfile
 
 PolicyLevel = Literal["permissive", "requires_approval", "disabled"]
 Capability = Literal["categorize", "nl_query", "forecast", "agentic"]
+CostCapBehaviour = Literal["degrade", "hard_fail"]
 
 _SEVERITY: dict[PolicyLevel, int] = {
     "permissive": 0,
@@ -39,6 +40,8 @@ class ResolvedPolicy:
     model: str | None
     profile: RedactionProfile
     monthly_cost_cap_usd: Decimal | None
+    cost_cap_behaviour: CostCapBehaviour
+    rate_limit_per_hour: int
     fallback_provider: str | None
     fallback_model: str | None
     log_prompts: bool
@@ -71,6 +74,24 @@ def _coerce_decimal(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (ArithmeticError, ValueError):
         return None
+
+
+def _coerce_cost_cap_behaviour(value: object, default: CostCapBehaviour) -> CostCapBehaviour:
+    if value == "degrade":
+        return "degrade"
+    if value == "hard_fail":
+        return "hard_fail"
+    return default
+
+
+def _coerce_positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return default
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
 
 
 def resolve_policy(
@@ -117,6 +138,8 @@ def resolve_policy(
         provider = household_policy.get("fallback_provider") or "ollama"
         model = household_policy.get("fallback_model") or model
 
+    from tulip_ai.cost import DEFAULT_RATE_LIMIT_PER_HOUR
+
     return ResolvedPolicy(
         capability=capability,
         level=resolved_level,
@@ -124,6 +147,12 @@ def resolve_policy(
         model=model if isinstance(model, str) else None,
         profile=profile,
         monthly_cost_cap_usd=_coerce_decimal(household_policy.get("monthly_cost_cap_usd")),
+        cost_cap_behaviour=_coerce_cost_cap_behaviour(
+            household_policy.get("cost_cap_behaviour"), "degrade"
+        ),
+        rate_limit_per_hour=_coerce_positive_int(
+            household_policy.get("rate_limit_per_hour"), DEFAULT_RATE_LIMIT_PER_HOUR
+        ),
         fallback_provider=(
             household_policy.get("fallback_provider")
             if isinstance(household_policy.get("fallback_provider"), str)
