@@ -31,8 +31,13 @@ from tulip_api.config import Settings, get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import problem_response
 from tulip_api.schemas.ai import (
+    CLEAR_SENTINEL,
     AIAskRequest,
     AIAskResponse,
+    AIConfigCapability,
+    AIConfigCapabilityPatch,
+    AIConfigPatch,
+    AIConfigRead,
     AIKeyCreate,
     AIKeysList,
     AIPreviewRequest,
@@ -156,7 +161,17 @@ def get_ai_status(
     session: Session = Depends(get_session),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> AIStatusRead:
-    """Resolved policy summary for the caller's household."""
+    """Resolved policy summary for the caller's household.
+
+    P6.5.b: includes ``cost_cap_behaviour``, ``rate_limit_per_hour``,
+    fallback fields, and (when a cap is configured) the month-to-date
+    AI spend so operators can see how close they are to ``degrade`` /
+    ``hard_fail``.
+    """
+    from decimal import Decimal
+
+    from tulip_ai.cost import check_cost_cap
+
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
     keys = _load_household_keys(household, settings.master_key)
@@ -169,15 +184,30 @@ def get_ai_status(
             "model": resolved.model,
             "profile": resolved.profile,
         }
+    cat_policy = resolve_policy(household.ai_policy, None, "categorize")
+
+    mtd: Decimal | None = None
+    if cat_policy.monthly_cost_cap_usd is not None:
+        decision = check_cost_cap(
+            session,
+            household_id=claims.household_id,
+            estimated_cost_usd=Decimal("0"),
+            monthly_cap_usd=cat_policy.monthly_cost_cap_usd,
+        )
+        mtd = decision.spent_so_far_usd
+
     return AIStatusRead(
         default_provider=household.ai_policy.get("default_provider"),
         default_model=household.ai_policy.get("default_model"),
-        monthly_cost_cap_usd=resolve_policy(
-            household.ai_policy, None, "categorize"
-        ).monthly_cost_cap_usd,
-        log_prompts=bool(household.ai_policy.get("log_prompts", False)),
+        monthly_cost_cap_usd=cat_policy.monthly_cost_cap_usd,
+        cost_cap_behaviour=cat_policy.cost_cap_behaviour,
+        rate_limit_per_hour=cat_policy.rate_limit_per_hour,
+        fallback_provider=cat_policy.fallback_provider,
+        fallback_model=cat_policy.fallback_model,
+        log_prompts=cat_policy.log_prompts,
         capabilities=capabilities,
         providers_with_keys=sorted(keys.keys()),
+        month_to_date_spend_usd=mtd,
     )
 
 
@@ -301,6 +331,271 @@ async def ask_nl_query(
         sql=answer.sql,
         error=answer.error,
     )
+
+
+# --- P6.5.b: config editor ------------------------------------------------
+
+
+def _cap_overrides(ai_policy: dict[str, object], capability: str) -> AIConfigCapability:
+    """Extract one capability's per-capability overrides from ``ai_policy``."""
+    capabilities = ai_policy.get("capabilities") or {}
+    if not isinstance(capabilities, dict):
+        capabilities = {}
+    settings = capabilities.get(capability) or {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    def _str_or_none(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    return AIConfigCapability(
+        policy=_str_or_none(settings.get("policy")),
+        provider=_str_or_none(settings.get("provider")),
+        model=_str_or_none(settings.get("model")),
+        profile=_str_or_none(settings.get("profile")),
+    )
+
+
+def _coerce_cap(value: object) -> object:
+    """Best-effort coerce ``monthly_cost_cap_usd`` from JSON for the read model."""
+    if value is None or value == "":
+        return None
+    try:
+        from decimal import Decimal
+
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
+
+
+@router.get(
+    "/config",
+    response_model=AIConfigRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+    },
+)
+def get_ai_config(
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> AIConfigRead:
+    """Return the raw household-level ``ai_policy`` shape + per-capability overrides.
+
+    Admin-only. For the fully-resolved per-capability view, see
+    ``GET /v1/ai/status``.
+    """
+    household = session.get(Household, claims.household_id)
+    assert household is not None  # noqa: S101
+    ai_policy = household.ai_policy or {}
+
+    def _get_str(key: str) -> str | None:
+        value = ai_policy.get(key)
+        return value if isinstance(value, str) else None
+
+    behaviour = ai_policy.get("cost_cap_behaviour")
+    behaviour_value: str = behaviour if behaviour in ("degrade", "hard_fail") else "degrade"
+
+    rate = ai_policy.get("rate_limit_per_hour")
+    rate_value: int = rate if isinstance(rate, int) and rate > 0 else 60
+
+    return AIConfigRead(
+        default_provider=_get_str("default_provider"),
+        default_model=_get_str("default_model"),
+        profile=_get_str("profile"),
+        monthly_cost_cap_usd=_coerce_cap(ai_policy.get("monthly_cost_cap_usd")),  # type: ignore[arg-type]
+        cost_cap_behaviour=behaviour_value,  # type: ignore[arg-type]
+        rate_limit_per_hour=rate_value,
+        fallback_provider=_get_str("fallback_provider"),
+        fallback_model=_get_str("fallback_model"),
+        log_prompts=bool(ai_policy.get("log_prompts", False)),
+        capabilities={
+            cap: _cap_overrides(ai_policy, cap)
+            for cap in ("categorize", "nl_query", "forecast", "agentic")
+        },
+    )
+
+
+def _apply_household_patch(ai_policy: dict[str, object], patch: AIConfigPatch) -> dict[str, object]:
+    """Mutate-and-return ``ai_policy`` with the patch applied.
+
+    Each non-None field on ``patch`` is applied; the sentinel
+    ``CLEAR_SENTINEL`` (or empty string for ``monthly_cost_cap_usd``)
+    removes the key.
+    """
+    if patch.default_provider is not None:
+        if patch.default_provider == CLEAR_SENTINEL:
+            ai_policy.pop("default_provider", None)
+        else:
+            ai_policy["default_provider"] = patch.default_provider
+    if patch.default_model is not None:
+        if patch.default_model == CLEAR_SENTINEL:
+            ai_policy.pop("default_model", None)
+        else:
+            ai_policy["default_model"] = patch.default_model
+    if patch.profile is not None:
+        ai_policy["profile"] = patch.profile
+    if patch.monthly_cost_cap_usd is not None:
+        if patch.monthly_cost_cap_usd in (CLEAR_SENTINEL, ""):
+            ai_policy.pop("monthly_cost_cap_usd", None)
+        else:
+            ai_policy["monthly_cost_cap_usd"] = patch.monthly_cost_cap_usd
+    if patch.cost_cap_behaviour is not None:
+        ai_policy["cost_cap_behaviour"] = patch.cost_cap_behaviour
+    if patch.rate_limit_per_hour is not None:
+        ai_policy["rate_limit_per_hour"] = patch.rate_limit_per_hour
+    if patch.fallback_provider is not None:
+        if patch.fallback_provider == CLEAR_SENTINEL:
+            ai_policy.pop("fallback_provider", None)
+        else:
+            ai_policy["fallback_provider"] = patch.fallback_provider
+    if patch.fallback_model is not None:
+        if patch.fallback_model == CLEAR_SENTINEL:
+            ai_policy.pop("fallback_model", None)
+        else:
+            ai_policy["fallback_model"] = patch.fallback_model
+    if patch.log_prompts is not None:
+        ai_policy["log_prompts"] = patch.log_prompts
+    return ai_policy
+
+
+@router.put(
+    "/config",
+    response_model=AIConfigRead,
+    responses={
+        400: problem_response("request.body_invalid"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
+    },
+)
+def put_ai_config(
+    body: AIConfigPatch,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> AIConfigRead:
+    """Patch the household-level ``ai_policy`` shape (admin-only).
+
+    Each field is optional. Pass the sentinel ``"__CLEAR__"`` (or empty
+    string for the decimal cap) to remove a key. Unknown keys are
+    rejected by Pydantic with a 422.
+    """
+    household = session.get(Household, claims.household_id)
+    assert household is not None  # noqa: S101
+    ai_policy: dict[str, object] = dict(household.ai_policy or {})
+    household.ai_policy = _apply_household_patch(ai_policy, body)
+    session.commit()
+    log.info("ai.config_set", household_id=str(claims.household_id))
+    return get_ai_config(claims=claims, session=session)
+
+
+@router.put(
+    "/config/capabilities/{capability}",
+    response_model=AIConfigRead,
+    responses={
+        400: problem_response("request.body_invalid"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
+    },
+)
+def put_ai_capability_config(
+    capability: str,
+    body: AIConfigCapabilityPatch,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> AIConfigRead:
+    """Patch one capability's override under ``ai_policy.capabilities[capability]``.
+
+    Capability name must be one of ``categorize / nl_query / forecast /
+    agentic``. Unknown capabilities return 422.
+    """
+    if capability not in ("categorize", "nl_query", "forecast", "agentic"):
+        # FastAPI surfaces this as a validation error via Pydantic in
+        # the schema layer normally; this is the path-param case.
+        from tulip_api.errors import ValidationFailedError
+
+        raise ValidationFailedError(
+            errors=[
+                {
+                    "type": "literal_error",
+                    "loc": ["path", "capability"],
+                    "msg": "must be one of categorize/nl_query/forecast/agentic",
+                    "input": capability,
+                }
+            ]
+        )
+
+    # Value-space validation — handler-side because the patch model
+    # accepts ``str`` to share the ``__CLEAR__`` sentinel slot.
+    _VALID_POLICY = {"permissive", "requires_approval", "disabled", CLEAR_SENTINEL}
+    _VALID_PROFILE = {"default", "strict", "local_only", CLEAR_SENTINEL}
+    if body.policy is not None and body.policy not in _VALID_POLICY:
+        from tulip_api.errors import ValidationFailedError
+
+        raise ValidationFailedError(
+            errors=[
+                {
+                    "type": "literal_error",
+                    "loc": ["body", "policy"],
+                    "msg": "must be one of permissive/requires_approval/disabled",
+                    "input": body.policy,
+                }
+            ]
+        )
+    if body.profile is not None and body.profile not in _VALID_PROFILE:
+        from tulip_api.errors import ValidationFailedError
+
+        raise ValidationFailedError(
+            errors=[
+                {
+                    "type": "literal_error",
+                    "loc": ["body", "profile"],
+                    "msg": "must be one of default/strict/local_only",
+                    "input": body.profile,
+                }
+            ]
+        )
+
+    household = session.get(Household, claims.household_id)
+    assert household is not None  # noqa: S101
+    ai_policy: dict[str, object] = dict(household.ai_policy or {})
+    raw_caps = ai_policy.get("capabilities") or {}
+    capabilities: dict[str, object] = dict(raw_caps) if isinstance(raw_caps, dict) else {}
+    raw_settings = capabilities.get(capability) or {}
+    cap_settings: dict[str, object] = dict(raw_settings) if isinstance(raw_settings, dict) else {}
+
+    fields = {
+        "policy": body.policy,
+        "provider": body.provider,
+        "model": body.model,
+        "profile": body.profile,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if value == CLEAR_SENTINEL:
+            cap_settings.pop(key, None)
+        else:
+            cap_settings[key] = value
+
+    if cap_settings:
+        capabilities[capability] = cap_settings
+    else:
+        capabilities.pop(capability, None)
+    if capabilities:
+        ai_policy["capabilities"] = capabilities
+    else:
+        ai_policy.pop("capabilities", None)
+
+    household.ai_policy = ai_policy
+    session.commit()
+    log.info(
+        "ai.capability_config_set",
+        household_id=str(claims.household_id),
+        capability=capability,
+    )
+    return get_ai_config(claims=claims, session=session)
 
 
 __all__ = ["router"]

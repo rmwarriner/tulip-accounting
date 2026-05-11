@@ -182,3 +182,159 @@ class TestAsk:
     def test_ask_requires_auth(self, client: TestClient) -> None:
         r = client.post("/v1/ai/ask", json={"question": "X"})
         assert r.status_code == 401
+
+
+# --- P6.5.b: /v1/ai/config -----------------------------------------------
+
+
+class TestConfigShow:
+    def test_fresh_household_returns_defaults(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        body = client.get("/v1/ai/config", headers=auth_h).json()
+        assert body["default_provider"] is None
+        assert body["default_model"] is None
+        assert body["cost_cap_behaviour"] == "degrade"
+        assert body["rate_limit_per_hour"] == 60
+        assert body["log_prompts"] is False
+        for cap in ("categorize", "nl_query", "forecast", "agentic"):
+            assert body["capabilities"][cap] == {
+                "policy": None,
+                "provider": None,
+                "model": None,
+                "profile": None,
+            }
+
+    def test_requires_admin(self, client: TestClient) -> None:
+        r = client.get("/v1/ai/config")
+        assert r.status_code == 401
+
+
+class TestConfigPut:
+    def test_sets_default_provider(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put("/v1/ai/config", headers=auth_h, json={"default_provider": "anthropic"})
+        assert r.status_code == 200, r.text
+        body = client.get("/v1/ai/config", headers=auth_h).json()
+        assert body["default_provider"] == "anthropic"
+
+    def test_clears_with_sentinel(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        client.put("/v1/ai/config", headers=auth_h, json={"default_provider": "anthropic"})
+        r = client.put("/v1/ai/config", headers=auth_h, json={"default_provider": "__CLEAR__"})
+        assert r.status_code == 200
+        body = client.get("/v1/ai/config", headers=auth_h).json()
+        assert body["default_provider"] is None
+
+    def test_cost_cap_round_trip(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put(
+            "/v1/ai/config",
+            headers=auth_h,
+            json={
+                "monthly_cost_cap_usd": "12.50",
+                "cost_cap_behaviour": "hard_fail",
+                "rate_limit_per_hour": 5,
+                "fallback_provider": "ollama",
+                "fallback_model": "llama3:70b",
+                "log_prompts": True,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["monthly_cost_cap_usd"] == "12.50"
+        assert body["cost_cap_behaviour"] == "hard_fail"
+        assert body["rate_limit_per_hour"] == 5
+        assert body["fallback_provider"] == "ollama"
+        assert body["fallback_model"] == "llama3:70b"
+        assert body["log_prompts"] is True
+
+    def test_empty_string_clears_cap(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        client.put("/v1/ai/config", headers=auth_h, json={"monthly_cost_cap_usd": "5.00"})
+        client.put("/v1/ai/config", headers=auth_h, json={"monthly_cost_cap_usd": ""})
+        body = client.get("/v1/ai/config", headers=auth_h).json()
+        assert body["monthly_cost_cap_usd"] is None
+
+    def test_unknown_key_rejected(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put("/v1/ai/config", headers=auth_h, json={"flarbnox": "yes"})
+        assert r.status_code == 422
+
+    def test_invalid_behaviour_rejected(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put("/v1/ai/config", headers=auth_h, json={"cost_cap_behaviour": "explode"})
+        assert r.status_code == 422
+
+    def test_requires_admin(self, client: TestClient) -> None:
+        r = client.put("/v1/ai/config", json={"default_provider": "anthropic"})
+        assert r.status_code == 401
+
+
+class TestConfigCapability:
+    def test_set_then_clear_override(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put(
+            "/v1/ai/config/capabilities/categorize",
+            headers=auth_h,
+            json={"policy": "disabled", "provider": "openai"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["capabilities"]["categorize"]["policy"] == "disabled"
+        assert body["capabilities"]["categorize"]["provider"] == "openai"
+
+        r2 = client.put(
+            "/v1/ai/config/capabilities/categorize",
+            headers=auth_h,
+            json={"policy": "__CLEAR__", "provider": "__CLEAR__"},
+        )
+        body2 = r2.json()
+        assert body2["capabilities"]["categorize"] == {
+            "policy": None,
+            "provider": None,
+            "model": None,
+            "profile": None,
+        }
+
+    def test_unknown_capability_rejected(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put(
+            "/v1/ai/config/capabilities/teleport",
+            headers=auth_h,
+            json={"policy": "disabled"},
+        )
+        # Path-param validator surfaces a Problem Details.
+        assert r.status_code == 422
+
+    def test_unknown_field_rejected(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.put(
+            "/v1/ai/config/capabilities/categorize",
+            headers=auth_h,
+            json={"random_field": "yes"},
+        )
+        assert r.status_code == 422
+
+
+class TestStatusP65bExtensions:
+    """P6.5.b polish: status includes the new fields + fallback callout."""
+
+    def test_status_includes_p65b_fields_with_defaults(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        body = client.get("/v1/ai/status", headers=auth_h).json()
+        assert body["cost_cap_behaviour"] == "degrade"
+        assert body["rate_limit_per_hour"] == 60
+        assert body["fallback_provider"] is None
+        assert body["month_to_date_spend_usd"] is None
+
+    def test_status_reflects_cap_round_trip(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        client.put(
+            "/v1/ai/config",
+            headers=auth_h,
+            json={
+                "monthly_cost_cap_usd": "20.00",
+                "cost_cap_behaviour": "hard_fail",
+                "fallback_provider": "ollama",
+            },
+        )
+        body = client.get("/v1/ai/status", headers=auth_h).json()
+        assert body["monthly_cost_cap_usd"] == "20.00"
+        assert body["cost_cap_behaviour"] == "hard_fail"
+        assert body["fallback_provider"] == "ollama"
+        # MTD is 0 because no calls were made.
+        assert body["month_to_date_spend_usd"] == "0"

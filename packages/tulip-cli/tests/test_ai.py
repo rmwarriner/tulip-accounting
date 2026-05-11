@@ -165,6 +165,62 @@ def test_ai_preview_renders_payload(authed: str) -> None:
 
 
 @pytest.mark.integration
+def test_ai_config_round_trip(authed: str) -> None:
+    """``tulip ai config show/set/clear/log-prompts`` round-trips the household ai_policy."""
+    # set
+    set_result = _run_cli("ai", "config", "set", "default_provider", "anthropic", api_url=authed)
+    assert set_result.returncode == 0, set_result.stderr
+
+    # show reflects the new value
+    show = _run_cli("--json", "ai", "config", "show", api_url=authed)
+    body = json.loads(show.stdout)
+    assert body["default_provider"] == "anthropic"
+    assert body["cost_cap_behaviour"] == "degrade"
+    assert body["rate_limit_per_hour"] == 60
+
+    # set the cost cap + behaviour + rate limit at once via repeated set
+    _run_cli("ai", "config", "set", "monthly_cost_cap_usd", "10.50", api_url=authed)
+    _run_cli("ai", "config", "set", "cost_cap_behaviour", "hard_fail", api_url=authed)
+    _run_cli("ai", "config", "set", "rate_limit_per_hour", "5", api_url=authed)
+    body = json.loads(_run_cli("--json", "ai", "config", "show", api_url=authed).stdout)
+    assert body["monthly_cost_cap_usd"] == "10.50"
+    assert body["cost_cap_behaviour"] == "hard_fail"
+    assert body["rate_limit_per_hour"] == 5
+
+    # clear via empty value
+    _run_cli("ai", "config", "set", "monthly_cost_cap_usd", "", api_url=authed)
+    body = json.loads(_run_cli("--json", "ai", "config", "show", api_url=authed).stdout)
+    assert body["monthly_cost_cap_usd"] is None
+
+    # log-prompts on emits a warning to stderr
+    log_on = _run_cli("ai", "config", "log-prompts", "on", api_url=authed)
+    assert log_on.returncode == 0
+    assert "warning" in log_on.stderr.lower()
+    body = json.loads(_run_cli("--json", "ai", "config", "show", api_url=authed).stdout)
+    assert body["log_prompts"] is True
+
+
+@pytest.mark.integration
+def test_ai_status_includes_fallback_callout(authed: str) -> None:
+    """``tulip ai status`` emits the cost-cap-only fallback warning when a fallback is set."""
+    _run_cli("ai", "config", "set", "fallback_provider", "ollama", api_url=authed)
+    _run_cli("ai", "config", "set", "fallback_model", "llama3:70b", api_url=authed)
+    out = _run_cli("ai", "status", api_url=authed)
+    assert out.returncode == 0
+    assert "ollama" in out.stdout
+    assert "cost-cap degrade only" in out.stdout.lower()
+    assert "5xx" in out.stdout
+
+
+@pytest.mark.integration
+def test_ai_config_unknown_key_rejected(authed: str) -> None:
+    """The CLI's whitelist blocks unknown keys before they hit the API."""
+    out = _run_cli("ai", "config", "set", "frobnicate", "yes", api_url=authed)
+    assert out.returncode == 1
+    assert "unknown key" in out.stderr.lower()
+
+
+@pytest.mark.integration
 def test_ai_suggest_budget_without_key_reports_error(authed: str) -> None:
     """``tulip ai suggest-budget`` surfaces the structured error when no key is configured."""
     # Need a pool + envelope to point the command at.
