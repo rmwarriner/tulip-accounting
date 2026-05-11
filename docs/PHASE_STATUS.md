@@ -22,7 +22,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0–P6.5.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry, the shared `enforce_pre_call` gate, and the new `GET|PUT /v1/ai/config` admin surface. Next: P6.5.c (sinking-fund forecast extension) — final Phase 6 slice.
+- **Phase 6 (AI integration):** ✅ shipped — P6.0–P6.5.c complete (ADR + categorize + NL query + daily-insights/anomaly + envelope AI forecast + sinking-fund AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability` (envelopes + sinking funds), `AIProposalCapability`, the proposal executor registry, the shared `enforce_pre_call` gate, and the `GET|PUT /v1/ai/config` admin surface. The daily-insights handler now forecasts both envelopes and sinking funds via a single `ForecastRequest` dataclass; production wiring of the forecaster into the runner is the only remaining no-op slot, intentionally deferred to a deploy-time toggle. Phase 6 closes.
 
 **Tests:** 1362 passing · **CI:** green on `main`
 
@@ -561,6 +561,56 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.5.c — Sinking-fund forecast extension — ✅ *(2026-05-11)*
+
+Final Phase 6 slice. Closes ADR-0005's slice plan and the Phase 6
+umbrella. P6.3.b shipped `AIForecastCapability` with `target_amount` /
+`target_date` parameters but the `daily_insights` handler only looped
+envelopes; sinking funds — which actually *want* a target-relative
+"on-track / off-track / ahead" framing — were unwired.
+
+**Storage**:
+- New `ShadowTransactionRepository.daily_contribution_series_for_pool(...)`,
+  mirror of `daily_spend_series_for_pool` filtering on `amount > 0`
+  (inflows). Voided shadow transactions excluded by status filter;
+  returns sparse map keyed by date.
+
+**Handler refactor** (`tulip_storage.runner.handlers.daily_insights`):
+- New `ForecastRequest` dataclass carries the full forecast context:
+  `pool_kind ∈ {"envelope", "sinking_fund"}`, `series`,
+  optional `target_amount` / `target_date` / `current_balance`,
+  plus the existing pool fields. `ForecasterCallback` is now
+  `Callable[[ForecastRequest], Awaitable[str | None]]` — single arg.
+- Envelope path: builds `daily_spend_series_for_pool`, calls forecaster
+  with `pool_kind="envelope"` and target fields `None`. Same output
+  notification shape as before (`kind=forecast`, `entity_type=envelope`).
+- **Sinking-fund path** (new): loops `allocation_pools` joined to
+  `sinking_funds` where `pool_type=sinking_fund`. Builds
+  `daily_contribution_series_for_pool` over 60 days, fetches
+  `balance_for_pool` for the current balance, calls forecaster with
+  `pool_kind="sinking_fund"` and `target_amount` / `target_date` /
+  `current_balance` populated from the row. Writes
+  `kind=forecast` notifications with `entity_type=sinking_fund`.
+- The `AIForecastCapability` itself doesn't change — its prompt
+  already branches on `target_amount/target_date` presence.
+
+**Tests** — +8:
+- 5 repo unit tests for `daily_contribution_series_for_pool`: positive
+  postings only, sparse return, voided txs excluded, currency filter,
+  date range filter.
+- 3 handler integration tests: sinking-fund forecaster receives full
+  target context, forecaster returning None writes no row,
+  no-forecaster baseline means sinking funds produce zero notifications.
+- All 4 prior P6.3 / P6.3.b handler tests updated to the new
+  callback signature and still pass.
+
+**Out of scope** (deploy-time concern, not a code slice):
+- Wiring `AIForecastCapability` into the runner's handler registration
+  as the production `forecaster` callback. The slot is in place; what
+  remains is one line of glue at deployment to construct the
+  capability + adapter + session factory and pass it to
+  `make_daily_insights_handler(..., forecaster=...)`.
 
 ### P6.5.b — `tulip ai config` editor + `log_prompts` toggle + status polish — ✅ *(2026-05-11)*
 
