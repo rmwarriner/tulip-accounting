@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    LargeBinary,
     String,
     UniqueConstraint,
     func,
@@ -47,6 +48,9 @@ class User(Base):
         SAEnum(UserRole, native_enum=False, length=20), nullable=False
     )
     totp_secret_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
+    # Encrypted ``{provider: api_key}``; overrides the household's keys
+    # for this user. See ADR-0005 §Q2.
+    ai_keys_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     totp_enrolled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

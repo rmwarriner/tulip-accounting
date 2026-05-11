@@ -1,8 +1,18 @@
 [project]
 name = "tulip-ai"
 version = "0.0.0"
-description = "AI provider adapters and capabilities for Tulip Accounting."
+description = "AI capability adapters + redactor + audit writer for Tulip Accounting (Phase 6, ADR-0005)."
 requires-python = ">=3.12"
+dependencies = [
+    "tulip-core",
+    "tulip-storage",
+    "litellm>=1.50",
+    "pydantic>=2.7",
+]
+
+[tool.uv.sources]
+tulip-core = { workspace = true }
+tulip-storage = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

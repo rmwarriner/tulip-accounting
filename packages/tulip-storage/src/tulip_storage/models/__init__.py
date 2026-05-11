@@ -12,6 +12,7 @@ architecture test in tulip-core enforces this.
 """
 
 from tulip_storage.models.account import Account, AccountType
+from tulip_storage.models.ai_invocation import AICapability, AIInvocation, AIOutcome
 from tulip_storage.models.allocation_pool import AllocationPool, PoolType
 from tulip_storage.models.attachment import Attachment
 from tulip_storage.models.attachment_link import AttachmentLink
@@ -51,6 +52,9 @@ from tulip_storage.models.transaction import Transaction, TransactionStatus
 from tulip_storage.models.user import User, UserRole
 
 __all__ = [
+    "AICapability",
+    "AIInvocation",
+    "AIOutcome",
     "Account",
     "AccountType",
     "AllocationPool",

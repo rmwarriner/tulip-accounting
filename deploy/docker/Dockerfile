@@ -38,12 +38,14 @@ WORKDIR /opt/tulip
 COPY pyproject.toml uv.lock ./
 COPY packages/ ./packages/
 
-# Install runtime deps for the API + CLI. The CLI is bundled so
+# Install runtime deps for the API + CLI + AI. The CLI is bundled so
 # in-container ops (``docker compose exec api tulip backup --out -``,
 # documented in QUICKSTART #138) can run against the in-volume SQLite
-# DB without the host needing a uv-installed environment. --no-dev keeps
-# test + tooling deps out of the runtime image.
-RUN uv sync --frozen --no-dev --package tulip-api --package tulip-cli
+# DB without the host needing a uv-installed environment. tulip-ai
+# ships from P6.1 onward; the API imports it at module-load time so
+# it must be in the runtime venv even if no household has configured
+# AI yet. --no-dev keeps test + tooling deps out of the runtime image.
+RUN uv sync --frozen --no-dev --package tulip-api --package tulip-cli --package tulip-ai
 
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime. Copies the venv + source; nothing else.

@@ -15,6 +15,7 @@ import typer
 
 from tulip_cli import __version__
 from tulip_cli.commands.accounts import accounts_app
+from tulip_cli.commands.ai import ai_app
 from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.backup_restore import (
     backup_command,
@@ -114,6 +115,7 @@ app.command("add")(add_command)
 app.command("refill")(refill_command)
 app.command("transfer")(transfer_command)
 app.command("budget-inflow")(budget_inflow_command)
+app.add_typer(ai_app, name="ai")
 app.add_typer(auth_app, name="auth")
 app.add_typer(accounts_app, name="accounts")
 app.add_typer(transactions_app, name="transactions")

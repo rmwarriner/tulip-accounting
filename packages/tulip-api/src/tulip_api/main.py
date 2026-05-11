@@ -27,6 +27,7 @@ from tulip_api.logging_config import configure_logging
 from tulip_api.middleware import RequestIdMiddleware
 from tulip_api.routers import (
     accounts,
+    ai,
     auth,
     csv_profiles,
     envelopes,
@@ -42,15 +43,41 @@ from tulip_api.routers import (
     transactions,
     well_known_errors,
 )
-from tulip_core.reconciliation.categorizer import NullCategorizer, register_categorizer
+from tulip_core.reconciliation.categorizer import register_categorizer
 from tulip_storage.runner import Runner
 
-# Register the default Categorizer at module-import time so production
-# wiring is grep-able (Phase 6 will swap NullCategorizer for the real
-# AICategorizer at this exact line). Tests that need a different
-# categorizer call register_categorizer(...) themselves; the registry
-# warns on replacement, which is the right signal in production.
-register_categorizer(NullCategorizer())
+# Phase 6 / P6.1: AICategorizer replaces NullCategorizer at this seam.
+# The categorizer itself decides per-call whether to issue a real AI call
+# (presence of an API key + non-disabled policy) or fall back to
+# "Imbalance:Unknown" — so registering it unconditionally is safe even
+# for households that haven't configured AI yet. The session factory is
+# bound at lifespan startup once the configured DB URL is in scope; see
+# ``lifespan()`` below.
+_ai_categorizer_registered = False
+
+
+def _register_ai_categorizer(session_maker: sessionmaker[Session]) -> None:
+    """Wire ``AICategorizer`` into the global ``Categorizer`` registry.
+
+    Idempotent — only the first call has effect. Subsequent calls would
+    emit the registry's "double registration" warning, which is the right
+    signal in production but noisy in tests that spin up multiple apps.
+    """
+    global _ai_categorizer_registered
+    if _ai_categorizer_registered:
+        return
+    from tulip_ai import AICategorizer, LitellmAdapter
+
+    settings = get_settings()
+    register_categorizer(
+        AICategorizer(
+            session_maker=session_maker,
+            master_key=settings.master_key,
+            adapter=LitellmAdapter(),
+        )
+    )
+    _ai_categorizer_registered = True
+
 
 API_VERSION = "v1"
 API_TITLE = "Tulip Accounting API"
@@ -91,6 +118,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             session_maker = _build_session_maker(settings.database_url)
             runner = Runner(session_maker)
             app.state.runner = runner
+            _register_ai_categorizer(session_maker)
             await runner.start()
         else:
             app.state.runner = None
@@ -119,6 +147,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     # major-version cuts.
     app.include_router(health.router)
     app.include_router(system.router)
+    app.include_router(ai.router)
     app.include_router(well_known_errors.router)
     app.include_router(auth.router)
     app.include_router(accounts.router)
