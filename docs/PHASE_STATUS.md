@@ -22,9 +22,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0 ([ADR-0005](adrs/0005-ai-integration.md)) + P6.1 (`tulip-ai` + `AICategorizer` + BYOK) + P6.2 (NL-query two-turn flow with sqlglot SQL gate) + P6.3 (daily-insights scheduler + anomaly detector + notifications inbox; AI forecast deferred to P6.3.b) shipped. Next: P6.3.b (AI forecast) or P6.4 (agentic proposals).
+- **Phase 6 (AI integration):** in flight — P6.0–P6.3 + P6.3.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`. Next: P6.4 (agentic proposals) or P6.5 (polish + cost-cap enforcement + app-factory wiring of the daily_insights forecaster).
 
-**Tests:** 1325 passing · **CI:** green on `main`
+**Tests:** 1340 passing · **CI:** green on `main`
 
 ---
 
@@ -561,6 +561,28 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.3.b — AI forecast capability + handler integration — ✅ *(2026-05-11)*
+
+Completes the daily-insights pipeline started in P6.3. The anomaly half stays as-is; this slice adds the AI forecast half per ADR-0005 §Q3.
+
+**New `tulip_ai.forecast`**:
+
+- `bucket_time_series(series, profile)` rounds each amount to the nearest 5% (default) / 25% (strict) of the series' maximum absolute value. `local_only` passes through. Per ADR §Q3 — trend matters, exact amounts don't.
+- `ForecastPromptPayload` + `build_forecast_prompt` are the byte-faithful prompt assembler. Strict elides the envelope name (ID-only) per ADR §Q3.
+- `AIForecastCapability` — single-turn flow taking `{envelope_name?, time_series, target_amount?, target_date?, recent_inflow_average?}` and returning a `ForecastResult(text, error)`. Same broad-exception guard pattern as `AICategorizer`; one `ai_invocations` row per call.
+
+**Handler wiring**: `make_daily_insights_handler(session_maker, *, forecaster=None)` now accepts an optional `ForecasterCallback` (async callable returning text or `None`). When provided and returning text, the handler writes a `kind=forecast` notification per envelope alongside the existing anomaly rows. `None` preserves the P6.3 anomaly-only behaviour.
+
+**Tests** — +13 new:
+- 5 bucketing (default 5%, strict 25%, local_only pass-through, empty, all-zeros).
+- 3 prompt build (strict-elides-name, default-includes-name, target fields threaded).
+- 3 capability integration (happy path, no-API-key, disabled-policy).
+- 2 handler integration (forecaster called writes forecast row, forecaster returning None writes nothing).
+
+**Deferred**:
+- The app-factory wiring that constructs the production `AIForecastCapability` and threads the callback into the handler — lands when the runner's scheduled-job seeding adds `daily_insights` alongside the existing `envelope_refill` auto-seed.
+- Sinking-fund-on-track variant — same capability shape, different prompt context.
 
 ### P6.3 — Daily-insights scheduler + anomaly detector + notifications inbox — ✅ *(2026-05-11)*
 

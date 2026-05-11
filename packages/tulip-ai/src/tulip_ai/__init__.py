@@ -17,6 +17,13 @@ from tulip_ai.errors import (
     AIProviderError,
     AIRateLimited,
 )
+from tulip_ai.forecast import (
+    AIForecastCapability,
+    ForecastPromptPayload,
+    ForecastResult,
+    bucket_time_series,
+    build_forecast_prompt,
+)
 from tulip_ai.nl_query import AINLQueryCapability, NLAnswer
 from tulip_ai.policy import ResolvedPolicy, resolve_policy
 from tulip_ai.redaction import (
@@ -40,6 +47,7 @@ __all__ = [
     "AICategorizer",
     "AICostCapped",
     "AIError",
+    "AIForecastCapability",
     "AIInvocationRecord",
     "AIInvocationWriter",
     "AINLQueryCapability",
@@ -48,6 +56,8 @@ __all__ = [
     "CategorizeExample",
     "CategorizePromptPayload",
     "ChartEntry",
+    "ForecastPromptPayload",
+    "ForecastResult",
     "LitellmAdapter",
     "NLAnswer",
     "PromptRedactor",
@@ -58,7 +68,9 @@ __all__ = [
     "ResolvedPolicy",
     "SafeSQL",
     "UnsafeSQLError",
+    "bucket_time_series",
     "build_categorize_prompt",
+    "build_forecast_prompt",
     "hash_prompt_payload",
     "resolve_policy",
     "schema_card",

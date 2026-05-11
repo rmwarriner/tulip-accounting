@@ -157,6 +157,74 @@ def test_no_anomalies_no_notifications(
         assert rows == []
 
 
+def test_forecaster_callback_produces_forecast_notification(
+    session_maker: sessionmaker[Session],
+) -> None:
+    """When a forecaster is wired in, the handler writes kind=forecast rows."""
+    household, pool = _setup_household(session_maker)
+    today = date(2026, 4, 1)
+    for i in range(35):
+        _spend(
+            session_maker,
+            household_id=household.id,
+            pool_id=pool.id,
+            when=today - timedelta(days=34 - i),
+            amount=Decimal("10.00"),
+        )
+
+    forecast_calls: list[tuple] = []
+
+    async def fake_forecaster(household_id, envelope_id, envelope_name, currency, series) -> str:
+        forecast_calls.append((household_id, envelope_id, envelope_name, currency, len(series)))
+        return f"{envelope_name} is on track."
+
+    handler = make_daily_insights_handler(session_maker, forecaster=fake_forecaster)
+    asyncio.run(
+        handler(_make_job(household.id), _fixed_clock(datetime(2026, 4, 1, 12, 0, tzinfo=UTC)))
+    )
+    assert len(forecast_calls) == 1
+    assert forecast_calls[0][2] == pool.name
+    with session_maker() as s:
+        from sqlalchemy import select
+
+        rows = (
+            s.execute(select(Notification).where(Notification.kind == "forecast")).scalars().all()
+        )
+        assert len(rows) == 1
+        assert "on track" in rows[0].body
+
+
+def test_forecaster_returning_none_writes_no_forecast(
+    session_maker: sessionmaker[Session],
+) -> None:
+    """Forecaster returning None (e.g. AI unconfigured) silently skips the row."""
+    household, pool = _setup_household(session_maker)
+    today = date(2026, 4, 1)
+    for i in range(35):
+        _spend(
+            session_maker,
+            household_id=household.id,
+            pool_id=pool.id,
+            when=today - timedelta(days=34 - i),
+            amount=Decimal("10.00"),
+        )
+
+    async def silent_forecaster(*_args: object) -> None:
+        return None
+
+    handler = make_daily_insights_handler(session_maker, forecaster=silent_forecaster)
+    asyncio.run(
+        handler(_make_job(household.id), _fixed_clock(datetime(2026, 4, 1, 12, 0, tzinfo=UTC)))
+    )
+    with session_maker() as s:
+        from sqlalchemy import select
+
+        rows = (
+            s.execute(select(Notification).where(Notification.kind == "forecast")).scalars().all()
+        )
+        assert rows == []
+
+
 def test_spike_produces_anomaly_notification(
     session_maker: sessionmaker[Session],
 ) -> None:
