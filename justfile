@@ -95,6 +95,62 @@ mutate:
 mutate-results:
     uv run mutmut results
 
+# Replay the docs/QUICKSTART.md flow end-to-end against a fresh stack
+# (#138). Intent is to surface drift between the doc and the code:
+# if any of the commands in the walkthrough stop returning a 0 exit
+# code, this recipe fails. NOT a CI gate today (docker-in-docker on
+# the runners is its own can of worms); run locally before merging
+# anything that touches the import, reconcile, periods, or backup
+# CLI surfaces.
+#
+# Assumes:
+#   - Docker + Compose v2 on the host.
+#   - Existing deploy/docker/secrets/{master-key,jwt-secret}. If you
+#     don't have them, the recipe will bail with the same generation
+#     command the QUICKSTART documents.
+#   - Port 8000 free.
+#
+# The recipe writes to a sibling tmp dir so it doesn't clobber the
+# real ./tulip.db a developer might be using. Sets TULIP_TOKEN_STORE
+# to a temp file so it never touches the OS keyring.
+quickstart-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -s deploy/docker/secrets/master-key ] || [ ! -s deploy/docker/secrets/jwt-secret ]; then
+        echo "quickstart-smoke: deploy/docker/secrets/{master-key,jwt-secret} not found." >&2
+        echo "Generate them as docs/QUICKSTART.md §2 documents, then re-run." >&2
+        exit 2
+    fi
+    SCRATCH="$(mktemp -d)"
+    trap 'docker compose -f deploy/docker/compose.yml down -v >/dev/null 2>&1 || true; rm -rf "$SCRATCH"' EXIT
+    export TULIP_API_URL=http://127.0.0.1:8000
+    export TULIP_TOKEN_STORE="$SCRATCH/tokens.json"
+    PASSWORD="quickstart-smoke-password-not-a-real-one"
+    docker compose -f deploy/docker/compose.yml up --build --wait
+    uv run tulip doctor || echo "doctor reported warnings/failures (expected before login)"
+    uv run tulip register --email me@example.com --display-name Me \
+        --household "QS House" --password-stdin <<< "$PASSWORD"
+    uv run tulip auth login --email me@example.com --password-stdin <<< "$PASSWORD"
+    uv run tulip accounts add --code 1010 --name Checking  --type asset   --currency USD
+    uv run tulip accounts add --code 5100 --name Groceries --type expense --currency USD
+    uv run tulip accounts add --code 5200 --name Rent      --type expense --currency USD
+    uv run tulip accounts add --code 5300 --name Fuel      --type expense --currency USD
+    uv run tulip accounts add --code 5400 --name Dining    --type expense --currency USD
+    uv run tulip accounts add --code 4000 --name Salary    --type income  --currency USD
+    BATCH_ID=$(uv run tulip --json imports ofx docs/quickstart-fixtures/sample-statement.ofx --account 1010 | jq -r .id)
+    uv run tulip imports apply "$BATCH_ID"
+    RECON_ID=$(uv run tulip --json reconcile create --account 1010 --batch "$BATCH_ID" \
+        --period 2026-05-01..2026-05-31 --starting 0.00 --ending 3611.88 | jq -r .id)
+    uv run tulip reconcile auto-match "$RECON_ID"
+    uv run tulip reconcile complete "$RECON_ID"
+    PERIOD_ID=$(uv run tulip --json periods list | jq -r '.[0].id')
+    uv run tulip periods close "$PERIOD_ID"
+    docker compose -f deploy/docker/compose.yml exec -T api \
+        tulip backup --out - > "$SCRATCH/backup.tar.gz"
+    test -s "$SCRATCH/backup.tar.gz"
+    uv run tulip backup-inspect "$SCRATCH/backup.tar.gz"
+    echo "quickstart-smoke: all steps passed."
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------

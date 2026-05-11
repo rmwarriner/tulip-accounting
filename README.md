@@ -2,6 +2,8 @@
 
 Household-focused, double-entry accounting system with first-class envelope budgeting and sinking-fund support.
 
+> **First time here?** Start with [docs/QUICKSTART.md](docs/QUICKSTART.md) — a 20-minute, copy-paste path from empty machine to imported + reconciled + backed-up statement.
+
 > **Status:** Pre-alpha — Phases 0–5 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation). Phase 6 (AI integration) is the next phase; pre-internal-beta hardening (#121) is in scope before then. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture, or [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ---
@@ -19,6 +21,8 @@ Tulip is a self-hosted accounting system designed for households, not businesses
 - **Plain-text portability** via hledger-format import/export
 
 v1 ships an API server (Python + FastAPI) and a scriptable CLI client (Typer). Web and mobile clients are planned for a later release; they will consume the same OpenAPI contract.
+
+For a runnable end-to-end walkthrough (install → register → import → reconcile → close → backup), see [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Architecture at a glance
 
