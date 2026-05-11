@@ -11,6 +11,7 @@ fire. Future handlers (reconciliation reminders, AI cost reports) will
 register the same way.
 """
 
+from tulip_storage.runner.handlers.daily_insights import make_daily_insights_handler
 from tulip_storage.runner.handlers.envelope_refill import make_envelope_refill_handler
 
-__all__ = ["make_envelope_refill_handler"]
+__all__ = ["make_daily_insights_handler", "make_envelope_refill_handler"]

@@ -22,9 +22,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0 design ([ADR-0005](adrs/0005-ai-integration.md), closes #102) + P6.1 (`tulip-ai` package + storage migration + `AICategorizer` plugged into the P5.3 DI seam + BYOK CLI/API) + P6.2 (NL-query two-turn flow with model-emitted SQL behind a sqlglot validator) shipped. Next: P6.3 (forecast + anomaly detection).
+- **Phase 6 (AI integration):** in flight — P6.0 ([ADR-0005](adrs/0005-ai-integration.md)) + P6.1 (`tulip-ai` + `AICategorizer` + BYOK) + P6.2 (NL-query two-turn flow with sqlglot SQL gate) + P6.3 (daily-insights scheduler + anomaly detector + notifications inbox; AI forecast deferred to P6.3.b) shipped. Next: P6.3.b (AI forecast) or P6.4 (agentic proposals).
 
-**Tests:** 1305 passing · **CI:** green on `main`
+**Tests:** 1325 passing · **CI:** green on `main`
 
 ---
 
@@ -561,6 +561,40 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.3 — Daily-insights scheduler + anomaly detector + notifications inbox — ✅ *(2026-05-11)*
+
+Third Phase 6 slice. Establishes the notifications inbox and ships the anomaly half of the daily-insights pipeline. AI forecasting (the other half ADR-0005 §Q3 describes) is deferred to a P6.3 follow-up — the handler has a documented seam where the AI capability plugs in.
+
+**New `tulip_core.insights` (pure-domain)**:
+
+- `find_anomalies(series, window_size=30, threshold_sigma=2)` returns positive-tail anomalies (overspending only — under-spending isn't notification-worthy in v1). Severity is bucketed: `info` (>=2 sigma), `warning` (>=3 sigma), `critical` (>=4 sigma).
+- 7 unit + property tests (flat-series-never-flags hypothesis property, spike-detection, severity ladder, negative-tail suppression, validation).
+
+**Storage**:
+
+- New `notifications` table with composite PK + indexes for inbox listing.
+- `NotificationKind` / `NotificationSeverity` enums.
+- `NotificationRepository` for `create / list_active / list_all / get / dismiss` (dismiss is idempotent).
+
+**Scheduler handler `daily_insights`**:
+
+- Registered via the same `register_handler` seam ADR-0002 ships.
+- For each active envelope in the household, builds a 60-day daily-spend series from POSTED shadow postings (outflows only, abs-valued, zero-filled), feeds it to `find_anomalies`, and writes one `notifications` row per detected anomaly with `produced_by="daily_insights"` and `entity_type="envelope"`.
+- The AI forecast extension point is documented inline; same loop will call the AI capability and write a `kind=forecast` notification when P6.3.b lands.
+
+**HTTP**: `GET /v1/notifications[?include_dismissed=true]` and `POST /v1/notifications/{id}/dismiss`. Dismiss returns 404 (`notification.not_found`) on unknown ids; idempotent on already-dismissed.
+
+**CLI**: `tulip notifications list [--include-dismissed]` (Rich table, severity colour-coded) and `tulip notifications dismiss UUID`.
+
+**Tests** — +16 new:
+- 7 anomaly detector unit + property tests.
+- 2 daily-insights handler integration tests (flat-series-no-notifications, spike-produces-anomaly-with-severity).
+- 7 API endpoint tests (empty inbox, list active only by default, include-dismissed, dismiss, dismiss 404, dismiss idempotency, auth gate).
+
+**Deferred to P6.3.b** (separate slice):
+- `AIForecastCapability` per ADR-0005 §Q3 with 5%/25% amount bucketing and the forecast prompt payload.
+- Envelope-runout / sinking-fund-on-track notifications (driven by the AI capability).
 
 ### P6.2 — NL query: two-turn flow with model-emitted SQL — ✅ *(2026-05-11)*
 

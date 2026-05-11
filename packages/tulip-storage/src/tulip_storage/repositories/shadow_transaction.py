@@ -214,6 +214,43 @@ class ShadowTransactionRepository:
             result.setdefault(pid, {})[ccy] = Decimal(str(bal))
         return result
 
+    def daily_spend_series_for_pool(
+        self,
+        pool_id: UUID,
+        *,
+        currency: str,
+        from_date: date_type,
+        to_date: date_type,
+    ) -> dict[date_type, Decimal]:
+        """Daily outflow totals on ``pool_id`` between ``from_date`` and ``to_date`` inclusive.
+
+        Used by the ``daily_insights`` scheduler handler (P6.3) to feed the
+        anomaly detector. Only negative postings (outflows / spending) count;
+        amounts are returned positive-valued. Voided shadow transactions are
+        excluded by the status filter.
+
+        Returns a sparse mapping — dates with no spend aren't keyed. The
+        handler zero-fills to a uniform grid for the rolling-window math.
+        """
+        rows = self._session.execute(
+            select(
+                ShadowTransaction.date,
+                func.sum(ShadowPosting.amount).label("net"),
+            )
+            .join(ShadowTransaction, ShadowTransaction.id == ShadowPosting.shadow_transaction_id)
+            .where(
+                ShadowPosting.household_id == self._household_id,
+                ShadowPosting.pool_id == pool_id,
+                ShadowPosting.currency == currency,
+                ShadowTransaction.status.in_(_BALANCE_STATUSES),
+                ShadowTransaction.date >= from_date,
+                ShadowTransaction.date <= to_date,
+                ShadowPosting.amount < 0,
+            )
+            .group_by(ShadowTransaction.date)
+        ).all()
+        return {row_date: abs(Decimal(str(net))) for row_date, net in rows}
+
     def void(self, shadow_tx_id: UUID, *, voided_at: datetime) -> ShadowTransaction:
         """Flip a POSTED shadow transaction's status to VOIDED.
 
