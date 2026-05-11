@@ -31,6 +31,8 @@ from tulip_api.config import Settings, get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import problem_response
 from tulip_api.schemas.ai import (
+    AIAskRequest,
+    AIAskResponse,
     AIKeyCreate,
     AIKeysList,
     AIPreviewRequest,
@@ -45,6 +47,7 @@ from tulip_storage.models import Account, AccountType, Household
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from tulip_ai import AINLQueryCapability
     from tulip_api.auth.tokens import Claims
 
 
@@ -235,6 +238,62 @@ def preview_categorize_prompt(
         provider=policy.provider,
         model=policy.model,
         payload=body_dict,
+    )
+
+
+@router.post(
+    "/ask",
+    response_model=AIAskResponse,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+    },
+)
+async def ask_nl_query(
+    body: AIAskRequest,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    capability: AINLQueryCapability | None = Depends(lambda: None),  # noqa: B008
+) -> AIAskResponse:
+    """Run a natural-language query through the two-turn AI flow (P6.2).
+
+    The ``capability`` dependency is ``None`` by default — production
+    derives it from the request's session + a ``LitellmAdapter`` below.
+    Tests override the dependency with a capability bound to a
+    ``RecordingAdapter`` so no real provider call fires.
+    """
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    from tulip_ai import AINLQueryCapability as _AINLQueryCapability
+    from tulip_ai import LitellmAdapter
+
+    # Resolve the API key (per-household; user override deferred to a follow-up).
+    household = session.get(Household, claims.household_id)
+    assert household is not None  # noqa: S101
+    api_key: str | None = None
+    if household.ai_keys_encrypted:
+        keys = _load_household_keys(household, settings.master_key)
+        provider = household.ai_policy.get("default_provider")
+        if isinstance(provider, str):
+            api_key = keys.get(provider)
+
+    if capability is None:
+        bind = session.get_bind()
+        cap_session_maker = _sessionmaker(bind, expire_on_commit=False)
+        capability = _AINLQueryCapability(session_maker=cap_session_maker, adapter=LitellmAdapter())
+
+    answer = await capability.ask(
+        body.question,
+        household_id=claims.household_id,
+        actor_user_id=claims.user_id,
+        api_key=api_key,
+    )
+    return AIAskResponse(
+        summary=answer.summary,
+        rows=[dict(r) for r in answer.rows],
+        sql=answer.sql,
+        error=answer.error,
     )
 
 
