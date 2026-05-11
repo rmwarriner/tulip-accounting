@@ -50,3 +50,22 @@ class ProposalDecisionBody(BaseModel):
     """Optional body for approve / reject — just a free-text note."""
 
     note: str | None = None
+
+
+class SuggestBudgetRequest(BaseModel):
+    """Body for ``POST /v1/ai/proposals/suggest/budget`` (P6.4.b)."""
+
+    envelope_id: UUID
+
+
+class SuggestBudgetResponse(BaseModel):
+    """Result of an AI budget suggestion run.
+
+    On success ``proposal`` carries the newly created ``PendingProposal``
+    row; ``error`` is populated only when the capability could not
+    produce a suggestion (no key, disabled policy, malformed model
+    response). The ai_invocations audit row exists either way.
+    """
+
+    proposal: ProposalRead | None
+    error: str | None = None

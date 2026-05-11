@@ -292,6 +292,54 @@ def list_proposals(
         typer.echo(f"  {r['id'][:8]}  {r['kind']:32s}  {r['status']:10s}  {r['title']}")
 
 
+@ai_app.command("suggest-budget")
+def suggest_budget(
+    ctx: typer.Context,
+    envelope_id: Annotated[
+        str,
+        typer.Option(
+            "--envelope",
+            help="Envelope UUID. Use `tulip envelopes list` to find it.",
+        ),
+    ],
+) -> None:
+    """Ask AI to propose a new budget for ``envelope`` based on recent spend (P6.4.b).
+
+    On success the suggestion lands in your proposal inbox as
+    ``kind=envelope_budget_update`` with ``created_by_kind=ai_agent``.
+    Approve via ``tulip ai approve UUID`` or reject via
+    ``tulip ai reject UUID``.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                "/v1/ai/proposals/suggest/budget",
+                json={"envelope_id": envelope_id},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    if body.get("error"):
+        typer.echo(f"ai suggest-budget: {body['error']}", err=True)
+        raise typer.Exit(1)
+    proposal = body["proposal"]
+    typer.echo(f"Created proposal {proposal['id']}: {proposal['title']}")
+    if proposal.get("rationale"):
+        typer.echo(f"  rationale: {proposal['rationale']}")
+    typer.echo(
+        f"  Review with `tulip ai approve {proposal['id']}` or `tulip ai reject {proposal['id']}`."
+    )
+
+
 @ai_app.command("approve")
 def approve_proposal(
     ctx: typer.Context,

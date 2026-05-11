@@ -26,6 +26,11 @@ from tulip_ai.forecast import (
 )
 from tulip_ai.nl_query import AINLQueryCapability, NLAnswer
 from tulip_ai.policy import ResolvedPolicy, resolve_policy
+from tulip_ai.proposals import (
+    AIProposalCapability,
+    ProposedChange,
+    SuggestionResult,
+)
 from tulip_ai.redaction import (
     CategorizeExample,
     CategorizePromptPayload,
@@ -51,6 +56,7 @@ __all__ = [
     "AIInvocationRecord",
     "AIInvocationWriter",
     "AINLQueryCapability",
+    "AIProposalCapability",
     "AIProviderError",
     "AIRateLimited",
     "CategorizeExample",
@@ -61,12 +67,14 @@ __all__ = [
     "LitellmAdapter",
     "NLAnswer",
     "PromptRedactor",
+    "ProposedChange",
     "ProviderAdapter",
     "ProviderResponse",
     "RecordingAdapter",
     "RedactionProfile",
     "ResolvedPolicy",
     "SafeSQL",
+    "SuggestionResult",
     "UnsafeSQLError",
     "bucket_time_series",
     "build_categorize_prompt",

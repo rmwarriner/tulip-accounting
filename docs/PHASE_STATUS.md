@@ -22,7 +22,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0–P6.4 shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals infrastructure with `envelope_budget_update` executor + `actor_kind=ai_agent` audit pattern). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, plus the proposal executor registry. Next: P6.4.b (AI-driven proposal generation) or P6.5 (polish + cost-cap enforcement + sinking-fund forecast + `tulip ai config`).
+- **Phase 6 (AI integration):** in flight — P6.0–P6.4.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals infrastructure + `AIProposalCapability` for AI-driven `envelope_budget_update` suggestions). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry. Next: P6.5 (polish + cost-cap enforcement + sinking-fund forecast + `tulip ai config`).
 
 **Tests:** 1362 passing · **CI:** green on `main`
 
@@ -561,6 +561,64 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.4.b — AI-driven proposal generation (`AIProposalCapability` + `suggest-budget`) — ✅ *(2026-05-11)*
+
+The "AI as proposal generator" half of P6.4: an asynchronous capability that
+takes an envelope + its recent spend series, calls the LLM via the existing
+`LitellmAdapter`, parses the structured suggestion, audits the call, and
+returns a `ProposedChange` ready for the queue. The HTTP/CLI surface persists
+it as a `created_by_kind=ai_agent` proposal linked to the
+capability's audit row via `ai_invocation_id` — so when the user approves it
+through the standard inbox flow, the locked
+[ARCHITECTURE.md §6.2](ARCHITECTURE.md) +
+[THREAT_MODEL.md §5.3](THREAT_MODEL.md) chain
+(`actor_kind=ai_agent` audit row, `metadata.proposal_id`,
+`metadata.proposal_kind`, originating `ai_invocations.id`) all line up.
+
+**Capability** (`tulip_ai.proposals.AIProposalCapability`):
+- One method: `suggest_envelope_budget(*, household_id, actor_user_id, api_key,
+  envelope_id, envelope_name, currency, current_budget, recent_spend_series)`.
+- Prompt asks for a JSON object with `new_budget_amount` (decimal string) +
+  `rationale` (string). Tolerates code-fenced JSON; rejects garbage with a
+  structured `error` and a `provider_error` audit row.
+- Audit row always written (success, parse-fail, provider error, policy
+  disabled, no key) — `capability="agentic"`, prompt SHA-256, no prompt
+  text per ADR-0005 §Q5.
+- Returns `SuggestionResult(proposal: ProposedChange | None, error: str | None)`.
+  `ProposedChange` mirrors the `POST /v1/ai/proposals` body shape so the
+  router can hand it straight to `PendingProposalRepository.create`.
+
+**HTTP**:
+- New `POST /v1/ai/proposals/suggest/budget` (admin / member). Body:
+  `{"envelope_id": "<uuid>"}`. Pulls the envelope's last 60 days of spend
+  via a new `ShadowTransactionRepository.daily_spend_series_for_pool()`
+  writer-side query, decrypts the household's provider key, calls the
+  capability, and on success creates a `created_by_kind=ai_agent` proposal
+  with the `ai_invocation_id` link. On any capability failure (no key,
+  policy disabled, unparseable response), returns
+  `{"proposal": null, "error": "<reason>"}` with 200 — the audit row still
+  landed, the user just learns why no proposal was queued.
+
+**CLI**: `tulip ai suggest-budget --envelope <UUID>`. On success prints the
+new proposal id, rationale, and a hint to approve/reject via the existing
+`tulip ai approve` / `tulip ai reject` commands. On structured error, writes
+to stderr and exits 1.
+
+**Tests** — +5 capability unit tests + 3 endpoint integration tests + 1 CLI
+integration test:
+- Capability: happy path returns `ProposedChange` with parsed payload,
+  no-key path returns error + `provider_error` audit, unparseable response
+  records error + `provider_error` audit, disabled-policy path returns
+  error + `policy_disabled` audit, code-fenced JSON tolerated.
+- Endpoint: unauthenticated returns 401, unknown envelope returns 404,
+  no-key returns 200 with structured error.
+- CLI: no-key path exits 1 with the structured error on stderr.
+
+Architecture-test allowlist: `daily_insights.py` already imports
+`ScheduledJob` + `ShadowPosting`; the new `daily_spend_series_for_pool`
+lives on `ShadowTransactionRepository` so the suggest-budget endpoint
+itself stays within the existing repository boundary.
 
 ### P6.4 — Agentic proposals + `actor_kind=ai_agent` audit signal — ✅ *(2026-05-11)*
 
