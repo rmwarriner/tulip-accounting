@@ -119,13 +119,13 @@ What is **out of scope** of the Phase 5 threat model and explicitly deferred:
 
 ### 5.3 — Phase 6 (AI integration)
 
-This is the privacy inflection point and gets its own audit slot **before implementation begins**. Constraints to write into Phase 6's entry criteria:
+This is the privacy inflection point and gets its own audit slot **before implementation begins**. The five constraints listed below are the entry criteria for Phase 6 work; the *authoritative* implementation contract is **[ADR-0005](adrs/0005-ai-integration.md)**, which closes [#102](https://github.com/rmwarriner/tulip-accounting/issues/102) and resolves these constraints into concrete designs.
 
-- **Prompt bodies are not logged by default.** Only metadata (model, latency, cost, tenant, user, success/fail). Tenant-level opt-in via `households.ai_policy` (see ARCHITECTURE.md §6.5).
-- **Redaction runs before the litellm call**, not after. PII-redaction policy is auditable as a separate function.
-- **No silent provider fallback.** If the configured provider fails, the AI call fails — no implicit failover to another provider that might have a different data policy.
-- **`actor_kind=ai_agent` audit rows** for every state-changing AI proposal that's approved, with a link to the originating proposal. ARCHITECTURE.md §6.4 specifies this; this constraint is the reminder.
-- **Cost / rate caps are enforced server-side**, not in the prompt or in the model. Phase 6 doesn't trust the model to self-limit.
+- **Prompt bodies are not logged by default.** Only metadata (model, latency, cost, tenant, user, success/fail). Tenant-level opt-in via `households.ai_policy` (see ARCHITECTURE.md §6.5). [ADR-0005 §Q6](adrs/0005-ai-integration.md) commits this to the `ai_invocations.prompt_json NULL` default + a `prompt_hash` column for "was the same prompt sent twice" without storing prompts.
+- **Redaction runs before the litellm call**, not after. PII-redaction policy is auditable as a separate function. [ADR-0005 §Q3, §Q4](adrs/0005-ai-integration.md) make the per-capability data-flow tables the authoritative contract, with a byte-faithful preview test that catches drift between the contract and the code.
+- **No silent provider fallback.** If the configured provider fails, the AI call fails — no implicit failover to another provider that might have a different data policy. [ADR-0005 §Q8](adrs/0005-ai-integration.md). The one explicit exception is the cost-cap `degrade` path, which is audited as `provider=ollama` and triggered only by a budget signal the household admin set.
+- **`actor_kind=ai_agent` audit rows** for every state-changing AI proposal that's approved, with a link to the originating proposal. ARCHITECTURE.md §6.4 specifies this; this constraint is the reminder. [ADR-0005 §Q6](adrs/0005-ai-integration.md) defines the `proposal_id` FK from `ai_invocations` to `pending_proposals` (P6.4).
+- **Cost / rate caps are enforced server-side**, not in the prompt or in the model. Phase 6 doesn't trust the model to self-limit. [ADR-0005 §Q7](adrs/0005-ai-integration.md): cost cap is a *pre-call* reservation; rate limit is per-user sliding window.
 
 ## 6. Out of scope (explicitly)
 

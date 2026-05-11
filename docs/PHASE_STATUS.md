@@ -20,7 +20,11 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Phase 5 cleanup (post-merge):** three follow-ups closed — #127 (reconciliation inbox surfacing prior-completed-recon lines, fix in PR #129), #114 (relax `import_batch` idempotency index + wire `?force=true`, PR #130), #118 (CLI `--household` vs API `household_name` asymmetry — closed wontfix; rationale in `feedback_pr_body_no_backtick_escapes.md` and the issue thread).
 
-**Tests:** 1132 passing · **CI:** green on `main`
+- **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
+
+- **Phase 6 (AI integration):** in flight — P6.0 design / privacy audit shipped as [ADR-0005](adrs/0005-ai-integration.md) (closes #102). Implementation begins with P6.1 (`tulip-ai` package + `AICategorizer`).
+
+**Tests:** 1233 passing · **CI:** green on `main`
 
 ---
 
@@ -551,6 +555,35 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 - **New server-side endpoint** `GET /v1/reconciliations` with optional `account_id` + `status` query params. Tenant-scoped via the existing `claims.household_id` dependency. Unknown-account-id returns an empty list (silent scoping; 404 reserved for malformed paths). Invalid status values get FastAPI's 422.
 - **Tests**: 8 CLI integration tests (subprocess against a live API per the existing `live_api` + `authed_session` fixture pattern; exercises every command + the negative paths for unbalanced complete and missing `--cascade`) + 8 router tests for the new GET endpoint (filters, tenant scoping, 422 on bad status, empty-on-unknown-account). Project total: **1129 passing** (up from 1113).
 - **Phase 5 closes** with this slice. Importers + reconciliation are fully wired end-to-end: upload → apply → match → complete, with carry-forward and manual override available, all via API + CLI.
+
+---
+
+## Phase 6 — AI integration — in flight (design)
+
+Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.0 — Privacy audit + data-flow contract (ADR-0005) — ✅ *(2026-05-11)*
+
+Closed #102. [ADR-0005](adrs/0005-ai-integration.md) is the authoritative design for Phase 6, resolving nine open questions:
+
+1. **Module structure** — new `tulip-ai` package with one-direction dependency on `tulip-core` + `tulip-storage`; never depends on `tulip-api`.
+2. **Provider adapter + BYOK** — single `LitellmAdapter` in v1; per-household + per-user API keys field-encrypted via the master-key flow from #132; no fallback to a different household's key.
+3. **Per-capability data-flow contract** — explicit tables for what each of the four capabilities (categorize / NL query / forecast / agentic) sends in the prompt body, under `default` vs `strict` redaction profiles.
+4. **Redaction profiles + preview** — `PromptRedactor` pure function; `tulip ai preview` CLI surface that's **byte-faithful** to the live call (test-enforced).
+5. **Policy resolution** — household policy is the floor; users ratchet up (more cautious) but never down. Severity ordering `disabled > requires_approval > permissive`.
+6. **Audit-log shape** — new `ai_invocations` table with writer chokepoint; `prompt_json NULL` by default (operators opt in); `prompt_hash` always populated.
+7. **Cost cap + rate limit** — cost cap is *pre-call* reservation; rate limit is per-user sliding window; cap-reached behaviour is `degrade` (to local provider) or `hard_fail`.
+8. **Failure modes** — locked "no silent provider fallback" extends to "no silent retry"; the one explicit exception is the cost-cap `degrade` path which audits `provider=ollama`.
+9. **Slice ordering** — P6.1 (skeleton + `AICategorizer`) → P6.2 (NL query) → P6.3 (forecast) → P6.4 (agentic) → P6.5 (polish).
+
+Side effects of P6.0:
+
+- [ARCHITECTURE.md §6](ARCHITECTURE.md) now points at the ADR as authoritative.
+- [ARCHITECTURE.md §10 audit cadence](ARCHITECTURE.md) marks the privacy audit as ✅ shipped.
+- [THREAT_MODEL.md §5.3](THREAT_MODEL.md) constraints are unchanged in spirit but now cross-reference the ADR for the concrete designs that resolve each one.
+- The Phase 6 bullet list in ARCHITECTURE.md §10 is replaced with the P6.0–P6.5 slice plan.
+
+No code changes; design-only slice. Implementation begins with P6.1.
 
 ---
 
