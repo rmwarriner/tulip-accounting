@@ -244,6 +244,7 @@ def declare_budget_inflow(
     "/balances",
     response_model=list[PoolBalanceRead],
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         422: problem_response("validation.failed"),
     },

@@ -82,8 +82,10 @@ def _store_household_keys(household: Household, keys: dict[str, str], master_key
     "/keys/{provider}",
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
     },
 )
 def set_ai_key(
@@ -183,8 +185,10 @@ def get_ai_status(
     "/preview",
     response_model=AIPreviewResponse,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
     },
 )
 def preview_categorize_prompt(
@@ -245,8 +249,10 @@ def preview_categorize_prompt(
     "/ask",
     response_model=AIAskResponse,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
     },
 )
 async def ask_nl_query(
