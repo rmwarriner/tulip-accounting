@@ -17,6 +17,7 @@ from tulip_ai.errors import (
     AIProviderError,
     AIRateLimited,
 )
+from tulip_ai.nl_query import AINLQueryCapability, NLAnswer
 from tulip_ai.policy import ResolvedPolicy, resolve_policy
 from tulip_ai.redaction import (
     CategorizeExample,
@@ -25,27 +26,41 @@ from tulip_ai.redaction import (
     PromptRedactor,
     RedactionProfile,
 )
+from tulip_ai.sql_safety import (
+    AI_VIEWS,
+    SafeSQL,
+    UnsafeSQLError,
+    schema_card,
+    validate_and_rewrite,
+)
 
 __all__ = [
+    "AI_VIEWS",
     "AICapDisabled",
     "AICategorizer",
     "AICostCapped",
     "AIError",
     "AIInvocationRecord",
     "AIInvocationWriter",
+    "AINLQueryCapability",
     "AIProviderError",
     "AIRateLimited",
     "CategorizeExample",
     "CategorizePromptPayload",
     "ChartEntry",
     "LitellmAdapter",
+    "NLAnswer",
     "PromptRedactor",
     "ProviderAdapter",
     "ProviderResponse",
     "RecordingAdapter",
     "RedactionProfile",
     "ResolvedPolicy",
+    "SafeSQL",
+    "UnsafeSQLError",
     "build_categorize_prompt",
     "hash_prompt_payload",
     "resolve_policy",
+    "schema_card",
+    "validate_and_rewrite",
 ]

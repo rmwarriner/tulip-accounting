@@ -51,3 +51,28 @@ class AIPreviewResponse(BaseModel):
     provider: str | None
     model: str | None
     payload: dict[str, object]
+
+
+class AIAskRequest(BaseModel):
+    """Body for ``POST /v1/ai/ask`` — one user question over the AI views (P6.2)."""
+
+    question: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Natural-language question; relayed to the model verbatim.",
+    )
+
+
+class AIAskResponse(BaseModel):
+    """Result of the two-turn NL-query flow.
+
+    ``rows`` are the unredacted query results so the user can verify the
+    summary; the AI sees redacted rows on turn 2 (per ADR-0005 §Q3).
+    ``error`` is populated when any step (provider, validation, execution)
+    fails; ``summary`` is non-empty only on success.
+    """
+
+    summary: str
+    rows: list[dict[str, object]]
+    sql: str | None
+    error: str | None = None

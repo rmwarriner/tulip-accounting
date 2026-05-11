@@ -22,9 +22,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0 design ([ADR-0005](adrs/0005-ai-integration.md), closes #102) + P6.1 (`tulip-ai` package + storage migration + `AICategorizer` plugged into the P5.3 DI seam + BYOK CLI/API) shipped. Next: P6.2 (NL query).
+- **Phase 6 (AI integration):** in flight — P6.0 design ([ADR-0005](adrs/0005-ai-integration.md), closes #102) + P6.1 (`tulip-ai` package + storage migration + `AICategorizer` plugged into the P5.3 DI seam + BYOK CLI/API) + P6.2 (NL-query two-turn flow with model-emitted SQL behind a sqlglot validator) shipped. Next: P6.3 (forecast + anomaly detection).
 
-**Tests:** 1275 passing · **CI:** green on `main`
+**Tests:** 1305 passing · **CI:** green on `main`
 
 ---
 
@@ -561,6 +561,36 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.2 — NL query: two-turn flow with model-emitted SQL — ✅ *(2026-05-11)*
+
+Second Phase 6 capability per [ADR-0005 §Q3](adrs/0005-ai-integration.md). Lets a user ask `tulip ai ask "how much did I spend on groceries last month?"` and get a natural-language answer grounded in a real SQL query against their own ledger.
+
+**New `tulip_ai.sql_safety`** — the security boundary for model-emitted SQL:
+
+- `validate_and_rewrite(emitted_sql, household_id)` parses via `sqlglot` (new dep), rejects anything that isn't a single SELECT, requires every table reference to hit the AI-view allowlist (only `ai_view_transactions` in v1), and rewrites each `ai_view_X` reference to a tenant-scoped subquery against the canonical tables. Auto-`LIMIT 100` if the model didn't cap rows. Returns a `SafeSQL(sql, parameters)` ready for `session.execute(text(sql), parameters)`.
+- 21 unit tests cover the negative cases (`UPDATE`/`DELETE`/`INSERT`/`DROP`/`ALTER`/`PRAGMA`/`VACUUM`/`ATTACH`/multi-statement scripts/parse errors/raw-table references) and the rewrite contract (alias preserved, tenant predicate present, LIMIT honored vs auto-added, WHERE clauses untouched).
+
+**New `tulip_ai.nl_query`** — `AINLQueryCapability` orchestrates the two-turn flow:
+
+1. **Turn 1** — `{question, schema_card}` → model returns SQL.
+2. **Validate + rewrite** via `sql_safety`. Unsafe SQL stamps the audit row `provider_error / unsafe_sql:<reason>` and returns a structured error.
+3. **Execute** the rewritten SQL against a fresh session bound to the same DB.
+4. **Redact** result rows — descriptions get the same vendor-token redaction as the categorize path; amounts and dates pass through (summary needs real numbers).
+5. **Turn 2** — `{question, redacted_rows}` → model summarises.
+6. **Audit** — one `ai_invocations` row per turn (chained by `request_id`), always with `prompt_hash`; `prompt_json` opt-in via `households.ai_policy.log_prompts`.
+
+**HTTP**: `POST /v1/ai/ask` (admin / member) takes `{question}` and returns `{summary, rows, sql, error}`. Failures everywhere fall through to a structured `error` field rather than a 5xx — the user is the caller and needs to know if their question couldn't be answered.
+
+**CLI**: `tulip ai ask "..."` prints the summary plus the row count + raw rows on success, or the error on stderr with exit 1.
+
+**Tests** — +24 new:
+
+- 21 `sql_safety` unit tests.
+- 3 `AINLQueryCapability` integration tests covering the happy path (real DB execution + audit rows for both turns), unsafe-SQL rejection (audit row stamped with `unsafe_sql:` note), and the description redaction on turn 2 (raw rows returned to user; redacted rows sent to model).
+- API endpoint tests already covered the auth path; `TestAsk` exercises the no-key and disabled-policy structured-error responses.
+
+**Deferred**: sample rows in turn 1 (the field is wired; pulling 5 rows from each view is a follow-up because it requires a per-view sampler and the redactor pass on the way out). Additional AI views (`ai_view_envelopes`, `ai_view_accounts`) lands when the categorize/forecast/agentic capabilities need them.
 
 ### P6.1 — tulip-ai skeleton + AICategorizer + BYOK CLI/API — ✅ *(2026-05-11)*
 

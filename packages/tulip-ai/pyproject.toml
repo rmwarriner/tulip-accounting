@@ -8,6 +8,11 @@ dependencies = [
     "tulip-storage",
     "litellm>=1.50",
     "pydantic>=2.7",
+    # sqlglot parses + validates the model-emitted SQL on the NL-query
+    # capability (P6.2). We reject anything that isn't a single SELECT
+    # touching only ``ai_view_*`` table names, then rewrite each
+    # ``ai_view_*`` reference to a tenant-scoped subquery before execution.
+    "sqlglot>=27",
 ]
 
 [tool.uv.sources]

@@ -126,3 +126,59 @@ class TestPreview:
             },
         )
         assert r.status_code == 401
+
+
+class TestAsk:
+    def test_ask_with_no_api_key_returns_error_summary(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """Fresh household, no key → structured ``error`` field, not a 5xx."""
+        r = client.post(
+            "/v1/ai/ask",
+            headers=auth_h,
+            json={"question": "How much did I spend on groceries?"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["summary"] == ""
+        assert body["rows"] == []
+        assert "no ai key" in (body["error"] or "").lower()
+
+    def test_ask_with_disabled_policy_returns_error(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """Policy ``disabled`` on nl_query → no provider call, structured error."""
+        # Seed an API key + a disabled-nl_query policy.
+        client.post("/v1/ai/keys/anthropic", headers=auth_h, json={"api_key": "sk-test"})
+        # Edit ai_policy via raw DB — there's no endpoint for it yet.
+        from tulip_api.config import get_settings
+        from tulip_api.deps import get_session
+
+        overrides = client.app.dependency_overrides
+        session_factory = overrides[get_session]
+        with next(session_factory()) as session:
+            from tulip_storage.models import Household
+
+            settings = overrides[get_settings]()
+            from sqlalchemy import select
+
+            household = session.execute(select(Household)).scalar_one()
+            household.ai_policy = {
+                "default_provider": "anthropic",
+                "default_model": "claude-opus-4-7",
+                "capabilities": {"nl_query": {"policy": "disabled"}},
+            }
+            session.commit()
+            _ = settings  # silence unused-warning
+
+        r = client.post(
+            "/v1/ai/ask",
+            headers=auth_h,
+            json={"question": "Anything?"},
+        )
+        body = r.json()
+        assert "disabled" in (body["error"] or "").lower()
+
+    def test_ask_requires_auth(self, client: TestClient) -> None:
+        r = client.post("/v1/ai/ask", json={"question": "X"})
+        assert r.status_code == 401

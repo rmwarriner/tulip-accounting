@@ -164,6 +164,43 @@ def status(ctx: typer.Context) -> None:
         )
 
 
+@ai_app.command("ask")
+def ask(
+    ctx: typer.Context,
+    question: Annotated[str, typer.Argument(help="Natural-language question to ask the AI.")],
+) -> None:
+    """Run an NL query against the AI views (P6.2)."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(
+                "/v1/ai/ask",
+                json={"question": question},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    if body.get("error"):
+        typer.echo(f"ai ask: {body['error']}", err=True)
+        raise typer.Exit(1)
+    if body.get("summary"):
+        typer.echo(body["summary"])
+    else:
+        typer.echo("(no answer)")
+    if body.get("rows"):
+        typer.echo("")
+        typer.echo(f"Rows ({len(body['rows'])}):")
+        typer.echo(json.dumps(body["rows"], indent=2, ensure_ascii=False))
+
+
 @ai_app.command("preview")
 def preview(
     ctx: typer.Context,
