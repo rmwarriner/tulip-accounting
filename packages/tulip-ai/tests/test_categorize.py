@@ -233,3 +233,168 @@ def test_build_categorize_prompt_is_pure() -> None:
     a = build_categorize_prompt(line, chart)
     b = build_categorize_prompt(line, chart)
     assert a.to_dict() == b.to_dict()
+
+
+# --- P6.5.a: pre-call cost-cap + rate-limit chokepoint --------------------
+
+
+def _set_policy_extra(
+    session_maker: sessionmaker[Session],
+    household_id,
+    *,
+    extras: dict,
+) -> None:
+    """Merge fields into ``ai_policy`` (e.g. cost cap, behaviour, rate limit)."""
+    with session_maker() as s:
+        h = s.get(Household, household_id)
+        assert h is not None
+        h.ai_policy = {**dict(h.ai_policy or {}), **extras}
+        s.commit()
+
+
+def _seed_billable_spend(
+    session_maker: sessionmaker[Session], household_id, *, amount: str
+) -> None:
+    """Pre-load one ``success`` audit row that consumes ``amount`` of the cap."""
+    from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
+
+    with session_maker() as s:
+        AIInvocationWriter(s).write(
+            AIInvocationRecord(
+                household_id=household_id,
+                capability="categorize",
+                policy_resolved="permissive",
+                profile="default",
+                outcome="success",
+                prompt_hash=hash_prompt_payload({"seed": True}),
+                provider="anthropic",
+                model="claude-opus-4-7",
+                cost_estimate_usd=Decimal(amount),
+            )
+        )
+        s.commit()
+
+
+@pytest.mark.asyncio
+async def test_categorize_cost_cap_degrades_to_fallback_provider(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """Cap exceeded + ``degrade`` → call swaps to fallback_provider; audit says provider=ollama."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    _set_policy_extra(
+        session_maker,
+        household.id,
+        extras={
+            "monthly_cost_cap_usd": "5.00",
+            "cost_cap_behaviour": "degrade",
+            "fallback_provider": "ollama",
+            "fallback_model": "llama3:70b",
+        },
+    )
+    _seed_billable_spend(session_maker, household.id, amount="10.00")
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.8}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    result = await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert result.account_code == "5100"
+    # Adapter saw the fallback provider, not the configured one.
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["provider"] == "ollama"
+    assert adapter.calls[0]["model"] == "llama3:70b"
+    # And the cloud key wasn't passed when we degraded.
+    assert adapter.calls[0]["api_key_was_passed"] is False
+
+    with session_maker() as s:
+        rows = (
+            s.execute(select(AIInvocation).where(AIInvocation.outcome == "success")).scalars().all()
+        )
+        # 1 seeded + 1 freshly written.
+        assert len(rows) == 2
+        new_row = next(r for r in rows if r.cost_estimate_usd == Decimal("0"))
+        assert new_row.provider == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_categorize_cost_cap_hard_fail_blocks_with_audit(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """Cap exceeded + ``hard_fail`` → no provider call; audit outcome=cost_capped."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    _set_policy_extra(
+        session_maker,
+        household.id,
+        extras={
+            "monthly_cost_cap_usd": "5.00",
+            "cost_cap_behaviour": "hard_fail",
+        },
+    )
+    _seed_billable_spend(session_maker, household.id, amount="10.00")
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    result = await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert result.account_code == "Imbalance:Unknown"
+    assert adapter.calls == []
+    with session_maker() as s:
+        rows = (
+            s.execute(select(AIInvocation).where(AIInvocation.outcome == "cost_capped"))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert "cap" in (rows[0].response_text or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_categorize_rate_limited_blocks_with_audit(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """Rate limit exceeded (system-bucket, importer-driven) → no call, audit rate_limited."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    _set_policy_extra(session_maker, household.id, extras={"rate_limit_per_hour": 3})
+    # Three prior calls in the system bucket (actor_user_id=NULL — importer flow).
+    from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
+
+    with session_maker() as s:
+        for _ in range(3):
+            AIInvocationWriter(s).write(
+                AIInvocationRecord(
+                    household_id=household.id,
+                    capability="categorize",
+                    policy_resolved="permissive",
+                    profile="default",
+                    outcome="success",
+                    prompt_hash=hash_prompt_payload({"x": 1}),
+                    provider="anthropic",
+                    model="claude-opus-4-7",
+                )
+            )
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    result = await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert result.account_code == "Imbalance:Unknown"
+    assert adapter.calls == []
+    with session_maker() as s:
+        rows = (
+            s.execute(select(AIInvocation).where(AIInvocation.outcome == "rate_limited"))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1

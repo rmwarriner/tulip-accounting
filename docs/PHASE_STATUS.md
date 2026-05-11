@@ -22,7 +22,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0–P6.4.b shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals infrastructure + `AIProposalCapability` for AI-driven `envelope_budget_update` suggestions). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry. Next: P6.5 (polish + cost-cap enforcement + sinking-fund forecast + `tulip ai config`).
+- **Phase 6 (AI integration):** in flight — P6.0–P6.5.a shipped (ADR + categorize + NL query + daily-insights/anomaly + AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint with `degrade`/`hard_fail` behaviour). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability`, `AIProposalCapability`, plus the proposal executor registry and the shared `enforce_pre_call` gate. Next: P6.5.b (`tulip ai config` + `log_prompts` + `status` polish) and P6.5.c (sinking-fund forecast extension).
 
 **Tests:** 1362 passing · **CI:** green on `main`
 
@@ -561,6 +561,69 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.5.a — Pre-call cost-cap + rate-limit chokepoint — ✅ *(2026-05-11)*
+
+First wind-down slice of Phase 6. Closes the gap from ADR-0005 §Q7:
+every capability now consults a shared pre-call gate before issuing the
+provider call. The gate enforces the household's monthly cost cap and
+each user's sliding-window rate limit, and applies the locked
+`cost_cap_behaviour` policy when the cap trips. No migration —
+behaviour rides on existing `households.ai_policy` JSON.
+
+**`tulip_ai.cost`** (new module):
+- `check_cost_cap(...)` sums the current month's `ai_invocations.cost_estimate_usd`
+  for the household (only `success` + `provider_error` rows count —
+  capped/disabled rows never reached the wire). Returns
+  `CostDecision(kind=allow|cap_exceeded, spent_so_far_usd, cap_usd)`.
+- `check_rate_limit(...)` counts `ai_invocations` for `(household_id, user_id)`
+  in the last 60 minutes. Default 60/hour. `actor_user_id=NULL` is its own
+  bucket so importer-driven calls don't pollute a user's quota and vice
+  versa.
+- `enforce_pre_call(...)` is the combined gate the capabilities call: rate
+  first (no degrade — rate-limit always hard-fails), then cost. On
+  `cap_exceeded` with `cost_cap_behaviour=degrade` and a configured
+  `fallback_provider`, returns a `PreCallApproval` that swaps
+  provider/model. `hard_fail` (or `degrade` without a fallback) returns
+  `PreCallBlock(outcome=cost_capped)`.
+
+**Policy plumbing** (`tulip_ai.policy`):
+- `ResolvedPolicy.cost_cap_behaviour: Literal["degrade", "hard_fail"]`
+  (default `degrade` per ADR §Q7).
+- `ResolvedPolicy.rate_limit_per_hour: int` (default `60`,
+  positive-int-coerced from `households.ai_policy.rate_limit_per_hour`).
+
+**Capability wiring**: `AICategorizer`, `AINLQueryCapability`,
+`AIForecastCapability`, `AIProposalCapability` all call the gate
+between policy resolution and `adapter.chat()`. On `PreCallBlock` they
+write an `ai_invocations` row stamped with `outcome=rate_limited` or
+`outcome=cost_capped` (no provider call) and surface the structured
+error to the caller in the way each capability already handles
+failures (importer falls back silently, NL query / forecast / suggest
+returns an error-shaped result). On a degraded `PreCallApproval`, the
+capability calls the swapped provider (typically `ollama`) without the
+cloud key and audits `provider=ollama` + `outcome=success`, satisfying
+ADR §Q7's "explicit, audited, no silent fallback" rule.
+
+**Tests** — +20 across three layers:
+- `cost.py` unit tests (16): under cap allows, at cap blocks, only
+  billable outcomes count, previous-month exclusion, sliding window,
+  per-user buckets, default 60/hour, system bucket independence,
+  `enforce_pre_call` clean approval, rate-first ordering, degrade swap,
+  hard-fail block, degrade-without-fallback falls back to block.
+- `policy.py` extension tests (5): degrade default, explicit hard_fail,
+  garbage falls back to degrade, rate-limit default 60, garbage / zero
+  / negative falls back to 60.
+- `AICategorizer` integration matrix (3): degrade swap shows
+  `provider=ollama` on the adapter call + audit row, hard_fail writes
+  `outcome=cost_capped` with no adapter call, rate-limit writes
+  `outcome=rate_limited` with no adapter call.
+
+**Out of scope** (P6.5.b/c follow-ups):
+- `tulip ai config` JSON editor.
+- `log_prompts` toggle.
+- `tulip ai status` polish (fallback-semantics callout).
+- Sinking-fund forecast extension.
 
 ### P6.4.b — AI-driven proposal generation (`AIProposalCapability` + `suggest-budget`) — ✅ *(2026-05-11)*
 

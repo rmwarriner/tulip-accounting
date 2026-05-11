@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from tulip_ai.adapters import ProviderAdapter
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
+from tulip_ai.cost import PreCallApproval, enforce_pre_call
 from tulip_ai.errors import AIProviderError
 from tulip_ai.policy import resolve_policy
 from tulip_ai.redaction import RedactionProfile
@@ -263,6 +264,37 @@ class AIForecastCapability:
                 )
                 return ForecastResult(text="", error="no api key")
 
+            gate = enforce_pre_call(
+                session,
+                household_id=household_id,
+                user_id=actor_user_id,
+                rate_limit_per_hour=policy.rate_limit_per_hour,
+                monthly_cost_cap_usd=policy.monthly_cost_cap_usd,
+                cost_cap_behaviour=policy.cost_cap_behaviour,
+                fallback_provider=policy.fallback_provider,
+                fallback_model=policy.fallback_model,
+                primary_provider=policy.provider,
+                primary_model=policy.model,
+            )
+            if not isinstance(gate, PreCallApproval):
+                self._audit(
+                    household_id=household_id,
+                    actor_user_id=actor_user_id,
+                    policy_level=policy.level,
+                    profile=policy.profile,
+                    provider=policy.provider,
+                    model=policy.model,
+                    outcome=gate.outcome,
+                    prompt_hash=hash_prompt_payload(
+                        {"task": "forecast", "envelope_id": str(envelope_id)}
+                    ),
+                    response_text=gate.reason[:500],
+                )
+                return ForecastResult(text="", error=gate.outcome)
+
+        call_provider = gate.provider or ""
+        call_model = gate.model or ""
+        degraded = gate.degraded
         # Build the prompt outside the session — pure assembly.
         payload = build_forecast_prompt(
             envelope_id=str(envelope_id),
@@ -277,9 +309,9 @@ class AIForecastCapability:
         messages = _build_messages(payload)
         try:
             response = await self._adapter.chat(
-                provider=policy.provider or "",
-                model=policy.model or "",
-                api_key=api_key,
+                provider=call_provider,
+                model=call_model,
+                api_key=api_key if not degraded else None,
                 messages=messages,
                 max_tokens=200,
             )
@@ -289,8 +321,8 @@ class AIForecastCapability:
                 actor_user_id=actor_user_id,
                 policy_level=policy.level,
                 profile=policy.profile,
-                provider=policy.provider,
-                model=policy.model,
+                provider=call_provider,
+                model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload(payload.to_dict()),
                 response_text=str(exc)[:500],
@@ -302,8 +334,8 @@ class AIForecastCapability:
             actor_user_id=actor_user_id,
             policy_level=policy.level,
             profile=policy.profile,
-            provider=policy.provider,
-            model=policy.model,
+            provider=call_provider,
+            model=call_model,
             tokens_in=response.tokens_in,
             tokens_out=response.tokens_out,
             cost_estimate_usd=response.cost_estimate_usd,
