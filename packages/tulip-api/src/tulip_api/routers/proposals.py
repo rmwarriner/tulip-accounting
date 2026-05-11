@@ -15,6 +15,8 @@ from tulip_api.schemas.proposal import (
     ProposalCreate,
     ProposalDecisionBody,
     ProposalRead,
+    SuggestBudgetRequest,
+    SuggestBudgetResponse,
 )
 from tulip_api.services.proposal_executor import (
     execute_approved_proposal,
@@ -255,3 +257,110 @@ def list_supported_kinds(
     """Return the proposal kinds the approve flow can currently execute."""
     del claims  # authenticated only
     return list(supported_proposal_kinds())
+
+
+@router.post(
+    "/suggest/budget",
+    response_model=SuggestBudgetResponse,
+    responses={
+        400: problem_response("request.body_invalid"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("envelope.not_found"),
+        422: problem_response("validation.failed"),
+    },
+)
+async def suggest_envelope_budget(
+    body: SuggestBudgetRequest,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> SuggestBudgetResponse:
+    """AI-suggest a new ``budget_amount`` for one envelope (P6.4.b).
+
+    Pulls the envelope's 60-day spending series, calls
+    ``AIProposalCapability.suggest_envelope_budget``, and writes the
+    returned proposal to the queue with
+    ``created_by_kind=ai_agent`` + the capability's audit row linked via
+    ``ai_invocation_id``. The user then approves / rejects via the
+    standard inbox flow.
+
+    Failures (capability error, envelope missing) leave no proposal but
+    do leave the ``ai_invocations`` audit row the capability wrote.
+    """
+    from datetime import UTC, datetime, timedelta
+    from datetime import date as date_type
+    from decimal import Decimal
+
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+    from tulip_ai import AIProposalCapability, LitellmAdapter
+    from tulip_api.config import get_settings
+    from tulip_storage.models import Household
+    from tulip_storage.repositories import EnvelopeRepository, ShadowTransactionRepository
+
+    found = EnvelopeRepository(session, claims.household_id).get(body.envelope_id)
+    if found is None:
+        from tulip_api.errors import EnvelopeNotFoundError
+
+        raise EnvelopeNotFoundError()
+    pool, envelope = found
+
+    today = datetime.now(UTC).date()
+    cutoff = today - timedelta(days=59)
+    spend_map = ShadowTransactionRepository(
+        session, claims.household_id
+    ).daily_spend_series_for_pool(pool.id, currency=pool.currency, from_date=cutoff, to_date=today)
+    series: list[tuple[date_type, Decimal]] = [
+        (
+            cutoff + timedelta(days=i),
+            spend_map.get(cutoff + timedelta(days=i), Decimal("0")),
+        )
+        for i in range(60)
+    ]
+
+    settings = get_settings()
+    household = session.get(Household, claims.household_id)
+    assert household is not None  # noqa: S101
+    api_key: str | None = None
+    if household.ai_keys_encrypted:
+        from tulip_api.routers.ai import _load_household_keys
+
+        keys = _load_household_keys(household, settings.master_key)
+        provider = household.ai_policy.get("default_provider")
+        if isinstance(provider, str):
+            api_key = keys.get(provider)
+
+    bind = session.get_bind()
+    cap_session_maker = _sessionmaker(bind, expire_on_commit=False)
+    capability = AIProposalCapability(session_maker=cap_session_maker, adapter=LitellmAdapter())
+    result = await capability.suggest_envelope_budget(
+        household_id=claims.household_id,
+        actor_user_id=claims.user_id,
+        api_key=api_key,
+        envelope_id=pool.id,
+        envelope_name=pool.name,
+        currency=pool.currency,
+        current_budget=envelope.budget_amount,
+        recent_spend_series=series,
+    )
+    if result.proposal is None:
+        return SuggestBudgetResponse(proposal=None, error=result.error)
+
+    repo = PendingProposalRepository(session, claims.household_id)
+    row = repo.create(
+        kind=result.proposal.kind,
+        title=result.proposal.title,
+        payload=result.proposal.payload,
+        rationale=result.proposal.rationale,
+        created_by_kind=ProposalCreatorKind.AI_AGENT.value,
+        created_by_user_id=claims.user_id,
+        ai_invocation_id=result.proposal.ai_invocation_id,
+    )
+    session.commit()
+    log.info(
+        "proposal.suggested",
+        proposal_id=str(row.id),
+        kind=row.kind,
+        envelope_id=str(pool.id),
+    )
+    return SuggestBudgetResponse(proposal=_to_read(row), error=None)

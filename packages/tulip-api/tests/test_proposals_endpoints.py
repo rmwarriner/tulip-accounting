@@ -329,3 +329,43 @@ class TestAuth:
     def test_approve_requires_auth(self, client: TestClient) -> None:
         r = client.post(f"/v1/ai/proposals/{uuid4()}/approve")
         assert r.status_code == 401
+
+
+class TestSuggestBudget:
+    """``POST /v1/ai/proposals/suggest/budget`` (P6.4.b).
+
+    The endpoint instantiates ``LitellmAdapter`` inline (no DI hook), so
+    happy-path adapter behaviour is covered by the capability unit tests
+    in ``tulip-ai/tests/test_proposals.py``. These tests cover the HTTP
+    contract: missing api key surfaces a structured error, missing envelope
+    is a 404, and unauthenticated callers are rejected.
+    """
+
+    def test_requires_auth(self, client: TestClient) -> None:
+        r = client.post(
+            "/v1/ai/proposals/suggest/budget",
+            json={"envelope_id": str(uuid4())},
+        )
+        assert r.status_code == 401
+
+    def test_unknown_envelope_returns_404(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.post(
+            "/v1/ai/proposals/suggest/budget",
+            headers=auth_h,
+            json={"envelope_id": str(uuid4())},
+        )
+        assert_problem(r, code="envelope.not_found", status=404)
+
+    def test_no_api_key_returns_structured_error(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        env_id = _make_envelope(client, auth_h)
+        r = client.post(
+            "/v1/ai/proposals/suggest/budget",
+            headers=auth_h,
+            json={"envelope_id": env_id},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["proposal"] is None
+        assert "no api key" in (body["error"] or "").lower()

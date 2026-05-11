@@ -162,3 +162,30 @@ def test_ai_preview_renders_payload(authed: str) -> None:
     assert body["payload"]["line"]["amount"] == "-87.42"
     chart_codes = sorted(c["code"] for c in body["payload"]["chart"])
     assert chart_codes == ["5100"]
+
+
+@pytest.mark.integration
+def test_ai_suggest_budget_without_key_reports_error(authed: str) -> None:
+    """``tulip ai suggest-budget`` surfaces the structured error when no key is configured."""
+    # Need a pool + envelope to point the command at.
+    httpx_token = httpx.post(
+        f"{authed}/v1/auth/login",
+        json={"email": "admin@example.com", "password": _PASSWORD},
+        timeout=10,
+    ).json()["access_token"]
+    headers = {"Authorization": f"Bearer {httpx_token}"}
+    env = httpx.post(
+        f"{authed}/v1/envelopes",
+        headers=headers,
+        json={
+            "name": "Groceries",
+            "currency": "USD",
+            "budget_period": "monthly",
+            "rollover_policy": "reset",
+            "budget_amount": "100.00",
+        },
+        timeout=10,
+    ).json()
+    result = _run_cli("ai", "suggest-budget", "--envelope", env["id"], api_url=authed)
+    assert result.returncode == 1
+    assert "no api key" in result.stderr.lower()
