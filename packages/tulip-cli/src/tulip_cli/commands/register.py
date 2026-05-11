@@ -133,5 +133,6 @@ def register(
     payload = response.json()
     typer.echo(
         f"Registered {email} as {payload.get('role', 'user')} of household {household}.\n"
-        "Run `tulip auth login` to sign in."
+        "Run `tulip auth login` to sign in.\n"
+        "First time here? See docs/QUICKSTART.md for the full setup walkthrough."
     )

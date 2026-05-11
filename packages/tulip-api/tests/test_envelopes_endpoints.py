@@ -256,7 +256,11 @@ class TestEnvelopeBalance:
         assert body["pool_id"] == env["id"]
         assert body["currency"] == "USD"
         assert Decimal(body["balance"]) == Decimal("0.00")
-        assert body["as_of"] == date.today().isoformat()
+        # Endpoint resolves "today" in UTC (#141); local time may differ
+        # by a date around the day boundary in negative-offset zones.
+        from datetime import UTC, datetime
+
+        assert body["as_of"] == datetime.now(UTC).date().isoformat()
 
     def test_balance_unknown_returns_404(self, client: TestClient, auth_h: dict[str, str]):
         r = client.get(f"/v1/envelopes/{uuid4()}/balance", headers=auth_h)
