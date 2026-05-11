@@ -1,8 +1,8 @@
 # Tulip Accounting — Threat Model Checkpoint
 
-**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI), deep security audit at Phase 8 (operations + hardening), pre-cloud re-audit at Phase 9.
+**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening); pre-cloud re-audit at Phase 9.
 
-**Last updated:** 2026-05-07 · `main` @ Phase 5 complete
+**Last updated:** 2026-05-11 · `main` @ Phase 6 complete (AI integration shipped)
 
 This document captures what the system protects, what it doesn't, and the constraints Phase 4–6 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI add surface area, not after. Tracked as #56.
 
@@ -36,7 +36,7 @@ Five tiers, highest to lowest confidentiality:
 | **High** | Account balances, transaction descriptions, transaction references, account codes/names, audit log entries | unencrypted SQLite columns | This is "the ledger" — the actual financial data. Nothing about it is encrypted at rest today (Layer 1 SQLCipher deferred). Whoever can read the DB file reads the ledger. |
 | **High (integrity)** | `audit_log` rows | unencrypted SQLite | Append-only via `AuditLogWriter` (single chokepoint). Confidentiality is medium; integrity is high — a tampered audit log invalidates forensics. No DB-level immutability yet (deferred to the Postgres phase per ARCHITECTURE.md §1.1). |
 | **Medium** | Email addresses, household / display names, periods, account hierarchy structure | unencrypted SQLite | PII-ish but largely user-chosen labels. Logging redaction list (`logging_config.py`) keeps emails out of logs by default. |
-| **Highest (Phase 6)** | AI prompt bodies (proposed transactions, NL queries, household financial context fed to LLMs) | not yet — `tulip-ai` doesn't exist | This is why the privacy audit is pinned to **before Phase 6** rather than Phase 8 — Phase 6 is where data starts leaving the local boundary. |
+| **Highest (Phase 6)** | AI prompt bodies (proposed transactions, NL queries, household financial context fed to LLMs) | `ai_invocations.prompt_json` (NULL by default) + `prompt_hash` always populated | Phase 6 shipped 2026-05-11. Prompts never persisted by default; metadata + SHA-256 hash give forensics-light. Full prompt logging is opt-in via `tulip ai config log-prompts on` (warns the operator) — see §5.3. |
 
 Classification informs constraints in [§5](#5-constraints-for-phase-46-work).
 
@@ -55,7 +55,7 @@ Single-tenant local deployment scopes the actor list down hard:
 
 - **Network attacker** — single-tenant local. **Phase 9.**
 - **Cross-household attacker** — single-tenant local. **Phase 9** (cloud), but the design already has composite FKs to make this safe-by-construction.
-- **Compromised AI provider / prompt injection / model exfiltration** — no AI in flight. **Phase 6.**
+- **Compromised AI provider / prompt injection / model exfiltration** — Phase 6 shipped 2026-05-11. Now **in scope**: see §5.3 for the realised constraints (no-logging default, server-side redaction, no-silent-fallback, `actor_kind=ai_agent` audit chain, pre-call cost + rate gates).
 - **Compromised import source** — Phase 5 shipped 2026-05-07. Now **in scope**: see [§5.2](#52--phase-5-importers--reconciliation) for the constraints that landed (size cap, parser hardening, encrypted attachment storage).
 - **Stolen attachment / external-document exposure** — Phase 5 wired the encrypted attachment store. Now **in scope**; field-level AES-256-GCM via the master key per ARCHITECTURE.md §7.4 Layer 3.
 
@@ -117,15 +117,18 @@ What is **out of scope** of the Phase 5 threat model and explicitly deferred:
 - **Multi-currency reconciliation** — every Phase 5 endpoint asserts `account.currency == reconciliation.currency`; multi-currency is silently out of scope. Lifting this requires FX rate engine work first (per ARCHITECTURE.md §1.3 deferred items).
 - **Partial-of-one matches** (a $100 statement line matching $60 of a $100 ledger tx with $40 residual) — explicitly rejected for v1 per ADR-0004 §Q3. Manual match enforces `match_amount == line.amount`.
 
-### 5.3 — Phase 6 (AI integration)
+### 5.3 — Phase 6 (AI integration) — ✅ shipped
 
-This is the privacy inflection point and gets its own audit slot **before implementation begins**. The five constraints listed below are the entry criteria for Phase 6 work; the *authoritative* implementation contract is **[ADR-0005](adrs/0005-ai-integration.md)**, which closes [#102](https://github.com/rmwarriner/tulip-accounting/issues/102) and resolves these constraints into concrete designs.
+The privacy inflection point. All five entry constraints landed in
+Phase 6 implementation (P6.1–P6.5.c). The *authoritative* contract is
+**[ADR-0005](adrs/0005-ai-integration.md)**, which closes
+[#102](https://github.com/rmwarriner/tulip-accounting/issues/102).
 
-- **Prompt bodies are not logged by default.** Only metadata (model, latency, cost, tenant, user, success/fail). Tenant-level opt-in via `households.ai_policy` (see ARCHITECTURE.md §6.5). [ADR-0005 §Q6](adrs/0005-ai-integration.md) commits this to the `ai_invocations.prompt_json NULL` default + a `prompt_hash` column for "was the same prompt sent twice" without storing prompts.
-- **Redaction runs before the litellm call**, not after. PII-redaction policy is auditable as a separate function. [ADR-0005 §Q3, §Q4](adrs/0005-ai-integration.md) make the per-capability data-flow tables the authoritative contract, with a byte-faithful preview test that catches drift between the contract and the code.
-- **No silent provider fallback.** If the configured provider fails, the AI call fails — no implicit failover to another provider that might have a different data policy. [ADR-0005 §Q8](adrs/0005-ai-integration.md). The one explicit exception is the cost-cap `degrade` path, which is audited as `provider=ollama` and triggered only by a budget signal the household admin set.
-- **`actor_kind=ai_agent` audit rows** for every state-changing AI proposal that's approved, with a link to the originating proposal. ARCHITECTURE.md §6.4 specifies this; this constraint is the reminder. [ADR-0005 §Q6](adrs/0005-ai-integration.md) defines the `proposal_id` FK from `ai_invocations` to `pending_proposals` (P6.4).
-- **Cost / rate caps are enforced server-side**, not in the prompt or in the model. Phase 6 doesn't trust the model to self-limit. [ADR-0005 §Q7](adrs/0005-ai-integration.md): cost cap is a *pre-call* reservation; rate limit is per-user sliding window.
+- ✅ **Prompt bodies are not logged by default.** `ai_invocations.prompt_json` defaults to NULL; only metadata (model, latency, cost, tenant, user, success/fail) lands by default. Tenant-level opt-in via `households.ai_policy.log_prompts=true` (CLI: `tulip ai config log-prompts on`, which emits the privacy-cost warning to stderr). `prompt_hash` (SHA-256 over the redacted prompt) is always populated so "was the same prompt sent twice" is answerable without storing prompts. *Implemented:* P6.1 (PR #154) + P6.5.b (PR #163).
+- ✅ **Redaction runs before the litellm call**, not after. `PromptRedactor` runs server-side per capability; `POST /v1/ai/preview` is byte-faithful so operators can see exactly what would be sent before any provider call fires. *Implemented:* P6.1 (PR #154).
+- ✅ **No silent provider fallback.** Provider 5xx errors raise `AIProviderError` and stamp `outcome=provider_error` — no implicit failover. The one explicit exception is cost-cap `degrade` mode, which swaps to `fallback_provider` (typically Ollama) and **audits `provider=ollama` explicitly**. `tulip ai status` prints the locked callout: "applies on cost-cap degrade ONLY. Provider 5xx errors do NOT silently fall back." *Implemented:* P6.5.a (PR #161) + P6.5.b (PR #163).
+- ✅ **`actor_kind=ai_agent` audit rows** for every state-changing AI proposal that's approved, with `metadata.proposal_id` linking back to the originating `pending_proposal` and through to `ai_invocations.id` via `ai_invocation_id`. The architecture-test enforces the single chokepoint (`AuditLogWriter`); the executor stamps the correct `actor_kind` based on `pending_proposal.created_by_kind`. *Implemented:* P6.4 (PR #158) + P6.4.b (PR #159).
+- ✅ **Cost / rate caps are enforced server-side**, not in the prompt or in the model. `tulip_ai.cost.enforce_pre_call` runs *before* the adapter call: per-user sliding-window rate limit (default 60/hour) gates first, then the household-wide monthly cost cap. Both write `outcome=rate_limited` / `outcome=cost_capped` audit rows on the block path so capped capacity is observable in `ai_invocations`. *Implemented:* P6.5.a (PR #161).
 
 ## 6. Out of scope (explicitly)
 
@@ -134,7 +137,7 @@ These are real concerns, but not for this checkpoint:
 - **Penetration testing** — Phase 8.
 - **Cryptographic review** of `encrypt_field` (key derivation, nonce reuse risk, AEAD usage details) — Phase 8.
 - **Multi-tenant cloud threat model** — Phase 9.
-- **Privacy audit of AI flows** — before Phase 6 (separate slice, not yet scheduled because Phase 6 isn't imminent).
+- **Privacy audit of AI flows** — ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md) (P6.0, 2026-05-11), implemented through P6.1–P6.5.c. See §5.3 above for the realised constraints.
 - **Backup/restore threat model** — backup pipeline doesn't exist yet (Phase 8).
 - **Supply chain / SBOM** — Phase 8 audit covers this.
 - **Side-channel / timing attacks** — out of v1 scope; relevant only to multi-tenant cloud (Phase 9).
