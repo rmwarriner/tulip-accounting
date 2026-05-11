@@ -471,6 +471,8 @@ Each importer:
 
 ## 6. AI Integration
 
+> **Phase 6 design is locked in [ADR-0005](adrs/0005-ai-integration.md)**, which closes #102 (AI provider data-flow contract). The subsections below are the architectural sketch; the ADR is authoritative for module structure, per-capability prompt contracts, redaction profiles, policy resolution, audit-log shape, cost / rate enforcement, failure modes, and slice ordering.
+
 ### 6.1 Adapter Layer
 
 All AI calls go through `tulip.ai.adapters`. Per-tenant configuration selects a provider; `litellm` provides a uniform call surface. Supported providers in v1:
@@ -958,12 +960,12 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **Cleanup**: PR #129 (#127 — inbox surfacing prior-completed-recon lines), PR #130 (#114 — relax `import_batch` idempotency index, wire `?force=true`); #118 closed wontfix.
 
 ### Phase 6 — AI integration
-- **Privacy audit** *before* AI capabilities ship — household financial data starts leaving the local boundary here, so data-flow review, redaction policy, retention, and per-tenant opt-in/opt-out shape this phase's design rather than reviewing it after. Tracked as part of the Phase 6 entry criteria.
-- `tulip-ai` package with litellm adapter
-- Capabilities: categorization (used in importers) → NL query → forecasting → agentic
-- Tenant + user policy resolution
-- Cost cap and rate limiting
-- AI invocation audit log
+- ✅ **P6.0** — Privacy audit / data-flow contract: [ADR-0005](adrs/0005-ai-integration.md). Closes #102. Resolves nine open questions (module structure, BYOK surface, per-capability prompt contracts, redaction profiles, policy resolution, audit-log shape, cost-cap enforcement, failure modes, slice ordering). No code; design only.
+- **P6.1** — `tulip-ai` package skeleton: `LitellmAdapter`, `PromptRedactor`, `AIInvocationWriter`, `AICategorizer` plugging into the existing `Categorizer` DI seam (P5.3). Migration for `ai_invocations`, `households.{ai_policy, ai_keys_encrypted}`, `users.ai_keys_encrypted`. CLI: `tulip ai {set-key, forget-key, list-keys, config, status, preview}`. API: `POST /v1/ai/preview`. End-to-end: register → set key → import OFX → categorize via AI → accept.
+- **P6.2** — NL query: read-only AI view + two-turn (SQL emission, summarisation) flow. `tulip ai ask`, `POST /v1/ai/ask`.
+- **P6.3** — Forecasting + anomaly detection via the runner (ADR-0002). New `notifications` table.
+- **P6.4** — Agentic proposals. `pending_proposals` table, `actor_kind=ai_agent` audit rows on approve.
+- **P6.5** — Polish + cost-cap behaviours UI + opt-in `log_prompts` toggle. Closes Phase 6.
 
 ### Phase 7 — Reports + journal export/import
 - All v1 reports rendered as HTML and PDF (weasyprint)
@@ -989,7 +991,7 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 | Audit | When | Why then |
 |---|---|---|
 | **Lightweight threat-model checkpoint** | Between Phase 3 and Phase 4 — ✅ shipped 2026-05-01 | Captures trust boundaries, data classifications, deferred mitigations, and the constraints Phase 4–6 work must not violate. See [docs/THREAT_MODEL.md](THREAT_MODEL.md). |
-| **Privacy audit** | Before Phase 6 implementation begins | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
+| **Privacy audit** | Before Phase 6 implementation begins — ✅ shipped 2026-05-11 as [ADR-0005](adrs/0005-ai-integration.md) | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
 | **Deep security audit** | Phase 8 (operations + hardening) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
 | **Pre-cloud security re-audit** | Phase 9, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
 
