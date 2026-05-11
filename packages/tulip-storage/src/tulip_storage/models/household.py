@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import JSON, DateTime, LargeBinary, String, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,6 +52,17 @@ class Household(Base):
         default=MfaPolicy.OPTIONAL,
         server_default=MfaPolicy.OPTIONAL.value,
     )
+    # AI policy per ARCHITECTURE.md §6.5 / ADR-0005 §Q5. The empty default
+    # is interpreted by ``tulip_ai.policy.resolve_policy`` as "use code
+    # defaults" (every capability is permissive, no cost cap, no fallback).
+    # A new install can run for years before this row needs editing.
+    ai_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    # Encrypted JSON blob of ``{provider: api_key}``. Encryption mirrors
+    # ``users.totp_secret_encrypted`` — same master key, same envelope.
+    # NULL means no household-level keys are configured.
+    ai_keys_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

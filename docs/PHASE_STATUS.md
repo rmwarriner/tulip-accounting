@@ -22,9 +22,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Pre-internal-beta hardening (#121):** ✅ **complete** — all eight checkboxes merged across PRs #140 / #142 / #143 / #146 / #147 / #148 / #149 / #150 / #151 / #152 (master-key file gate, backup/restore CLI, docker compose, password-stdin TTY hint, UTC balance fix, `tulip doctor`, `tulip periods`, inline balances, QUICKSTART, README rewrite for users). Umbrella closed 2026-05-10.
 
-- **Phase 6 (AI integration):** in flight — P6.0 design / privacy audit shipped as [ADR-0005](adrs/0005-ai-integration.md) (closes #102). Implementation begins with P6.1 (`tulip-ai` package + `AICategorizer`).
+- **Phase 6 (AI integration):** in flight — P6.0 design ([ADR-0005](adrs/0005-ai-integration.md), closes #102) + P6.1 (`tulip-ai` package + storage migration + `AICategorizer` plugged into the P5.3 DI seam + BYOK CLI/API) shipped. Next: P6.2 (NL query).
 
-**Tests:** 1233 passing · **CI:** green on `main`
+**Tests:** 1275 passing · **CI:** green on `main`
 
 ---
 
@@ -561,6 +561,57 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 ## Phase 6 — AI integration — in flight (design)
 
 Phase 6 entry criterion per [ARCHITECTURE.md §10](ARCHITECTURE.md) was a privacy audit shaping the design before any code lands. The audit is now shipped as an ADR; implementation begins with P6.1.
+
+### P6.1 — tulip-ai skeleton + AICategorizer + BYOK CLI/API — ✅ *(2026-05-11)*
+
+The first Phase 6 implementation slice — everything ADR-0005 §Q9 lists for P6.1 ships in one PR.
+
+**New `tulip-ai` workspace package** with seven modules:
+
+- `tulip_ai.adapters` — `ProviderAdapter` Protocol, `LitellmAdapter` (lazy-imports litellm; ~50 MB transitive dep), `RecordingAdapter` (test seam that captures messages without a network call).
+- `tulip_ai.audit` — `AIInvocationWriter`, the sole INSERT path for `ai_invocations` rows (chokepoint pattern from ADR-0001). `hash_prompt_payload()` produces the stable SHA-256 hash stored on every row.
+- `tulip_ai.categorize` — `AICategorizer` implementing `tulip_core.reconciliation.Categorizer`; opens its own session per call, resolves the household's policy, decrypts the API key, builds the prompt, calls the adapter, parses the response, writes the audit row. Failures (no key, provider error, malformed response, hallucinated account code) fall back to `Imbalance:Unknown` with confidence 0.0 — they never propagate into the importer flow. `build_categorize_prompt()` is the pure-function preview path the CLI calls into.
+- `tulip_ai.errors` — `AIError`, `AICapDisabled`, `AIProviderError`, `AIRateLimited`, `AICostCapped`.
+- `tulip_ai.policy` — `resolve_policy(household_policy, user_policy, capability) -> ResolvedPolicy`. Household is the floor; user ratchets up but never down (locked in ADR-0005 §Q5).
+- `tulip_ai.redaction` — `CategorizePromptPayload`, `PromptRedactor` with `default` / `strict` / `local_only` profiles. Strict redacts vendor names (token-replacement keeping length-≥4 tokens + curated short keepers like `GAS`/`ATM`/`BAR`) and buckets amounts to orders of magnitude; chart of accounts always rides through full.
+- `tulip_ai.__init__` re-exports the public surface.
+
+**Storage layer**:
+
+- New `ai_invocations` table (per ADR-0005 §Q6) with `household_id` + `id` composite PK, `actor_user_id`, `capability`, `policy_resolved`, `profile`, `provider`, `model`, `tokens_{in,out}`, `cost_estimate_usd` (Numeric(12,6)), `latency_ms`, `outcome`, `provider_response_id`, `request_id`, `prompt_hash` (SHA-256, always populated), and the opt-in `prompt_json` / `response_text` columns (NULL by default; only stored when `households.ai_policy.log_prompts == true`).
+- `households.ai_policy` JSON column with default `{}` (resolver treats empty as "code defaults").
+- `households.ai_keys_encrypted` + `users.ai_keys_encrypted` (LargeBinary) — encrypted JSON `{provider: api_key}`, mirrors `users.totp_secret_encrypted`'s encryption flow.
+
+**Architecture test**: `test_architecture_no_api_in_ai.py` bans `tulip_ai` from importing `tulip_api` (mirrors the existing `tulip_importers` no-tulip-ai rule). Dependency direction: core ← storage ← ai ← api.
+
+**HTTP surface** (`/v1/ai/...`, all admin-gated):
+
+- `POST /v1/ai/keys/{provider}` — upload an API key (encrypted server-side).
+- `DELETE /v1/ai/keys/{provider}` — remove a key (idempotent).
+- `GET /v1/ai/keys` — list providers that have keys; never exposes key bytes.
+- `GET /v1/ai/status` — resolved policy for the caller's household.
+- `POST /v1/ai/preview` — the byte-faithful redacted prompt body for a synthetic statement line (ADR-0005 §Q4 surface).
+
+**CLI** (`tulip ai`, six subcommands):
+
+- `tulip ai set-key --provider X` (interactive `getpass` or `--key-stdin` for scripts).
+- `tulip ai forget-key --provider X`.
+- `tulip ai list-keys`.
+- `tulip ai status`.
+- `tulip ai preview --description ... --amount ...` — shows the exact payload the categorize call would emit.
+
+`config` (the policy editor) deferred to P6.2 — JSON-shape manipulation that's not on the critical path for the e2e flow.
+
+**App-factory wiring**: `_register_ai_categorizer()` runs once at lifespan start, binds an `AICategorizer` to the configured `session_maker` + `LitellmAdapter`, and calls `register_categorizer(...)` — the same DI seam P5.3 ships. Existing import-apply flow now goes through AI when an API key is set; falls back to "Imbalance:Unknown" silently otherwise.
+
+**Tests** — 42 new total:
+
+- `tulip-ai`: 12 redaction tests (3 profiles × ~4 amount/token cases), 12 policy tests (severity ratchet matrix, defaults, provider inheritance, local_only forcing), 4 audit-writer tests, 6 AICategorizer tests (happy path, policy-disabled, no-key, hallucinated code, code-fence parsing, prompt purity).
+- `tulip-api`: 8 endpoint tests (key round-trip, status, preview, auth gates).
+- `tulip-cli`: 3 subprocess integration tests (key round-trip via stdin, status output, preview JSON).
+- `tulip-storage`: 1 new architecture test banning `tulip_api` imports from `tulip_ai`.
+
+No live provider calls anywhere — `RecordingAdapter` captures the messages the categorizer would have sent; the byte-faithful preview tests assert the prompt body's shape.
 
 ### P6.0 — Privacy audit + data-flow contract (ADR-0005) — ✅ *(2026-05-11)*
 
