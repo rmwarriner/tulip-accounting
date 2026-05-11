@@ -19,9 +19,11 @@ vs ``forecast``) so the two surfaces coexist cleanly.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -46,21 +48,46 @@ if TYPE_CHECKING:
 _SERIES_DAYS = 60
 _PRODUCED_BY = "daily_insights"
 
+#: Callback the handler invokes (when set) to obtain a forecast for one
+#: envelope. Returning ``None`` (or an empty string) skips the forecast
+#: notification for that envelope — the handler-side "AI not configured"
+#: signal. The callback owns its own provider call, audit row, and policy
+#: resolution; the handler just writes the notification row.
+ForecasterCallback = Callable[
+    [UUID, UUID, str, str, list[tuple[date, Decimal]]],
+    Awaitable[str | None],
+]
+
 
 def make_daily_insights_handler(
     session_maker: sessionmaker[Session],
+    *,
+    forecaster: ForecasterCallback | None = None,
 ) -> HandlerCallback:
-    """Build the ``daily_insights`` handler bound to a session factory."""
+    """Build the ``daily_insights`` handler bound to a session factory.
+
+    When ``forecaster`` is non-None, the handler calls it per envelope
+    after the anomaly loop and writes a ``kind=forecast`` notification
+    for any envelope the forecaster returned text for. When ``None``,
+    only anomaly notifications fire — matches the P6.3 default before
+    P6.3.b wired up the AI forecaster.
+    """
 
     async def handle(job: ScheduledJob, clock: Clock) -> None:
         with session_maker() as session:
-            _process(session, job=job, clock=clock)
+            await _process(session, job=job, clock=clock, forecaster=forecaster)
             session.commit()
 
     return handle
 
 
-def _process(session: Session, *, job: ScheduledJob, clock: Clock) -> None:
+async def _process(
+    session: Session,
+    *,
+    job: ScheduledJob,
+    clock: Clock,
+    forecaster: ForecasterCallback | None,
+) -> None:
     """Inner: iterate envelopes, compute series, write notification rows."""
     today = clock().date()
     notifications = NotificationRepository(session, job.household_id)
@@ -102,7 +129,25 @@ def _process(session: Session, *, job: ScheduledJob, clock: Clock) -> None:
                 entity_type="envelope",
                 entity_id=pool.id,
             )
-        del envelope  # unused for now; AI forecast slice will read it.
+        if forecaster is not None:
+            forecast_text = await forecaster(
+                job.household_id,
+                pool.id,
+                pool.name,
+                pool.currency,
+                series,
+            )
+            if forecast_text:
+                notifications.create(
+                    kind=NotificationKind.FORECAST.value,
+                    severity=NotificationSeverity.INFO.value,
+                    title=f"Forecast for {pool.name}",
+                    body=forecast_text,
+                    produced_by=_PRODUCED_BY,
+                    entity_type="envelope",
+                    entity_id=pool.id,
+                )
+        del envelope  # not yet used; sinking-fund targets land in a follow-up.
 
 
 def _daily_spend_series(
