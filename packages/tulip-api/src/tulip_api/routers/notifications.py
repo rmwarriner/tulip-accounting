@@ -67,6 +67,7 @@ def list_notifications(
     responses={
         401: problem_response("auth.unauthorized"),
         404: problem_response("notification.not_found"),
+        422: problem_response("validation.failed"),
     },
 )
 def dismiss_notification(
