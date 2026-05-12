@@ -128,4 +128,19 @@ def render_html(data: AuditLogData) -> str:
     )
 
 
-__all__ = ["AuditLogData", "AuditLogRow", "build", "render_html"]
+def render_pdf(data: AuditLogData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "audit_log.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
+__all__ = [
+    "AuditLogData",
+    "AuditLogRow",
+    "build",
+    "render_html",
+    "render_pdf",
+]

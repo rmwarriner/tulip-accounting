@@ -131,9 +131,19 @@ def render_html(data: ReconciliationSummaryData) -> str:
     )
 
 
+def render_pdf(data: ReconciliationSummaryData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "reconciliation_summary.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
 __all__ = [
     "ReconciliationRow",
     "ReconciliationSummaryData",
     "build",
     "render_html",
+    "render_pdf",
 ]

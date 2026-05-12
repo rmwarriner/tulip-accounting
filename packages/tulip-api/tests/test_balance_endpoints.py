@@ -197,3 +197,14 @@ class TestTrialBalance:
         assert "Food" in body
         # Money filter applied (thousand separators + 2 decimals).
         assert "12.50" in body
+
+    def test_format_pdf_returns_pdf_response(self, client: TestClient, auth_h: dict[str, str]):
+        """``?format=pdf`` returns a real PDF via weasyprint (P7.2)."""
+        _account(client, auth_h, name="Cash", code="1110")
+
+        r = client.get("/v1/reports/trial-balance?format=pdf", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("application/pdf")
+        assert r.content.startswith(b"%PDF-")
+        # Filename hint includes the as_of date.
+        assert "trial-balance-" in r.headers.get("content-disposition", "")

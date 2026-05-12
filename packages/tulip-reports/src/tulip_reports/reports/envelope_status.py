@@ -119,4 +119,19 @@ def render_html(data: EnvelopeStatusData) -> str:
     )
 
 
-__all__ = ["EnvelopeStatusData", "EnvelopeStatusRow", "build", "render_html"]
+def render_pdf(data: EnvelopeStatusData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "envelope_status.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
+__all__ = [
+    "EnvelopeStatusData",
+    "EnvelopeStatusRow",
+    "build",
+    "render_html",
+    "render_pdf",
+]

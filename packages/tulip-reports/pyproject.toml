@@ -8,6 +8,7 @@ dependencies = [
     "tulip-storage",
     "tulip-ai",
     "jinja2>=3.1",
+    "weasyprint>=63",
 ]
 
 [tool.uv.sources]

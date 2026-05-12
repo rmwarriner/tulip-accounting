@@ -83,4 +83,18 @@ def render_html(data: CustomQueryData) -> str:
     )
 
 
-__all__ = ["CustomQueryData", "build", "render_html"]
+def render_pdf(data: CustomQueryData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "custom_query.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
+__all__ = [
+    "CustomQueryData",
+    "build",
+    "render_html",
+    "render_pdf",
+]

@@ -45,7 +45,7 @@ COPY packages/ ./packages/
 # ships from P6.1 onward; the API imports it at module-load time so
 # it must be in the runtime venv even if no household has configured
 # AI yet. --no-dev keeps test + tooling deps out of the runtime image.
-RUN uv sync --frozen --no-dev --package tulip-api --package tulip-cli --package tulip-ai
+RUN uv sync --frozen --no-dev --package tulip-api --package tulip-cli --package tulip-ai --package tulip-reports
 
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime. Copies the venv + source; nothing else.
@@ -67,13 +67,18 @@ ENV PATH="/opt/tulip/.venv/bin:$PATH" \
 # `tulip` user end-to-end; root only exists for the duration of the
 # entrypoint preamble.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
+    && apt-get install -y --no-install-recommends \
+        gosu \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libfontconfig1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 1000 tulip \
     && useradd --system --uid 1000 --gid tulip --create-home --home-dir /var/lib/tulip tulip \
     && mkdir -p /var/lib/tulip/db /var/lib/tulip/attachments \
     && touch /var/lib/tulip/db/.keep /var/lib/tulip/attachments/.keep \
     && chown -R tulip:tulip /var/lib/tulip
+# weasyprint (P7.2, via tulip-reports) needs Pango + HarfBuzz + fontconfig
+# at runtime to render PDFs. Without these, GET /v1/reports/<name>?format=pdf
+# raises OSError("cannot load library 'pango-1.0-0'") at first call.
 # `.keep` files force Docker to populate the named volumes with the
 # directory contents (and ownership) on first mount. Without them, the
 # mount overlays an empty root-owned directory and the non-root `tulip`

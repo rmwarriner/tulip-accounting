@@ -203,6 +203,15 @@ def render_html(data: IncomeStatementData) -> str:
     )
 
 
+def render_pdf(data: IncomeStatementData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "income_statement.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
 __all__ = [
     "IncomeStatementData",
     "IncomeStatementPeriod",
@@ -210,4 +219,5 @@ __all__ = [
     "IncomeStatementSection",
     "build",
     "render_html",
+    "render_pdf",
 ]

@@ -97,6 +97,29 @@ class TestNewReportsHTML:
         assert "background: #fff" in body
 
 
+class TestNewReportsPDF:
+    """``?format=pdf`` returns ``application/pdf`` (P7.2)."""
+
+    @pytest.mark.parametrize(("path", "params"), _ENDPOINTS)
+    def test_pdf_render(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        path: str,
+        params: dict[str, str],
+    ) -> None:
+        merged = dict(params)
+        merged["format"] = "pdf"
+        r = client.get(path, headers=auth_h, params=merged)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("application/pdf")
+        # PDF magic bytes — gives confidence weasyprint actually produced a file
+        # rather than the JSON / HTML branches accidentally falling through.
+        assert r.content.startswith(b"%PDF-")
+        # Content-Disposition header surfaces a sensible filename.
+        assert "filename=" in r.headers.get("content-disposition", "")
+
+
 class TestAuth:
     """All new report endpoints require auth."""
 

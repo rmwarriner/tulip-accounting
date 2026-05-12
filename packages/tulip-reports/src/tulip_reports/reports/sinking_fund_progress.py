@@ -119,9 +119,19 @@ def render_html(data: SinkingFundProgressData) -> str:
     )
 
 
+def render_pdf(data: SinkingFundProgressData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "sinking_fund_progress.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
 __all__ = [
     "SinkingFundProgressData",
     "SinkingFundRow",
     "build",
     "render_html",
+    "render_pdf",
 ]
