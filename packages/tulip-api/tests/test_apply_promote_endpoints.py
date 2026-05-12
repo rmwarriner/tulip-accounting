@@ -89,6 +89,26 @@ class TestApplyImportHappyPath:
         assert r.json()["status"] == "applied"
         assert r.json()["applied_at"] is not None
 
+    def test_apply_no_categorize_succeeds_without_categorizer_account(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        """Slice B: ?no_categorize=true short-circuits the categorizer and
+        auto-creates the Imbalance:Unknown account on demand. The endpoint
+        must succeed even on a household with no chart-of-accounts entry
+        for the categorizer's usual return value.
+        """
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created_count"] == 2
+        # And the auto-created Imbalance:Unknown account exists.
+        accounts = client.get("/v1/accounts", headers=auth_h).json()
+        codes = {a.get("code") for a in accounts}
+        assert "9999.USD" in codes
+
 
 class TestApplyImportErrors:
     def test_unknown_batch_returns_404(self, client: TestClient, auth_h: dict[str, str]):

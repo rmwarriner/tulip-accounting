@@ -282,6 +282,49 @@ class TestPromoteStatementLine:
                     actor_user_id=None,
                 )
 
+    @pytest.mark.asyncio
+    async def test_no_categorize_skips_categorizer_and_auto_creates_imbalance(
+        self, session_maker, setup
+    ):
+        """Slice B: ``no_categorize=True`` bypasses the categorizer entirely
+        and routes every line to an auto-created ``Imbalance:Unknown``
+        account (code ``9999.<currency>``) for the bank account's currency.
+
+        The categorizer used here would raise if called; the test asserts
+        ``no_categorize=True`` short-circuits before invocation.
+        """
+
+        class _ExplodingCategorizer:
+            async def categorize(
+                self, line, household_context, *, session=None
+            ) -> CategorizationResult:
+                raise AssertionError("categorizer must not be invoked when no_categorize=True")
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=_ExplodingCategorizer(),
+                actor_user_id=None,
+                no_categorize=True,
+            )
+            s.commit()
+
+            # Auto-created Imbalance:Unknown for USD is the other-side account.
+            other_account = AccountRepository(s, setup["household_id"]).get_by_code("9999.USD")
+            assert other_account is not None
+            assert other_account.name == "Imbalance:Unknown"
+            assert other_account.type == AccountType.EQUITY
+            assert other_account.currency == "USD"
+
+            postings = s.query(Posting).filter_by(transaction_id=tx.id).all()
+            other_ids = {p.account_id for p in postings} - {setup["cash_id"]}
+            assert other_ids == {other_account.id}
+
 
 # ---- apply_batch ----------------------------------------------------------
 
