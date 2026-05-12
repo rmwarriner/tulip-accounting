@@ -145,23 +145,39 @@ Powerful but requires storing the testmon DB across runs (S3, cache
 action). High setup cost, brittle, and the savings vanish on
 ``main``-target PRs. Not worth it at the current scale.
 
-### Option 6 — Schemathesis ``max_examples`` cap *(now redundant)*
+### Option 6 — Schemathesis ``max_examples`` cap *(implemented 2026-05-12)*
 
-The schemathesis suite is fast enough that none of its tests appear
-in the top 50 ``--durations``. Capping examples would help in absolute
-total but not visibly. Skip unless it later becomes a long pole.
+Reduce the "ci" hypothesis profile's ``max_examples`` from 25 to 10 in
+``packages/tulip-api/tests/test_openapi_contract.py``. The "thorough"
+profile at 200 remains available for ad-hoc deeper runs via
+``HYPOTHESIS_PROFILE=thorough``.
+
+**Status: shipped on top of option 3.** When option 3's matrix split
+landed, the tulip-api shard surfaced as the dominant wall-clock pole
+at ~9:10 — schemathesis (~80 fuzz endpoints × 25 examples = ~2000
+iterations) was carrying most of that cost. Cutting examples to 10
+reduces schemathesis fuzz coverage by ~60% with diminishing returns
+on the bug classes hypothesis catches at this layer (status-code-in-
+declared-set + body-conforms-to-schema; structural bugs surface
+within ~5 examples per endpoint, deeper iterations are extra
+property-test runs against the same hot path).
 
 ## Recommendation
 
-Roughly in priority order:
+After options 3 + 6 shipped (2026-05-12):
 
-1. **Option 2** (session-scoped uvicorn) is the single highest-leverage
-   change. The refactor is mechanical (UUID-ify the household-creating
-   test code paths) but touches a number of files. Best ROI per LoC.
-2. **Option 3** (CI matrix) layered on top of option 2 reduces
-   wall-clock further by parallelising the packages. Zero test
-   changes.
-3. **Option 4** (coverage shard) is independent and complementary.
+1. **Option 3 (CI matrix)** shipped. First run: 14 min → 10 min wall-
+   clock, dominated by tulip-api at ~9:10 due to schemathesis fuzz.
+2. **Option 6 (schemathesis max_examples 25 → 10)** shipped on top of
+   option 3. Cuts the tulip-api shard proportionally; expected total
+   CI ~5 min.
+3. **Option 4 (coverage shard)** remains available if further wall-
+   clock reduction is needed. Independent of options 3 + 6.
+4. **Option 2 (session-scoped uvicorn)** is **not recommended** —
+   measured a 50% sequential speedup but introduced a ~25-50% flake
+   rate under xdist due to argon2id + SQLite contention. Worth
+   revisiting only if paired with argon2 test parameters,
+   ``pytest-rerunfailures``, or uvicorn multi-worker.
 
 **Do NOT do Option 1** (template-DB). Measured negative under xdist;
 the documentation here is to prevent rediscovering this.
