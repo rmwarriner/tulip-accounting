@@ -178,3 +178,22 @@ class TestTrialBalance:
     def test_no_token_returns_unauthorized(self, client: TestClient):
         r = client.get("/v1/reports/trial-balance")
         assert_problem(r, code="auth.unauthorized", status=401)
+
+    def test_format_html_returns_html_response(self, client: TestClient, auth_h: dict[str, str]):
+        """``?format=html`` returns toner-friendly HTML rendered by tulip-reports (P7.1)."""
+        cash = _account(client, auth_h, name="Cash", code="1110")
+        food = _account(client, auth_h, name="Food", type="expense", code="5100")
+        _post_tx(client, auth_h, debit=food, credit=cash, amount="12.50")
+
+        r = client.get("/v1/reports/trial-balance?format=html", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/html")
+        body = r.text
+        # Toner-friendly contract surfaces in the rendered HTML.
+        assert "Trial balance" in body
+        assert "background: #fff" in body
+        # Both accounts surface in the table.
+        assert "Cash" in body
+        assert "Food" in body
+        # Money filter applied (thousand separators + 2 decimals).
+        assert "12.50" in body

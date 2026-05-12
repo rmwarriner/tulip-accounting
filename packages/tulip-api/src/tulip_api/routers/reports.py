@@ -1,10 +1,13 @@
-"""GET /v1/reports/trial-balance.
+"""GET /v1/reports/trial-balance (P7.1: + HTML rendering).
 
 Trial balance is the canonical "is the ledger healthy" view: every
 posted transaction's debit and credit postings should sum to zero per
 currency. The endpoint exposes both the per-account rows and the
 per-currency totals so a caller can both display the report and assert
 the zero-sum invariant.
+
+P7.1 adds ``?format=html`` to render via ``tulip_reports``; default
+remains JSON for backward compatibility.
 
 Pending transactions are excluded (they're workflow state, not ledger
 state). Role-based filtering matches ``GET /v1/accounts`` — admins see
@@ -16,9 +19,10 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import HTMLResponse, Response
 
 from tulip_api.auth.deps import get_current_claims
 from tulip_api.deps import get_session
@@ -51,8 +55,13 @@ def _filter_for_role(account_visibility: str, created_by: object, claims: Claims
 
 @router.get(
     "/trial-balance",
-    response_model=TrialBalanceRead,
-    responses={401: problem_response("auth.unauthorized")},
+    response_model=None,  # response can be JSON or HTML; per-format handler below
+    responses={
+        200: {
+            "description": "Trial-balance report (JSON by default; HTML when format=html).",
+        },
+        401: problem_response("auth.unauthorized"),
+    },
 )
 def trial_balance(
     as_of: date_type | None = Query(  # noqa: B008 — FastAPI uses Query() in defaults
@@ -62,9 +71,17 @@ def trial_balance(
             "transactions on or before this date. Defaults to today."
         ),
     ),
+    format: Literal["json", "html"] = Query(
+        default="json",
+        description=(
+            "Response format. ``json`` (default) returns the structured "
+            "shape for programmatic use; ``html`` returns a toner-friendly "
+            "rendered HTML document for screen review or printing."
+        ),
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
-) -> TrialBalanceRead:
+) -> Response:
     """Return per-account, per-currency balances for the household ledger.
 
     Pending transactions are excluded. Visibility filtering matches the
@@ -116,4 +133,18 @@ def trial_balance(
         for c in currencies
     ]
 
-    return TrialBalanceRead(as_of=effective_as_of, rows=rows, totals_by_currency=totals)
+    json_body = TrialBalanceRead(as_of=effective_as_of, rows=rows, totals_by_currency=totals)
+    if format == "html":
+        from tulip_reports.reports import trial_balance as report_module
+
+        data = report_module.build(
+            session,
+            household_id=claims.household_id,
+            as_of=effective_as_of,
+            visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
+        )
+        return HTMLResponse(content=report_module.render_html(data))
+    return Response(
+        content=json_body.model_dump_json(),
+        media_type="application/json",
+    )

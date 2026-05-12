@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Trial balance · {{ data.household_name }}{% endblock %}
+{% block report_title %}Trial balance{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>As of:</dt><dd>{{ data.as_of | isodate }}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Code</th>
+      <th>Account</th>
+      <th>Type</th>
+      <th class="num">Balance</th>
+      <th>Currency</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>
+      <td>{{ row.code or "" }}</td>
+      <td>{{ row.name }}</td>
+      <td>{{ row.type }}</td>
+      <td class="num{% if row.balance is negative %} negative{% endif %}">
+        {{ row.balance | money }}
+      </td>
+      <td>{{ row.currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  {% if data.totals_by_currency %}
+  <tfoot>
+    {% for total in data.totals_by_currency %}
+    <tr class="totals">
+      <td colspan="3">Totals · {{ total.currency }}</td>
+      <td class="num">DR {{ total.debits | money }} / CR {{ total.credits | money }}</td>
+      <td>{{ total.currency }}</td>
+    </tr>
+    {% endfor %}
+  </tfoot>
+  {% endif %}
+</table>
+{% else %}
+<p class="empty">No posted transactions as of {{ data.as_of | isodate }}.</p>
+{% endif %}
+{% endblock %}
