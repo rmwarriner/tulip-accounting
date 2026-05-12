@@ -140,10 +140,20 @@ def render_html(data: BalanceSheetData) -> str:
     )
 
 
+def render_pdf(data: BalanceSheetData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "balance_sheet.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
 __all__ = [
     "BalanceSheetData",
     "BalanceSheetRow",
     "BalanceSheetSection",
     "build",
     "render_html",
+    "render_pdf",
 ]

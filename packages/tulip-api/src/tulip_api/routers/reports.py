@@ -76,7 +76,7 @@ def trial_balance(
             "transactions on or before this date. Defaults to today."
         ),
     ),
-    format: Literal["json", "html"] = Query(
+    format: Literal["json", "html", "pdf"] = Query(
         default="json",
         description=(
             "Response format. ``json`` (default) returns the structured "
@@ -139,7 +139,7 @@ def trial_balance(
     ]
 
     json_body = TrialBalanceRead(as_of=effective_as_of, rows=rows, totals_by_currency=totals)
-    if format == "html":
+    if format in ("html", "pdf"):
         from tulip_reports.reports import trial_balance as report_module
 
         data = report_module.build(
@@ -148,7 +148,13 @@ def trial_balance(
             as_of=effective_as_of,
             visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
         )
-        return HTMLResponse(content=report_module.render_html(data))
+        return _report_response(
+            data,
+            report_module.render_html,
+            format,
+            render_pdf=report_module.render_pdf,
+            pdf_filename=f"trial-balance-{effective_as_of.isoformat()}.pdf",
+        )
     return Response(
         content=json_body.model_dump_json(),
         media_type="application/json",
@@ -186,10 +192,38 @@ def _report_response(
     data: object,
     render_html: Callable[..., str],
     format: str,
+    *,
+    render_pdf: Callable[..., bytes] | None = None,
+    pdf_filename: str = "report.pdf",
 ) -> Response:
-    """Common JSON / HTML branch used by the new report endpoints."""
+    """Common JSON / HTML / PDF branch used by the new report endpoints.
+
+    ``render_pdf`` defaults to None — the trial-balance endpoint that
+    constructs its data inline doesn't need it; the matrix of new
+    reports each pass the report module's ``render_pdf`` so PDF works
+    uniformly. When PDF is requested without a renderer, returns 400.
+    """
     if format == "html":
         return HTMLResponse(content=render_html(data))
+    if format == "pdf":
+        if render_pdf is None:
+            from tulip_api.errors import TulipProblem
+
+            class _PdfUnavailable(TulipProblem):
+                def __init__(self) -> None:
+                    super().__init__(
+                        code="report.pdf_not_supported",
+                        title="PDF not supported for this report",
+                        status=400,
+                        detail="This report doesn't have a PDF renderer wired up.",
+                    )
+
+            raise _PdfUnavailable()
+        return Response(
+            content=render_pdf(data),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{pdf_filename}"'},
+        )
     return Response(content=json.dumps(_to_jsonable(data)), media_type="application/json")
 
 
@@ -203,7 +237,7 @@ def _report_response(
 )
 def balance_sheet(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -216,7 +250,13 @@ def balance_sheet(
         as_of=as_of,
         visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
     )
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="trial-balance.pdf",
+    )
 
 
 @router.get(
@@ -232,7 +272,7 @@ def income_statement(
     end: date = Query(...),  # noqa: B008
     prior_start: date | None = Query(default=None),  # noqa: B008
     prior_end: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -248,7 +288,13 @@ def income_statement(
         prior_end=prior_end,
         visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
     )
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="income-statement.pdf",
+    )
 
 
 @router.get(
@@ -262,7 +308,7 @@ def income_statement(
 def cash_flow(
     start: date = Query(...),  # noqa: B008
     end: date = Query(...),  # noqa: B008
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -276,7 +322,13 @@ def cash_flow(
         end=end,
         visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
     )
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="cash-flow.pdf",
+    )
 
 
 @router.get(
@@ -289,7 +341,7 @@ def cash_flow(
 )
 def envelope_status(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -297,7 +349,13 @@ def envelope_status(
     from tulip_reports.reports import envelope_status as report_module
 
     data = report_module.build(session, household_id=claims.household_id, as_of=as_of)
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="envelope-status.pdf",
+    )
 
 
 @router.get(
@@ -310,7 +368,7 @@ def envelope_status(
 )
 def sinking_fund_progress(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -318,7 +376,13 @@ def sinking_fund_progress(
     from tulip_reports.reports import sinking_fund_progress as report_module
 
     data = report_module.build(session, household_id=claims.household_id, as_of=as_of)
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="sinking-fund-progress.pdf",
+    )
 
 
 @router.get(
@@ -331,7 +395,7 @@ def sinking_fund_progress(
 )
 def reconciliation_summary(
     status_filter: str | None = Query(default=None, alias="status"),
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -343,7 +407,13 @@ def reconciliation_summary(
         household_id=claims.household_id,
         status_filter=status_filter,
     )
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="reconciliation-summary.pdf",
+    )
 
 
 @router.get(
@@ -361,7 +431,7 @@ def audit_log(
     entity_type: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -378,7 +448,13 @@ def audit_log(
         limit=limit,
         offset=offset,
     )
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="audit-log.pdf",
+    )
 
 
 class CustomQueryUnsafeError(TulipProblem):
@@ -411,7 +487,7 @@ class CustomQueryUnsafeError(TulipProblem):
 )
 def custom_query(
     sql: str = Query(..., description="Read-only SELECT against AI views (P6.2)."),
-    format: Literal["json", "html"] = Query(default="json"),
+    format: Literal["json", "html", "pdf"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -428,4 +504,10 @@ def custom_query(
         data = report_module.build(session, household_id=claims.household_id, sql=sql)
     except UnsafeSQLError as exc:
         raise CustomQueryUnsafeError(str(exc)) from exc
-    return _report_response(data, report_module.render_html, format)
+    return _report_response(
+        data,
+        report_module.render_html,
+        format,
+        render_pdf=report_module.render_pdf,
+        pdf_filename="custom-query.pdf",
+    )

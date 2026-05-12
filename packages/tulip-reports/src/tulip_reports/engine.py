@@ -112,6 +112,20 @@ class ReportRenderer:
         template = self._env.get_template(template_name)
         return template.render(**context)
 
+    def render_pdf(self, template_name: str, **context: object) -> bytes:
+        """Render ``template_name`` to PDF bytes via weasyprint (P7.2).
+
+        weasyprint is imported lazily so a tulip-reports import doesn't
+        pull in the (heavy) Pango/cairo stack until a caller actually
+        asks for PDF output. The same templates that drive HTML
+        rendering produce the PDF — the ``@media print`` block in
+        ``base.html`` applies.
+        """
+        from weasyprint import HTML  # type: ignore[import-untyped]
+
+        html = self.render(template_name, **context)
+        return bytes(HTML(string=html).write_pdf() or b"")
+
 
 _RENDERER: ReportRenderer | None = None
 

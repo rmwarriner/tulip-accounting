@@ -84,3 +84,11 @@ class TestRenderer:
 
         with pytest.raises(UndefinedError):
             get_renderer().render("base.html")  # generated_at missing
+
+    def test_render_pdf_returns_pdf_bytes(self) -> None:
+        """Engine's render_pdf produces real PDF bytes via weasyprint (P7.2)."""
+        from datetime import date
+
+        pdf = get_renderer().render_pdf("base.html", generated_at=date(2026, 5, 12))
+        assert isinstance(pdf, bytes)
+        assert pdf.startswith(b"%PDF-")

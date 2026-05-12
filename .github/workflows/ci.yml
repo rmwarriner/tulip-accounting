@@ -160,12 +160,17 @@ jobs:
           path: /var/cache/apt/archives
           key: apt-sqlcipher-${{ runner.os }}-v1
 
-      - name: Install SQLCipher headers
+      - name: Install SQLCipher headers + weasyprint runtime libs
         # tulip-storage links against SQLCipher; required for storage tests.
-        # On the macOS/Windows side, contributors install locally; CI is Linux-only.
+        # tulip-reports' weasyprint dep (P7.2) needs Pango + HarfBuzz +
+        # fontconfig at runtime (weasyprint 60+ ships its own PDF renderer
+        # in pure Python but still uses Pango for text shaping).
+        # On macOS/Windows, contributors install locally; CI is Linux-only.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlcipher-dev sqlcipher
+          sudo apt-get install -y \
+              libsqlcipher-dev sqlcipher \
+              libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libfontconfig1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

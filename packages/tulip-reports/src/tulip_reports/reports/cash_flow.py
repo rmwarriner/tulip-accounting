@@ -120,4 +120,19 @@ def render_html(data: CashFlowData) -> str:
     )
 
 
-__all__ = ["CashFlowData", "CashFlowRow", "build", "render_html"]
+def render_pdf(data: CashFlowData) -> bytes:
+    """Render the report as PDF bytes via weasyprint (P7.2)."""
+    return get_renderer().render_pdf(
+        "cash_flow.html",
+        data=data,
+        generated_at=data.generated_at,
+    )
+
+
+__all__ = [
+    "CashFlowData",
+    "CashFlowRow",
+    "build",
+    "render_html",
+    "render_pdf",
+]
