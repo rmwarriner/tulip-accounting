@@ -128,10 +128,43 @@ def render_pdf(data: SinkingFundProgressData) -> bytes:
     )
 
 
+def render_csv(data: SinkingFundProgressData) -> bytes:
+    """Render sinking-fund progress as CSV (P7.3): one row per fund."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = [
+        "Fund id",
+        "Name",
+        "Currency",
+        "Balance",
+        "Target amount",
+        "Remaining",
+        "Target date",
+        "Days remaining",
+        "Progress %",
+    ]
+    rows: list[list[object]] = [
+        [
+            row.fund_id,
+            row.name,
+            row.currency,
+            row.balance,
+            row.target_amount,
+            row.remaining_to_target,
+            row.target_date.isoformat(),
+            row.days_remaining,
+            row.progress_pct,
+        ]
+        for row in data.rows
+    ]
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "SinkingFundProgressData",
     "SinkingFundRow",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

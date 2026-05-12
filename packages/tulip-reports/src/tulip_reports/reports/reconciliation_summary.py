@@ -140,10 +140,47 @@ def render_pdf(data: ReconciliationSummaryData) -> bytes:
     )
 
 
+def render_csv(data: ReconciliationSummaryData) -> bytes:
+    """Render reconciliation summary as CSV (P7.3): one row per reconciliation."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = [
+        "Reconciliation id",
+        "Account code",
+        "Account name",
+        "Period start",
+        "Period end",
+        "Starting",
+        "Ending",
+        "Currency",
+        "Status",
+        "Matches",
+        "Carried forward",
+    ]
+    rows: list[list[object]] = [
+        [
+            row.reconciliation_id,
+            row.account_code or "",
+            row.account_name,
+            row.period_start.isoformat(),
+            row.period_end.isoformat(),
+            row.starting_balance,
+            row.ending_balance,
+            row.currency,
+            row.status,
+            row.match_count,
+            row.carry_forward_count,
+        ]
+        for row in data.rows
+    ]
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "ReconciliationRow",
     "ReconciliationSummaryData",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

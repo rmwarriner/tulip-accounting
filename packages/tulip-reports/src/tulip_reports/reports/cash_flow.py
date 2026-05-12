@@ -129,10 +129,26 @@ def render_pdf(data: CashFlowData) -> bytes:
     )
 
 
+def render_csv(data: CashFlowData) -> bytes:
+    """Render cash flow as CSV (P7.3): one row per (direction, account)."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = ["Direction", "Code", "Account", "Currency", "Net change"]
+    rows: list[list[object]] = []
+    for row in data.inflows:
+        rows.append(["inflow", row.code or "", row.name, row.currency, row.delta])
+    for row in data.outflows:
+        rows.append(["outflow", row.code or "", row.name, row.currency, row.delta])
+    for currency, net in data.net_by_currency.items():
+        rows.append(["NET", "", "", currency, net])
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "CashFlowData",
     "CashFlowRow",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

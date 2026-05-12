@@ -208,3 +208,20 @@ class TestTrialBalance:
         assert r.content.startswith(b"%PDF-")
         # Filename hint includes the as_of date.
         assert "trial-balance-" in r.headers.get("content-disposition", "")
+
+    def test_format_csv_returns_csv_response(self, client: TestClient, auth_h: dict[str, str]):
+        """``?format=csv`` returns text/csv with the rows + totals (P7.3)."""
+        cash = _account(client, auth_h, name="Cash", code="1110")
+        food = _account(client, auth_h, name="Food", type="expense", code="5100")
+        _post_tx(client, auth_h, debit=food, credit=cash, amount="12.50")
+
+        r = client.get("/v1/reports/trial-balance?format=csv", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        body = r.content.decode()
+        # Header row + at least one data row.
+        assert body.startswith("Code,Account,Type,Currency,Balance\r\n")
+        assert "Cash" in body
+        assert "Food" in body
+        assert "TOTAL" in body  # sentinel for currency totals
+        assert ".csv" in r.headers.get("content-disposition", "")

@@ -157,11 +157,38 @@ def render_pdf(data: TrialBalanceData) -> bytes:
     )
 
 
+def render_csv(data: TrialBalanceData) -> bytes:
+    """Render the report as CSV bytes (P7.3).
+
+    One row per (account, currency); per-currency totals at the end
+    with a sentinel ``Code`` value of ``TOTAL`` so consumers can
+    distinguish data rows from summary rows.
+    """
+    from tulip_reports.engine import ReportRenderer
+
+    headers = ["Code", "Account", "Type", "Currency", "Balance"]
+    rows: list[list[object]] = [
+        [row.code or "", row.name, row.type, row.currency, row.balance] for row in data.rows
+    ]
+    for total in data.totals_by_currency:
+        rows.append(
+            [
+                "TOTAL",
+                f"Debits / Credits in {total.currency}",
+                "",
+                total.currency,
+                f"DR {total.debits} / CR {total.credits}",
+            ]
+        )
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "CurrencyTotal",
     "TrialBalanceData",
     "TrialBalanceRow",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

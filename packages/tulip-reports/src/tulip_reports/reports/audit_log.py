@@ -137,10 +137,39 @@ def render_pdf(data: AuditLogData) -> bytes:
     )
 
 
+def render_csv(data: AuditLogData) -> bytes:
+    """Render audit log as CSV (P7.3): one row per audit entry."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = [
+        "Occurred at",
+        "Actor kind",
+        "Actor user id",
+        "Action",
+        "Entity type",
+        "Entity id",
+        "Request id",
+    ]
+    rows: list[list[object]] = [
+        [
+            row.occurred_at.isoformat(),
+            row.actor_kind,
+            row.actor_user_id or "",
+            row.action,
+            row.entity_type,
+            row.entity_id or "",
+            row.request_id or "",
+        ]
+        for row in data.rows
+    ]
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "AuditLogData",
     "AuditLogRow",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

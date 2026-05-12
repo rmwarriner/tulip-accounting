@@ -128,10 +128,41 @@ def render_pdf(data: EnvelopeStatusData) -> bytes:
     )
 
 
+def render_csv(data: EnvelopeStatusData) -> bytes:
+    """Render envelope status as CSV (P7.3): one row per envelope."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = [
+        "Envelope id",
+        "Name",
+        "Currency",
+        "Balance",
+        "Budget",
+        "Budget period",
+        "Rollover",
+        "Utilization %",
+    ]
+    rows: list[list[object]] = [
+        [
+            row.envelope_id,
+            row.name,
+            row.currency,
+            row.balance,
+            row.budget_amount if row.budget_amount is not None else "",
+            row.budget_period,
+            row.rollover_policy,
+            row.utilization_pct if row.utilization_pct is not None else "",
+        ]
+        for row in data.rows
+    ]
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "EnvelopeStatusData",
     "EnvelopeStatusRow",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]
