@@ -308,6 +308,140 @@ def test_reconcile_show_renders_four_sections(session_setup: dict[str, str]) -> 
 # ---- auto-match / match / reject ----------------------------------------
 
 
+# ---- interactive wizard --------------------------------------------------
+
+
+def _create_recon(session_setup: dict[str, str]) -> str:
+    """Create a recon envelope and return its UUID."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "create",
+            "--account",
+            "1110",
+            "--batch",
+            session_setup["batch_id"],
+            "--period",
+            "2026-05-01..2026-05-31",
+            "--starting",
+            "0.00",
+            "--ending",
+            "1457.83",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    return str(json.loads(create.stdout)["id"])
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_no_matches_hints_auto_match(
+    session_setup: dict[str, str],
+) -> None:
+    """If no auto-matches exist yet, the wizard tells the user to run auto-match."""
+    recon_id = _create_recon(session_setup)
+    result = _run_cli(
+        "reconcile",
+        "interactive",
+        recon_id,
+        api_url=session_setup["api_url"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "auto-match" in result.stdout.lower()
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_accept_all(session_setup: dict[str, str]) -> None:
+    """Pipe 'a\\na\\n' to accept both auto-matched candidates; summary should report 2 accepted."""
+    recon_id = _create_recon(session_setup)
+    # Pre-run auto-match so there are candidates to walk through.
+    auto = _run_cli("reconcile", "auto-match", recon_id, api_url=session_setup["api_url"])
+    assert auto.returncode == 0, auto.stderr
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "interactive",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="a\na\n",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "2 accepted" in result.stdout
+    assert "0 rejected" in result.stdout
+
+    # And complete should still work since accepted matches are preserved.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode == 0, complete.stderr
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_reject_then_quit(session_setup: dict[str, str]) -> None:
+    """Reject one, quit; the rejected match should be gone from the inbox."""
+    recon_id = _create_recon(session_setup)
+    auto = _run_cli("reconcile", "auto-match", recon_id, api_url=session_setup["api_url"])
+    assert auto.returncode == 0, auto.stderr
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "interactive",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="r\nq\n",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "1 rejected" in result.stdout
+
+    # And the inbox should now show one fewer match.
+    show = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "show",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    body = json.loads(show.stdout)
+    assert len(body["matches"]) == 1  # one remained (the one we quit on)
+
+
 @pytest.mark.integration
 def test_reconcile_auto_match_and_complete(session_setup: dict[str, str]) -> None:
     create = subprocess.run(

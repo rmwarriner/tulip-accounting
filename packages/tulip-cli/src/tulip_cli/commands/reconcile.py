@@ -571,6 +571,162 @@ def complete_command(
     )
 
 
+# ---- interactive (guided wizard) ------------------------------------------
+
+
+def _read_wizard_choice() -> str:
+    """Read one line from stdin and return the first character, lowercased.
+
+    Empty input (just Enter) returns ``""`` so the caller can supply its own
+    default. EOF returns ``"q"`` so a piped script with too few inputs cleanly
+    quits instead of hanging.
+    """
+    try:
+        line = input("[A]ccept  [R]eject  [S]kip  [Q]uit > ").strip().lower()
+    except EOFError:
+        return "q"
+    return line[:1]
+
+
+@reconcile_app.command("interactive")
+def interactive_command(
+    ctx: typer.Context,
+    reconciliation_id: Annotated[
+        UUID,
+        typer.Argument(help="Reconciliation UUID.", metavar="RECONCILIATION_ID"),
+    ],
+) -> None:
+    """Walk through auto-matched proposals one at a time (accept / reject / skip / quit).
+
+    Designed for the migration / monthly-review flow: rather than copying UUIDs
+    out of ``reconcile show`` and pasting them into ``match``, this loop renders
+    each auto-matched proposal with its statement-line and ledger-transaction
+    context side by side and accepts one-keystroke decisions. Manual-only
+    matches (no ``matcher_version``) are skipped — they're already user-decided.
+
+    On ``Q``, the reconciliation envelope is left in its current state with all
+    accepted matches intact; run ``tulip reconcile complete`` separately when
+    you're ready to finalise.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    if as_json:
+        raise typer.BadParameter("--json is incompatible with the interactive wizard")
+
+    console = Console()
+    try:
+        with _client(config, as_json=as_json) as client:
+            inbox = client.get(
+                f"/v1/reconciliations/{reconciliation_id}",
+                authenticated=True,
+            ).json()
+            auto_matches = [m for m in inbox["matches"] if m.get("matcher_version")]
+            if not auto_matches:
+                if inbox["matches"]:
+                    typer.echo("All matches in this reconciliation are manual; nothing to review.")
+                else:
+                    typer.echo(
+                        f"No matches to review yet. Run `tulip reconcile auto-match "
+                        f"{reconciliation_id}` first."
+                    )
+                return
+
+            recon = inbox["reconciliation"]
+            lines_by_id, txs_by_id = _build_match_context_lookups(client, recon)
+            accepted, rejected, skipped = _run_wizard_loop(
+                client,
+                console,
+                reconciliation_id,
+                auto_matches,
+                lines_by_id,
+                txs_by_id,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    typer.echo(f"\nReviewed: {accepted} accepted, {rejected} rejected, {skipped} skipped.")
+    typer.echo(f"Run `tulip reconcile complete {reconciliation_id}` when ready to finalise.")
+
+
+def _build_match_context_lookups(
+    client: TulipClient,
+    recon: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Two GETs to populate (line_id → line) and (tx_id → tx) lookups.
+
+    Matched items have been removed from the inbox's ``unmatched_*`` arrays,
+    so to render their detail we re-fetch from the source batch and the
+    transactions endpoint scoped to the recon's account + period.
+    """
+    lines_by_id: dict[str, dict[str, Any]] = {}
+    batch_id = recon.get("source_import_batch_id")
+    if batch_id:
+        batch = client.get(f"/v1/imports/{batch_id}", authenticated=True).json()
+        lines_by_id = {ln["id"]: ln for ln in batch.get("lines", [])}
+
+    txs = client.get(
+        "/v1/transactions",
+        authenticated=True,
+        params={
+            "account_id": recon["account_id"],
+            "from": recon["statement_period_start"],
+            "to": recon["statement_period_end"],
+        },
+    ).json()
+    txs_by_id = {tx["id"]: tx for tx in txs}
+    return lines_by_id, txs_by_id
+
+
+def _run_wizard_loop(
+    client: TulipClient,
+    console: Console,
+    reconciliation_id: UUID,
+    auto_matches: list[dict[str, Any]],
+    lines_by_id: dict[str, dict[str, Any]],
+    txs_by_id: dict[str, dict[str, Any]],
+) -> tuple[int, int, int]:
+    """Iterate auto-matches; return ``(accepted, rejected, skipped)``."""
+    accepted = rejected = skipped = 0
+    total = len(auto_matches)
+    for idx, match in enumerate(auto_matches, start=1):
+        line = lines_by_id.get(match["statement_line_id"], {})
+        tx = txs_by_id.get(match["ledger_transaction_id"], {})
+        confidence = str(match.get("confidence") or "?").upper()
+        console.print(f"\n[bold][{idx}/{total}] {confidence} confidence[/bold]")
+        console.print(
+            f"  statement: {line.get('posted_date', '?')}  "
+            f"{(line.get('description') or '')[:50]}  "
+            f"{line.get('amount', '?')} {line.get('currency', '')}"
+        )
+        console.print(
+            f"  ledger tx: {str(tx.get('id', ''))[:8]}  {tx.get('date', '?')}  "
+            f"{(tx.get('description') or '')[:50]}  status={tx.get('status', '?')}"
+        )
+
+        choice = _read_wizard_choice()
+        if choice == "" or choice == "a":
+            accepted += 1
+            console.print("  [green]✓ accepted[/green]")
+        elif choice == "r":
+            client.post(
+                f"/v1/reconciliations/{reconciliation_id}/matches/{match['id']}/reject",
+                authenticated=True,
+            )
+            rejected += 1
+            console.print("  [yellow]✗ rejected[/yellow]")
+        elif choice == "s":
+            skipped += 1
+            console.print("  skipped")
+        elif choice == "q":
+            console.print("  quit")
+            break
+        else:
+            console.print(f"  unknown choice {choice!r}; skipping")
+            skipped += 1
+    return accepted, rejected, skipped
+
+
 # ---- delete ---------------------------------------------------------------
 
 
