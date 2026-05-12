@@ -121,13 +121,36 @@ jobs:
         run: uv run mypy
 
   # ---------------------------------------------------------------------------
-  # Unit + property-based tests with coverage gate
+  # Unit + property-based tests (matrix shard per workspace package).
+  #
+  # Per ADR-0006, sharding the test job by package cuts wall-clock from the
+  # ~14 minutes a single-job run took at Phase 6 close down to the slowest
+  # individual shard (~2-3 min). Each shard produces a partial `.coverage`
+  # data file; the `coverage` job below combines them and enforces the
+  # 85% floor on the aggregate.
+  #
+  # Matrix values are controlled (declared inline below); no untrusted input
+  # is interpolated into `run:` commands, so the matrix expansion is safe.
   # ---------------------------------------------------------------------------
   test:
-    name: Test (pytest + coverage)
+    name: Test (${{ matrix.package }})
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel sibling shards if one fails — easier to triage a real
+      # regression vs. an unrelated flake on a different shard.
+      fail-fast: false
+      matrix:
+        package:
+          - tulip-core
+          - tulip-storage
+          - tulip-api
+          - tulip-cli
+          - tulip-ai
+          - tulip-importers
+          # tulip-reports has 0 tests today; exclude rather than run a
+          # no-tests-collected job that would exit 5.
     steps:
       - uses: actions/checkout@v6
 
@@ -153,24 +176,87 @@ jobs:
       - name: Install workspace dependencies
         run: uv sync --all-packages --dev
 
-      - name: Run tests with coverage
-        # --cov-fail-under enforces the project floor declared in README.md.
-        # Bump this number as coverage improves; never lower it without an ADR.
-        # `-n auto --maxprocesses=4` parallelises test execution across CPU
-        # cores via pytest-xdist while capping at 4 workers so local
-        # invocations don't saturate developer machines (CI runners are
-        # 4-vCPU so the cap is a no-op here; it matters locally). The cap
-        # mirrors XDIST_WORKERS in the justfile.
+      - name: Run tests with coverage (${{ matrix.package }})
+        # `COVERAGE_FILE` keeps each shard's partial data isolated under a
+        # unique name so the aggregate job can combine all shards.
+        # `--cov-fail-under=0` overrides the global 85% floor in
+        # `[tool.coverage.report]` so each shard doesn't fail when only its
+        # own package's code is exercised — the floor is meaningful only on
+        # the combined data, enforced by the `coverage` job below.
+        # `-n auto --maxprocesses=4` mirrors the justfile.
+        env:
+          COVERAGE_FILE: .coverage.${{ matrix.package }}
+          PACKAGE: ${{ matrix.package }}
         run: |
           uv run pytest -n auto --maxprocesses 4 \
+            "packages/${PACKAGE}/tests" \
             --cov \
-            --cov-report=term \
-            --cov-report=xml \
-            --cov-report=html \
-            --cov-fail-under=85 \
-            --junitxml=junit.xml
+            --cov-report= \
+            --cov-fail-under=0 \
+            --junitxml="junit-${PACKAGE}.xml"
 
-      - name: Upload coverage XML (for downstream tools)
+      - name: Upload partial coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-partial-${{ matrix.package }}
+          path: .coverage.${{ matrix.package }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Upload JUnit results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-${{ matrix.package }}
+          path: junit-${{ matrix.package }}.xml
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Coverage aggregation — combines all matrix shards, enforces the 85% gate.
+  # Runs only after every test shard has reported (success or failure); if
+  # any shard failed, this job still runs to provide a coverage signal but
+  # the aggregate `all-checks-passed` gate fails via `test`'s status.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Aggregate coverage (combine + 85% gate)
+    needs: [changes, test]
+    if: |
+      always() &&
+      (github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        # Coverage needs the package layout resolvable to map data files
+        # back to source paths during `coverage combine`.
+        run: uv sync --all-packages --dev
+
+      - name: Download all partial coverage artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-partial-*
+          path: .coverage-partials
+          merge-multiple: true
+
+      - name: Combine and report
+        # 85% project floor declared in README.md. Bump as coverage
+        # improves; never lower it without an ADR.
+        run: |
+          cp .coverage-partials/.coverage.* . 2>/dev/null || (echo "::error::no partial coverage files found"; exit 1)
+          uv run coverage combine .coverage.*
+          uv run coverage report --fail-under=85
+          uv run coverage xml
+          uv run coverage html
+
+      - name: Upload combined coverage XML
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -178,7 +264,7 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
 
-      - name: Upload coverage HTML report
+      - name: Upload combined coverage HTML
         # HTML report is for human inspection on `main` post-merge; PR runs
         # don't need to upload it (saves ~10-20s and a few MB per PR run).
         if: always() && github.event_name == 'push'
@@ -186,14 +272,6 @@ jobs:
         with:
           name: coverage-html
           path: htmlcov/
-          if-no-files-found: warn
-
-      - name: Upload JUnit results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: junit
-          path: junit.xml
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
@@ -349,13 +427,17 @@ jobs:
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [changes, lint, type-check, test, secrets-scan, dependency-audit, benchmarks, docker-image]
+    needs: [changes, lint, type-check, test, coverage, secrets-scan, dependency-audit, benchmarks, docker-image]
     if: always()
     steps:
       - name: Verify all required jobs succeeded or were correctly skipped
         # Conditional jobs (test, benchmarks, etc.) report `skipped` when
         # their path filter says they didn't need to run. That's a pass.
         # Only `failure` / `cancelled` should fail this gate.
+        #
+        # `needs.test.result` for a matrix job is `success` only when every
+        # shard succeeded; one failing shard fails the aggregate. `coverage`
+        # gates the 85% floor on the combined data.
         run: |
           fail=0
           # `changes` itself must succeed — if its outputs are missing the
@@ -368,6 +450,7 @@ jobs:
               "${{ needs.lint.result }}" \
               "${{ needs.type-check.result }}" \
               "${{ needs.test.result }}" \
+              "${{ needs.coverage.result }}" \
               "${{ needs.secrets-scan.result }}" \
               "${{ needs.dependency-audit.result }}" \
               "${{ needs.benchmarks.result }}" \

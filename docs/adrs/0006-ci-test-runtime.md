@@ -76,32 +76,68 @@ bottlenecks. Don't optimise based on sequential profiles.
 
 ## Options considered (with revised priority)
 
-### Option 2 — Session-scoped uvicorn + UUID-based test isolation *(highest measured leverage)*
+### Option 2 — Session-scoped uvicorn + UUID-based test isolation *(implemented and reverted)*
 
 Hoist the ``live_api`` fixture from ``scope=function`` to
 ``scope="session"``. One uvicorn per xdist worker × 4 workers = 4
 boots total instead of ~150 (one per CLI test that uses the fixture).
-Per-worker savings ≈ ~70 tests × 800ms boot avg = ~55s; wall-clock
-delta with 4 workers ≈ **same ~55s** since each worker independently
-amortises.
+Per-worker savings ≈ ~70 tests × 800ms boot avg = ~55s.
 
-What it requires:
+**Status: tried 2026-05-11, reverted.** Measured wall-clock dropped
+~50% (sequential 7m37s → 3m40s; CI extrapolation 14 min → ~7 min),
+but the implementation introduces a **persistent ~25-50% flake rate**
+that smaller mitigations did not eliminate. Documented here so a
+future attempt has the full forensics.
 
-- Every CLI test that registers a household must use a **unique email +
-  household name** per test (e.g. ``f"user-{uuid4().hex[:8]}@example.com"``).
-  Today tests assume a fresh DB and reuse ``me@example.com`` /
-  ``admin@example.com``. Refactor: ~30–50 tests, mechanical.
-- The ``live_api`` fixture's underlying DB still needs to start fresh
-  per worker (so worker A doesn't see worker B's data). That's
-  naturally session-scoped already if we session-scope the fixture.
-- Tests that depend on a *specific* DB state (e.g. "an empty
-  household") need an explicit per-test reset. Most CLI tests are
-  insert-only and don't care.
+What was implemented:
 
-Cost: medium (refactor the ~30–50 tests that hard-code emails / names).
-Risk: medium (test isolation failure shows up as flaky tests; needs
-careful audit). Reward: ~55s wall-clock, gets the test job under
-~9 minutes.
+- ``live_api`` fixture changed to ``scope="session"`` per xdist worker.
+- New shared fixtures in ``conftest.py``: ``unique_id`` (per-test 8-hex
+  string) and ``registered_user`` (UUID-derived email + household +
+  per-test token store).
+- Every CLI test file's local ``authed_session`` / ``access_token``
+  fixtures refactored to derive their email + household name from
+  ``unique_id`` so concurrent tests don't collide.
+- ``test_auth_login.py``'s helper-based pattern got a bespoke
+  refactor (each test gets an ``email = f"alice-{unique_id}..."``
+  local variable threaded through).
+- CLI subprocess timeouts bumped from 10s/15s/20s → 30s across all
+  ~99 ``subprocess.run`` call sites.
+- ``TulipClient`` default HTTP timeout bumped 10s → 30s.
+
+What broke:
+
+- Login operations occasionally exceed even 30s under load.
+- The root cause is **CPU contention from argon2id password
+  verification**. Tulip's API uses argon2id at OWASP-2024 minimum
+  parameters (memory ≈ 19MiB, time ≈ 2). Under xdist with 4 workers
+  each running their own uvicorn (so 8+ Python processes on a
+  4-core machine), argon2id verifications queue and starve the
+  uvicorn asyncio loop.
+- Reducing xdist to 2 workers reduced flake rate but didn't
+  eliminate it (~30-50% per-run rate at 2 workers, vs ~25-50% at 4).
+- Bumping HTTP timeouts to 30s only partially helps because the
+  delays sometimes exceed even that bound.
+
+What would need to happen to make option 2 work:
+
+1. **Add an env-driven argon2 parameter knob** (e.g.
+   ``TULIP_ARGON2_TEST_MODE=1`` selects ``time_cost=1, memory_cost=128``
+   for tests). This is intrusive but eliminates the CPU contention
+   class. The production parameters stay at OWASP-2024 minimum.
+2. **Or add ``pytest-rerunfailures`` retry** as a safety net. Standard
+   industry pattern for genuinely-flaky-under-load suites. Re-runs
+   each timeout failure once before reporting. Tolerates the contention
+   without changing it.
+3. **Or run uvicorn with multiple workers** so concurrent argon2
+   verifications can run in parallel processes. Adds boot complexity
+   to the fixture; uvicorn ``--workers N`` doesn't compose cleanly
+   with ``--factory`` in dev/test setups.
+
+Without one of those mitigations, option 2 trades 50% wall-clock for
+unacceptable flake rate. The git history of branch
+``perf/p2-session-live-api`` (since deleted) has the full
+implementation if anyone wants to reproduce the measurement.
 
 ### Option 3 — Per-package CI matrix *(zero test changes, modest wall-clock win)*
 
@@ -145,23 +181,39 @@ Powerful but requires storing the testmon DB across runs (S3, cache
 action). High setup cost, brittle, and the savings vanish on
 ``main``-target PRs. Not worth it at the current scale.
 
-### Option 6 — Schemathesis ``max_examples`` cap *(now redundant)*
+### Option 6 — Schemathesis ``max_examples`` cap *(implemented 2026-05-12)*
 
-The schemathesis suite is fast enough that none of its tests appear
-in the top 50 ``--durations``. Capping examples would help in absolute
-total but not visibly. Skip unless it later becomes a long pole.
+Reduce the "ci" hypothesis profile's ``max_examples`` from 25 to 10 in
+``packages/tulip-api/tests/test_openapi_contract.py``. The "thorough"
+profile at 200 remains available for ad-hoc deeper runs via
+``HYPOTHESIS_PROFILE=thorough``.
+
+**Status: shipped on top of option 3.** When option 3's matrix split
+landed, the tulip-api shard surfaced as the dominant wall-clock pole
+at ~9:10 — schemathesis (~80 fuzz endpoints × 25 examples = ~2000
+iterations) was carrying most of that cost. Cutting examples to 10
+reduces schemathesis fuzz coverage by ~60% with diminishing returns
+on the bug classes hypothesis catches at this layer (status-code-in-
+declared-set + body-conforms-to-schema; structural bugs surface
+within ~5 examples per endpoint, deeper iterations are extra
+property-test runs against the same hot path).
 
 ## Recommendation
 
-Roughly in priority order:
+After options 3 + 6 shipped (2026-05-12):
 
-1. **Option 2** (session-scoped uvicorn) is the single highest-leverage
-   change. The refactor is mechanical (UUID-ify the household-creating
-   test code paths) but touches a number of files. Best ROI per LoC.
-2. **Option 3** (CI matrix) layered on top of option 2 reduces
-   wall-clock further by parallelising the packages. Zero test
-   changes.
-3. **Option 4** (coverage shard) is independent and complementary.
+1. **Option 3 (CI matrix)** shipped. First run: 14 min → 10 min wall-
+   clock, dominated by tulip-api at ~9:10 due to schemathesis fuzz.
+2. **Option 6 (schemathesis max_examples 25 → 10)** shipped on top of
+   option 3. Cuts the tulip-api shard proportionally; expected total
+   CI ~5 min.
+3. **Option 4 (coverage shard)** remains available if further wall-
+   clock reduction is needed. Independent of options 3 + 6.
+4. **Option 2 (session-scoped uvicorn)** is **not recommended** —
+   measured a 50% sequential speedup but introduced a ~25-50% flake
+   rate under xdist due to argon2id + SQLite contention. Worth
+   revisiting only if paired with argon2 test parameters,
+   ``pytest-rerunfailures``, or uvicorn multi-worker.
 
 **Do NOT do Option 1** (template-DB). Measured negative under xdist;
 the documentation here is to prevent rediscovering this.

@@ -40,8 +40,15 @@ from tulip_api.main import create_app
 # basic contract (status code in declared set, body conforms to schema)
 # still gets exercised.
 _SUPPRESSED = [HealthCheck.filter_too_much, HealthCheck.data_too_large]
+# 10 examples per endpoint x ~80 endpoints = ~800 fuzz iterations per CI run.
+# Per ADR-0006, schemathesis was the dominant cost in the tulip-api shard
+# under the option 3 matrix (9:10 of a 10-min CI wall-clock). Dropping from
+# 25 → 10 examples cuts schemathesis time by ~60% with diminishing returns
+# beyond ~10 examples per endpoint on the kinds of bugs hypothesis catches
+# at this layer (status-code-in-declared-set + body-conforms-to-schema).
+# The "thorough" profile (max_examples=200) remains for ad-hoc deeper runs.
 hyp_settings.register_profile(
-    "ci", max_examples=25, deadline=None, suppress_health_check=_SUPPRESSED
+    "ci", max_examples=10, deadline=None, suppress_health_check=_SUPPRESSED
 )
 hyp_settings.register_profile(
     "thorough", max_examples=200, deadline=None, suppress_health_check=_SUPPRESSED

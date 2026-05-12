@@ -1,0 +1,78 @@
+# Tulip Accounting — Schemathesis deep fuzz (weekly)
+#
+# The per-PR CI run uses HYPOTHESIS_PROFILE=ci (max_examples=10) per
+# ADR-0006 option 6 — fast enough to gate PRs, deep enough to catch
+# structural contract bugs. This workflow runs the same test surface
+# with HYPOTHESIS_PROFILE=thorough (max_examples=200) on a weekly cron
+# so the deep-fuzz signal isn't permanently lost in the speed/depth
+# tradeoff.
+#
+# Triggered on a fixed schedule + workflow_dispatch only; no PR or push
+# triggers. No untrusted input flows into run: commands (the only
+# interpolation is the GITHUB_TOKEN-style controlled values).
+#
+# A failure here surfaces a contract bug that the ci profile didn't
+# happen to land on in PRs that week. Failures fail the run loudly —
+# the Actions UI is the surface, no tracking-issue automation needed
+# (vs mutation.yml which intentionally reports rather than gates).
+
+name: Schemathesis deep fuzz
+
+on:
+  schedule:
+    - cron: '0 7 * * 6'  # 07:00 UTC every Saturday (offset 1h from mutation)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  thorough:
+    name: Schemathesis (HYPOTHESIS_PROFILE=thorough)
+    runs-on: ubuntu-latest
+    # Generous cap. The thorough profile runs ~80 endpoints x 200
+    # examples = ~16k iterations; on a default 4-vCPU runner this takes
+    # ~30-60 min depending on contention. The hard cap prevents a
+    # runaway hypothesis loop from billing forever.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache apt packages (SQLCipher)
+        uses: actions/cache@v5
+        with:
+          path: /var/cache/apt/archives
+          key: apt-sqlcipher-${{ runner.os }}-v1
+
+      - name: Install SQLCipher headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev sqlcipher
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: latest
+          enable-cache: true
+
+      - name: Install workspace dependencies
+        run: uv sync --all-packages --dev
+
+      - name: Run schemathesis with thorough profile
+        env:
+          HYPOTHESIS_PROFILE: thorough
+        run: |
+          uv run pytest \
+            packages/tulip-api/tests/test_openapi_contract.py \
+            -v --tb=short
+
+      - name: Upload hypothesis examples DB
+        # On failure, hypothesis caches the falsifying input in
+        # .hypothesis/. Surface it so a developer can reproduce locally
+        # by checking out the same commit + running the same test.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypothesis-examples
+          path: .hypothesis/
+          if-no-files-found: warn
