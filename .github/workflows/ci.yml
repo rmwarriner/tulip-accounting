@@ -178,9 +178,12 @@ jobs:
 
       - name: Run tests with coverage (${{ matrix.package }})
         # `COVERAGE_FILE` keeps each shard's partial data isolated under a
-        # unique name so the aggregate job can combine all shards. We don't
-        # fail-under here — the aggregate enforces the 85% gate after all
-        # shards land. `-n auto --maxprocesses=4` mirrors the justfile.
+        # unique name so the aggregate job can combine all shards.
+        # `--cov-fail-under=0` overrides the global 85% floor in
+        # `[tool.coverage.report]` so each shard doesn't fail when only its
+        # own package's code is exercised — the floor is meaningful only on
+        # the combined data, enforced by the `coverage` job below.
+        # `-n auto --maxprocesses=4` mirrors the justfile.
         env:
           COVERAGE_FILE: .coverage.${{ matrix.package }}
           PACKAGE: ${{ matrix.package }}
@@ -189,6 +192,7 @@ jobs:
             "packages/${PACKAGE}/tests" \
             --cov \
             --cov-report= \
+            --cov-fail-under=0 \
             --junitxml="junit-${PACKAGE}.xml"
 
       - name: Upload partial coverage
