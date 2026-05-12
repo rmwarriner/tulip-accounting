@@ -375,6 +375,16 @@ async def upload_import(
 async def apply_import(
     batch_id: UUID,
     request: Request,
+    no_categorize: bool = Query(
+        default=False,
+        description=(
+            "If true, skip the categorizer entirely. Each line lands "
+            "balanced against the household's Imbalance:Unknown account "
+            "(auto-created per currency on first use) so the user can "
+            "review + assign categories manually. Useful for bulk "
+            "migrations from another accounting tool."
+        ),
+    ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchApplyResponse:
@@ -397,6 +407,7 @@ async def apply_import(
             batch=batch,
             categorizer=get_categorizer(),
             actor_user_id=claims.user_id,
+            no_categorize=no_categorize,
         )
     except BatchAlreadyAppliedError as exc:
         raise ImportAlreadyAppliedError(batch_id=str(batch_id)) from exc

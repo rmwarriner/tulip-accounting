@@ -43,7 +43,7 @@ from tulip_core.transactions import (
 from tulip_core.transactions import (
     TransactionStatus as DomainTxStatus,
 )
-from tulip_storage.models import ImportBatchStatus
+from tulip_storage.models import AccountType, ImportBatchStatus
 from tulip_storage.repositories import (
     AccountRepository,
     ImportBatchRepository,
@@ -55,7 +55,43 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from tulip_core.reconciliation.categorizer import Categorizer
-    from tulip_storage.models import ImportBatch, StatementLine, Transaction
+    from tulip_storage.models import Account, ImportBatch, StatementLine, Transaction
+
+
+# Stable name + code used for the auto-created Imbalance account
+# (one per currency). hledger / ledger-cli use the same name convention,
+# so journal export → external tool → re-import round-trips cleanly.
+_IMBALANCE_NAME = "Imbalance:Unknown"
+_IMBALANCE_CODE_PREFIX = "9999"  # 9999.<CURRENCY>, e.g. 9999.USD
+
+
+def _get_or_create_imbalance_account(
+    *,
+    session: Session,
+    household_id: UUID,
+    currency: str,
+    actor_user_id: UUID | None,
+) -> Account:
+    """Return the household's Imbalance:Unknown account for ``currency``.
+
+    Looks up by code ``9999.<CURRENCY>`` first; creates it as an EQUITY
+    account if missing. Used by the ``no_categorize`` apply path (#199
+    slice B) so users migrating data from another system can land
+    everything as PENDING and assign categories manually later.
+    """
+    accounts = AccountRepository(session, household_id)
+    code = f"{_IMBALANCE_CODE_PREFIX}.{currency}"
+    existing = accounts.get_by_code(code)
+    if existing is not None:
+        return existing
+    return accounts.create(
+        name=_IMBALANCE_NAME,
+        type=AccountType.EQUITY,
+        currency=currency,
+        code=code,
+        visibility="shared",
+        created_by_user_id=actor_user_id,
+    )
 
 
 class BatchAlreadyAppliedError(ValueError):
@@ -117,8 +153,15 @@ async def promote_statement_line(
     line: StatementLine,
     categorizer: Categorizer,
     actor_user_id: UUID | None,
+    no_categorize: bool = False,
 ) -> Transaction:
     """Promote one statement line into a PENDING ledger Transaction.
+
+    ``no_categorize=True`` skips the categorizer entirely and routes the
+    other-side posting to the household's ``Imbalance:Unknown`` account
+    for the bank account's currency (auto-created on first use). Used
+    for bulk migrations from other accounting tools where the user
+    wants to assign categories manually after import.
 
     Raises:
         LineExcludedError: ``line.is_excluded`` is True (caller should
@@ -126,6 +169,7 @@ async def promote_statement_line(
         LineAlreadyPromotedError: ``line.promoted_transaction_id`` is set.
         CategorizeUnknownAccountError: the categorizer returned an
             account_code that doesn't exist in this household's chart.
+            Not raised when ``no_categorize=True``.
 
     """
     if line.is_excluded:
@@ -143,15 +187,24 @@ async def promote_statement_line(
     if bank_account is None:  # pragma: no cover - bank account is FK-enforced
         raise LookupError(f"batch.account_id {batch.account_id} not found")
 
-    domain_line = _to_domain_line(line)
-    suggestion = await categorizer.categorize(
-        domain_line,
-        HouseholdContext(household_id=household_id, account_whitelist=frozenset()),
-        session=session,
-    )
-    other_account = accounts.get_by_code(suggestion.account_code)
-    if other_account is None:
-        raise CategorizeUnknownAccountError(suggestion.account_code, household_id)
+    if no_categorize:
+        other_account = _get_or_create_imbalance_account(
+            session=session,
+            household_id=household_id,
+            currency=line.currency,
+            actor_user_id=actor_user_id,
+        )
+    else:
+        domain_line = _to_domain_line(line)
+        suggestion = await categorizer.categorize(
+            domain_line,
+            HouseholdContext(household_id=household_id, account_whitelist=frozenset()),
+            session=session,
+        )
+        resolved = accounts.get_by_code(suggestion.account_code)
+        if resolved is None:
+            raise CategorizeUnknownAccountError(suggestion.account_code, household_id)
+        other_account = resolved
 
     bank_amount = Money(line.amount, line.currency)
     other_amount = Money(-line.amount, line.currency)
@@ -181,6 +234,7 @@ async def apply_batch(
     batch: ImportBatch,
     categorizer: Categorizer,
     actor_user_id: UUID | None,
+    no_categorize: bool = False,
 ) -> ApplyResult:
     """Promote every applicable line in ``batch``, then mark batch APPLIED.
 
@@ -219,6 +273,7 @@ async def apply_batch(
             line=line,
             categorizer=categorizer,
             actor_user_id=actor_user_id,
+            no_categorize=no_categorize,
         )
         transaction_ids.append(tx.id)
 

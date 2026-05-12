@@ -195,16 +195,28 @@ def apply_import(
             metavar="BATCH_ID",
         ),
     ],
+    no_categorize: Annotated[
+        bool,
+        typer.Option(
+            "--no-categorize",
+            help=(
+                "Skip the AI categorizer; route every line to the "
+                "household's Imbalance:Unknown account (auto-created per "
+                "currency on first use). Useful for bulk migrations from "
+                "another tool where you'll assign categories manually."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Apply a parsed batch: every non-excluded line becomes a PENDING ledger transaction."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+    path = f"/v1/imports/{batch_id}/apply"
+    if no_categorize:
+        path += "?no_categorize=true"
     try:
         with _client(config, as_json=as_json) as client:
-            response = client.post(
-                f"/v1/imports/{batch_id}/apply",
-                authenticated=True,
-            )
+            response = client.post(path, authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
