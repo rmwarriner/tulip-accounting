@@ -76,32 +76,68 @@ bottlenecks. Don't optimise based on sequential profiles.
 
 ## Options considered (with revised priority)
 
-### Option 2 — Session-scoped uvicorn + UUID-based test isolation *(highest measured leverage)*
+### Option 2 — Session-scoped uvicorn + UUID-based test isolation *(implemented and reverted)*
 
 Hoist the ``live_api`` fixture from ``scope=function`` to
 ``scope="session"``. One uvicorn per xdist worker × 4 workers = 4
 boots total instead of ~150 (one per CLI test that uses the fixture).
-Per-worker savings ≈ ~70 tests × 800ms boot avg = ~55s; wall-clock
-delta with 4 workers ≈ **same ~55s** since each worker independently
-amortises.
+Per-worker savings ≈ ~70 tests × 800ms boot avg = ~55s.
 
-What it requires:
+**Status: tried 2026-05-11, reverted.** Measured wall-clock dropped
+~50% (sequential 7m37s → 3m40s; CI extrapolation 14 min → ~7 min),
+but the implementation introduces a **persistent ~25-50% flake rate**
+that smaller mitigations did not eliminate. Documented here so a
+future attempt has the full forensics.
 
-- Every CLI test that registers a household must use a **unique email +
-  household name** per test (e.g. ``f"user-{uuid4().hex[:8]}@example.com"``).
-  Today tests assume a fresh DB and reuse ``me@example.com`` /
-  ``admin@example.com``. Refactor: ~30–50 tests, mechanical.
-- The ``live_api`` fixture's underlying DB still needs to start fresh
-  per worker (so worker A doesn't see worker B's data). That's
-  naturally session-scoped already if we session-scope the fixture.
-- Tests that depend on a *specific* DB state (e.g. "an empty
-  household") need an explicit per-test reset. Most CLI tests are
-  insert-only and don't care.
+What was implemented:
 
-Cost: medium (refactor the ~30–50 tests that hard-code emails / names).
-Risk: medium (test isolation failure shows up as flaky tests; needs
-careful audit). Reward: ~55s wall-clock, gets the test job under
-~9 minutes.
+- ``live_api`` fixture changed to ``scope="session"`` per xdist worker.
+- New shared fixtures in ``conftest.py``: ``unique_id`` (per-test 8-hex
+  string) and ``registered_user`` (UUID-derived email + household +
+  per-test token store).
+- Every CLI test file's local ``authed_session`` / ``access_token``
+  fixtures refactored to derive their email + household name from
+  ``unique_id`` so concurrent tests don't collide.
+- ``test_auth_login.py``'s helper-based pattern got a bespoke
+  refactor (each test gets an ``email = f"alice-{unique_id}..."``
+  local variable threaded through).
+- CLI subprocess timeouts bumped from 10s/15s/20s → 30s across all
+  ~99 ``subprocess.run`` call sites.
+- ``TulipClient`` default HTTP timeout bumped 10s → 30s.
+
+What broke:
+
+- Login operations occasionally exceed even 30s under load.
+- The root cause is **CPU contention from argon2id password
+  verification**. Tulip's API uses argon2id at OWASP-2024 minimum
+  parameters (memory ≈ 19MiB, time ≈ 2). Under xdist with 4 workers
+  each running their own uvicorn (so 8+ Python processes on a
+  4-core machine), argon2id verifications queue and starve the
+  uvicorn asyncio loop.
+- Reducing xdist to 2 workers reduced flake rate but didn't
+  eliminate it (~30-50% per-run rate at 2 workers, vs ~25-50% at 4).
+- Bumping HTTP timeouts to 30s only partially helps because the
+  delays sometimes exceed even that bound.
+
+What would need to happen to make option 2 work:
+
+1. **Add an env-driven argon2 parameter knob** (e.g.
+   ``TULIP_ARGON2_TEST_MODE=1`` selects ``time_cost=1, memory_cost=128``
+   for tests). This is intrusive but eliminates the CPU contention
+   class. The production parameters stay at OWASP-2024 minimum.
+2. **Or add ``pytest-rerunfailures`` retry** as a safety net. Standard
+   industry pattern for genuinely-flaky-under-load suites. Re-runs
+   each timeout failure once before reporting. Tolerates the contention
+   without changing it.
+3. **Or run uvicorn with multiple workers** so concurrent argon2
+   verifications can run in parallel processes. Adds boot complexity
+   to the fixture; uvicorn ``--workers N`` doesn't compose cleanly
+   with ``--factory`` in dev/test setups.
+
+Without one of those mitigations, option 2 trades 50% wall-clock for
+unacceptable flake rate. The git history of branch
+``perf/p2-session-live-api`` (since deleted) has the full
+implementation if anyone wants to reproduce the measurement.
 
 ### Option 3 — Per-package CI matrix *(zero test changes, modest wall-clock win)*
 
