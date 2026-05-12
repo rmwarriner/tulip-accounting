@@ -319,6 +319,31 @@ def test_transactions_show_unknown_uuid_user_error(authed_session: str) -> None:
     assert result.returncode == 1, (result.stdout, result.stderr)
 
 
+@pytest.mark.integration
+def test_transactions_show_by_prefix(seeded_session: tuple[str, str, str, str]) -> None:
+    """An 8-char id prefix resolves to the full UUID via the API resolver."""
+    api_url, _checking, _food, _rent = seeded_session
+    rows = json.loads(_run_cli("--json", "transactions", "list", api_url=api_url).stdout)
+    target = next(r for r in rows if r["description"] == "rent-jun")
+
+    result = _run_cli("transactions", "show", target["id"][:8], api_url=api_url)
+    assert result.returncode == 0, result.stderr
+    assert "rent-jun" in result.stdout
+    assert target["id"] in result.stdout
+
+
+@pytest.mark.integration
+def test_transactions_show_unknown_prefix_user_error(
+    seeded_session: tuple[str, str, str, str],
+) -> None:
+    """A well-formed hex prefix with no matches surfaces a not-found error."""
+    api_url, _checking, _food, _rent = seeded_session
+    # 'deadbeef' is hex-valid but doesn't match any seeded transaction id.
+    result = _run_cli("transactions", "show", "deadbeef", api_url=api_url)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "deadbeef" in result.stderr.lower()
+
+
 # ---------- tulip accounts edit ----------
 
 
