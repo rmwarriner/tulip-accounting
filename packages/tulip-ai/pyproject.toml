@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "tulip-core",
     "tulip-storage",
-    "litellm>=1.50",
+    "litellm>=1.83.10",
     "pydantic>=2.7",
     # sqlglot parses + validates the model-emitted SQL on the NL-query
     # capability (P6.2). We reject anything that isn't a single SELECT
