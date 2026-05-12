@@ -51,6 +51,14 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "UnsupportedProposalKindError": {"kind": "transfer_pools"},
     "CustomQueryUnsafeError": {"reason": "table 'users' is not in the AI view allowlist"},
+    "JournalParseFailedError": {
+        "errors": [{"line": 7, "message": "malformed posting line"}],
+    },
+    "JournalImportFailedError": {
+        "errors": [
+            {"line": 3, "message": "could not resolve account path 'Expense:9999:Nonexistent'"},
+        ],
+    },
     "PoolNotFoundError": {"pool_id": "<pool-uuid>"},
     "PoolInactiveError": {"pool_id": "<pool-uuid>"},
     "PoolCurrencyMismatchError": {
