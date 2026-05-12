@@ -26,7 +26,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 **Tests:** 1478 passing · **CI:** green on `main`
 
-**Phase 7 (reports + journal export/import):** P7.1–P7.4 shipped; P7.5 (journal import) in PR — closes Phase 7. CLI subcommands deferred as P7.1.b.
+**Phase 7 (reports + journal export/import):** ✅ shipped — P7.1–P7.5 complete; P7.1.b (CLI subcommands) in PR.
 
 ---
 
@@ -560,14 +560,57 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 
 ---
 
-## Phase 7 — Reports + journal export/import — in flight
+## Phase 7 — Reports + journal export/import — ✅ shipped
 
 Per ARCHITECTURE.md §8 + §10. v1 ships 9 reports in HTML+PDF+CSV, plus
 hledger-compatible journal export + basic journal import. "Workstream
 slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
-journal import.
+journal import. P7.1.b adds the CLI surface over both.
 
-### P7.5 — hledger journal import — 🔄 *(in PR; closes Phase 7)*
+### P7.1.b — `tulip reports` + `tulip journal` CLI — 🔄 *(in PR; closes #189)*
+
+Closes the deferred CLI surface from P7.1. Both report and journal
+endpoints were API-only after Phase 7 closed; this slice wires them
+into the imperative CLI per the existing client pattern (architecture
+test in `tulip-cli/tests/test_architecture.py` keeps the CLI a pure
+network client).
+
+**`tulip reports`** — Typer group with 9 subcommands, one per
+`/v1/reports/*` endpoint:
+- `trial-balance`, `balance-sheet`, `envelope-status`,
+  `sinking-fund-progress` — share `--as-of`.
+- `income-statement`, `cash-flow` — `--start` / `--end`
+  (income-statement also takes optional `--prior-start` / `--prior-end`).
+- `reconciliation-summary` — `--status` filter.
+- `audit-log` — `--start` / `--end` / `--actor` / `--entity-type` /
+  `--limit` / `--offset`.
+- `custom-query` — `--sql` (subject to the same SQL-safety gate as
+  `tulip ai query`).
+
+Each subcommand accepts `--format json|html|pdf|csv` (default `json`)
+and `--output PATH`. JSON/HTML default to stdout; PDF/CSV require
+`--output` since binary-to-terminal isn't useful. Date options are
+validated client-side with a `typer.BadParameter` for fast feedback.
+
+**`tulip journal`** — two subcommands:
+- `journal export` wraps `GET /v1/journal/export`. Accepts `--start`,
+  `--end`, `--output`. Writes to stdout by default.
+- `journal import FILE` wraps `POST /v1/journal/import`. Reads the
+  file's bytes, posts as `text/plain`, surfaces `{created, transaction_ids}`
+  or the typed Problem Details errors verbatim.
+
+**Tests** — +17 integration tests across two files:
+- `test_reports_command.py` (9 tests): trial-balance JSON/HTML/CSV-to-file/
+  PDF-requires-output paths; `--as-of` and invalid-date forwarding;
+  audit-log pagination; custom-query unsafe-SQL surfacing; auth gate.
+- `test_journal_command.py` (8 tests): export to stdout / file / date
+  range / invalid date; **export→import round-trip** (primary
+  acceptance); import parse-error surfacing; `--json` passthrough on
+  import; auth gate.
+
+Full suite: 1528 passed, 1 skipped in 4:01.
+
+### P7.5 — hledger journal import — ✅ *(2026-05-12)*
 
 Final Phase-7 slice. Closes the round-trip with P7.4: users can pull
 their ledger out as hledger journal text and push it back in. Imported
@@ -610,8 +653,8 @@ convention as the existing OFX / QIF / CSV importers (#74).
 
 Full suite: 1511 passed locally.
 
-**Phase 7 closes** after this slice merges. CLI subcommands
-(deferred from P7.1) remain as P7.1.b follow-up.
+**Phase 7 closes** with this slice. CLI subcommands tracked as P7.1.b
+follow-up (see below for the in-flight CLI slice).
 
 ### P7.4 — hledger-compatible journal export — ✅ *(2026-05-12)*
 
@@ -785,10 +828,10 @@ integration test (the foundational pattern), +35 across the new
 report endpoints (JSON shape, HTML response Content-Type, auth gate,
 date filters, custom-query SQL safety gate).
 
-**Out of scope** (deferred):
+**Out of scope** (deferred — all subsequently delivered):
 - PDF rendering via weasyprint — P7.2.
 - CSV output — P7.3.
-- CLI subcommands (`tulip reports <name>`) — P7.1.b.
+- CLI subcommands (`tulip reports <name>`, `tulip journal {export,import}`) — P7.1.b.
 - Journal export/import — P7.4 / P7.5.
 
 ---
