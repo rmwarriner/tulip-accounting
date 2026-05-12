@@ -145,6 +145,14 @@ quickstart-smoke:
     uv run tulip reconcile complete "$RECON_ID"
     PERIOD_ID=$(uv run tulip --json periods list | jq -r '.[0].id')
     uv run tulip periods close "$PERIOD_ID"
+    # §8 — Reports + journal export/import (Phase 7 surface).
+    uv run tulip reports trial-balance > "$SCRATCH/tb.json"
+    test -s "$SCRATCH/tb.json"
+    uv run tulip reports trial-balance --format pdf --output "$SCRATCH/tb.pdf"
+    test -s "$SCRATCH/tb.pdf"
+    uv run tulip journal export --output "$SCRATCH/ledger.journal"
+    test -s "$SCRATCH/ledger.journal"
+    uv run tulip journal import "$SCRATCH/ledger.journal"
     docker compose -f deploy/docker/compose.yml exec -T api \
         tulip backup --out - > "$SCRATCH/backup.tar.gz"
     test -s "$SCRATCH/backup.tar.gz"

@@ -2,9 +2,11 @@
 
 **Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening); pre-cloud re-audit at Phase 9.
 
-**Last updated:** 2026-05-11 · `main` @ Phase 6 complete (AI integration shipped)
+**Last updated:** 2026-05-12 · `main` @ Phase 7 complete (reports + hledger journal export/import shipped)
 
-This document captures what the system protects, what it doesn't, and the constraints Phase 4–6 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI add surface area, not after. Tracked as #56.
+This document captures what the system protects, what it doesn't, and the constraints Phase 4–7 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI / reports add surface area, not after. Tracked as #56.
+
+**Phase 7 surface check:** the new `/v1/reports/*` endpoints and `/v1/journal/{export,import}` reuse the existing tenant-scoped session + JWT chokepoint — they introduce no new trust boundary, no new external network dependency at runtime (weasyprint is a build-time system lib for PDF), and no new credential store. The `custom-query` report is gated by the same SQL-safety pass that backs the AI NL-query capability (ADR-0005); writes, joins outside the AI-view allowlist, and non-allowlisted table reads are all rejected with `report.unsafe_query`. Journal import lands transactions as PENDING through `TransactionRepository.save_balanced`, the same chokepoint the OFX / QIF / CSV importers use.
 
 ---
 

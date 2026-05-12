@@ -1,8 +1,8 @@
 # Tulip Accounting — Architectural Specification (v1)
 
-**Status:** Phases 0–6 complete (ADR-0005 AI integration shipped end-to-end). Internal-beta ready. Phase 7 (reports + journal export/import) is the next slice.
-**Document version:** 1.1
-**Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh)
+**Status:** Phases 0–7 complete. Internal-beta ready. The full v1 surface is in place: ADR-0005 AI integration end-to-end, all nine reports rendered in HTML/PDF/CSV, hledger-format journal export + import, and the `tulip reports` / `tulip journal` CLI groups.
+**Document version:** 1.2
+**Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh) · 2026-05-12 (Phase 7 close)
 
 ---
 
@@ -978,10 +978,13 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **P6.5.b** — `tulip ai config` editor + `log_prompts` toggle + `tulip ai status` fallback-semantics callout. `GET/PUT /v1/ai/config` + `PUT /v1/ai/config/capabilities/{capability}` admin surface (PR #163).
 - ✅ **P6.5.c** — Sinking-fund forecast extension to the daily-insights handler via a single `ForecastRequest` dataclass (PR #171). Phase 6 closes.
 
-### Phase 7 — Reports + journal export/import
-- All v1 reports rendered as HTML and PDF (weasyprint)
-- Journal export (hledger-compatible)
-- Basic journal import
+### Phase 7 — Reports + journal export/import ✅ complete
+- ✅ **P7.1** — `tulip-reports` package skeleton + all nine reports rendered in HTML via a shared Jinja2 layout (trial-balance, balance-sheet, income-statement, cash-flow, envelope-status, sinking-fund-progress, reconciliation-summary, audit-log, custom-query) (PR #180).
+- ✅ **P7.2** — PDF rendering via weasyprint (pydyf + pango), one engine reused across every report (PR #183).
+- ✅ **P7.3** — CSV output for every report via the Python `csv` stdlib + a per-report row-flattening adapter (PR #184).
+- ✅ **P7.4** — hledger-compatible `GET /v1/journal/export[?start=...&end=...]`; output round-trips through hledger / ledger-cli (PR #186).
+- ✅ **P7.5** — hledger-compatible `POST /v1/journal/import`; account paths resolve by code first then `(type, name)`; imported transactions land in PENDING for review — same convention as the OFX / QIF / CSV importers (PR #188). Phase 7 closes.
+- ✅ **P7.1.b** — CLI surface: `tulip reports <name>` (9 subcommands, `--format json|html|pdf|csv`, `--output PATH`) and `tulip journal {export,import}` over the existing endpoints (PR #190).
 
 ### Phase 8 — Operations + hardening
 - Docker compose for home server
