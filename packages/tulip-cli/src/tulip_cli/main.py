@@ -26,6 +26,7 @@ from tulip_cli.commands.balance import balance as balance_command
 from tulip_cli.commands.doctor import doctor as doctor_command
 from tulip_cli.commands.envelopes import envelopes_app
 from tulip_cli.commands.imports import imports_app
+from tulip_cli.commands.journal import journal_app
 from tulip_cli.commands.notifications import notifications_app
 from tulip_cli.commands.periods import periods_app
 from tulip_cli.commands.pool_actions import (
@@ -40,6 +41,7 @@ from tulip_cli.commands.pool_actions import (
 from tulip_cli.commands.reconcile import reconcile_app
 from tulip_cli.commands.refills import refills_app
 from tulip_cli.commands.register import register as register_command
+from tulip_cli.commands.reports import reports_app
 from tulip_cli.commands.sinking_funds import sinking_funds_app
 from tulip_cli.commands.transactions import add as add_command
 from tulip_cli.commands.transactions import transactions_app
@@ -129,7 +131,9 @@ app.add_typer(refills_app, name="refills")
 # for back-compat with P5.2.a/b examples that used the singular form.
 app.add_typer(imports_app, name="imports")
 app.add_typer(imports_app, name="import")
+app.add_typer(journal_app, name="journal")
 app.add_typer(reconcile_app, name="reconcile")
+app.add_typer(reports_app, name="reports")
 app.command("backup")(backup_command)
 app.command("restore")(restore_command)
 app.command("backup-inspect")(manifest_command)
