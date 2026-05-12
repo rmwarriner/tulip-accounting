@@ -242,7 +242,62 @@ red when soft-closed.
 
 ---
 
-## 8. Backup
+## 8. Reports + journal export/import
+
+`tulip reports` covers the nine v1 reports. Every subcommand accepts
+`--format json|html|pdf|csv` (default `json`) and `--output PATH`.
+JSON and HTML default to stdout; PDF and CSV require `--output` since
+piping binary to a terminal isn't useful.
+
+```bash
+# Quick on-screen check.
+uv run tulip reports trial-balance
+
+# Save the same report as HTML, PDF, and CSV side by side.
+uv run tulip reports trial-balance --format html --output trial-balance.html
+uv run tulip reports trial-balance --format pdf  --output trial-balance.pdf
+uv run tulip reports trial-balance --format csv  --output trial-balance.csv
+
+# Period-shaped reports take --start / --end.
+uv run tulip reports income-statement \
+  --start 2026-01-01 --end 2026-05-31 \
+  --format pdf --output income-2026ytd.pdf
+
+# Custom-query gates with the same SQL-safety pass as `tulip ai ask`.
+uv run tulip reports custom-query \
+  --sql 'SELECT account_path, balance FROM ai_balances WHERE balance < 0'
+```
+
+The full list: `trial-balance`, `balance-sheet`, `income-statement`,
+`cash-flow`, `envelope-status`, `sinking-fund-progress`,
+`reconciliation-summary`, `audit-log`, `custom-query`. Each takes
+`--help` for the full option list (point-in-time reports take
+`--as-of`; `audit-log` adds `--actor` / `--entity-type` /
+`--limit` / `--offset`).
+
+For plain-text-accounting workflows (hledger, ledger-cli), Tulip
+exports a hledger-compatible journal and can re-ingest one as PENDING
+transactions for review:
+
+```bash
+# Export the whole ledger as hledger journal text.
+uv run tulip journal export --output ledger.journal
+
+# Or restrict to a date range, write to stdout, pipe into hledger.
+uv run tulip journal export --start 2026-01-01 --end 2026-05-31 | hledger -f - balance
+
+# Re-import a journal file (creates PENDING transactions — review with
+# `tulip transactions list --status pending` then promote).
+uv run tulip journal import ledger.journal
+```
+
+Import errors surface line numbers (`journal.parse_failed` for syntax,
+`journal.import_failed` for unknown accounts, unbalanced postings, or
+currency mismatches) so you can fix the file and retry.
+
+---
+
+## 9. Backup
 
 The stack's SQLite DB and attachments live in Docker volumes inside
 the container. `tulip backup` is bundled into the runtime image so it
@@ -280,7 +335,7 @@ docker compose -f deploy/docker/compose.yml exec -T api \
 
 ---
 
-## 9. Cookbook: rotating the master key
+## 10. Cookbook: rotating the master key
 
 Tulip doesn't ship a `tulip key-rotate` command for internal beta —
 the cost of getting it wrong (un-decryptable TOTP secrets across an
@@ -327,7 +382,7 @@ Doctor should report `master key loaded from file`.
 
 ---
 
-## 10. Cookbook: enabling AI (optional)
+## 11. Cookbook: enabling AI (optional)
 
 Phase 6 added four AI capabilities: transaction categorisation during
 imports, natural-language queries over your ledger, nightly forecast +
@@ -427,7 +482,11 @@ toggle on and off as you experiment.
 ## What's next
 
 - Run `tulip --help` to discover commands not covered here: `envelopes`,
-  `sinking-funds`, `refills`, `transfer`, `budget-inflow`.
+  `sinking-funds`, `refills`, `transfer`, `budget-inflow`,
+  `notifications`.
+- The `tulip reports` and `tulip journal` groups (covered in §8 above)
+  are the easiest way to get printable outputs and hledger-format
+  round-trips.
 - File issues at https://github.com/rmwarriner/tulip-accounting/issues —
   internal beta is the point at which feedback is most actionable.
 - Read [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) if you want to
