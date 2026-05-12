@@ -3145,7 +3145,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "litellm", specifier = ">=1.50" },
+    { name = "litellm", specifier = ">=1.83.10" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "sqlglot", specifier = ">=27" },
     { name = "tulip-core", editable = "packages/tulip-core" },
@@ -3242,7 +3242,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "tulip-core", editable = "packages/tulip-core" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20260510" },
+    { name = "types-pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
