@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Custom query · {{ data.household_name }}{% endblock %}
+{% block report_title %}Custom query{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>Rows:</dt><dd>{{ data.rows | length }}{% if data.truncated %} (truncated){% endif %}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+<h3>Query</h3>
+<pre style="border: 0.5pt solid #000; padding: 0.5em; white-space: pre-wrap; background: #fff;">{{ data.safe_sql }}</pre>
+
+<h3>Results</h3>
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>{% for col in data.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>{% for cell in row %}<td>{{ cell if cell is not none else "" }}</td>{% endfor %}</tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if data.truncated %}
+<p class="warning">Result truncated to the first 1,000 rows.</p>
+{% endif %}
+{% else %}
+<p class="empty">Query returned no rows.</p>
+{% endif %}
+{% endblock %}

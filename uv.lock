@@ -3291,6 +3291,7 @@ version = "0.0.0"
 source = { editable = "packages/tulip-reports" }
 dependencies = [
     { name = "jinja2" },
+    { name = "tulip-ai" },
     { name = "tulip-core" },
     { name = "tulip-storage" },
 ]
@@ -3298,6 +3299,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "tulip-ai", editable = "packages/tulip-ai" },
     { name = "tulip-core", editable = "packages/tulip-core" },
     { name = "tulip-storage", editable = "packages/tulip-storage" },
 ]

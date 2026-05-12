@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Audit log · {{ data.household_name }}{% endblock %}
+{% block report_title %}Audit log{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  {% if data.start %}<dt>From:</dt><dd>{{ data.start | isodate }}</dd>{% endif %}
+  {% if data.end %}<dt>To:</dt><dd>{{ data.end | isodate }}</dd>{% endif %}
+  {% if data.actor_user_id %}<dt>Actor:</dt><dd>{{ data.actor_user_id }}</dd>{% endif %}
+  {% if data.entity_type %}<dt>Entity type:</dt><dd>{{ data.entity_type }}</dd>{% endif %}
+  <dt>Showing:</dt><dd>{{ data.offset + 1 }}–{{ data.offset + data.rows | length }} of {{ data.total_matching }}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>When</th>
+      <th>Actor</th>
+      <th>Action</th>
+      <th>Entity type</th>
+      <th>Entity id</th>
+      <th>Request id</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>
+      <td>{{ row.occurred_at | isodate }}</td>
+      <td>{{ row.actor_kind }}{% if row.actor_user_id %} ({{ row.actor_user_id }}){% endif %}</td>
+      <td>{{ row.action }}</td>
+      <td>{{ row.entity_type }}</td>
+      <td>{{ row.entity_id or "" }}</td>
+      <td>{{ row.request_id or "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No audit-log rows match these filters.</p>
+{% endif %}
+{% endblock %}
