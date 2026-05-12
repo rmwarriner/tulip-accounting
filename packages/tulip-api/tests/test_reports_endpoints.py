@@ -120,6 +120,31 @@ class TestNewReportsPDF:
         assert "filename=" in r.headers.get("content-disposition", "")
 
 
+class TestNewReportsCSV:
+    """``?format=csv`` returns ``text/csv`` (P7.3)."""
+
+    @pytest.mark.parametrize(("path", "params"), _ENDPOINTS)
+    def test_csv_render(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        path: str,
+        params: dict[str, str],
+    ) -> None:
+        merged = dict(params)
+        merged["format"] = "csv"
+        r = client.get(path, headers=auth_h, params=merged)
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        # CSV starts with the header row.
+        first_line = r.content.split(b"\r\n", 1)[0]
+        assert b"," in first_line  # header row has multiple columns
+        # Filename is sensible (.csv suffix).
+        cd = r.headers.get("content-disposition", "")
+        assert "filename=" in cd
+        assert ".csv" in cd
+
+
 class TestAuth:
     """All new report endpoints require auth."""
 

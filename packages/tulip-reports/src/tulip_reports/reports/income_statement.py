@@ -212,12 +212,34 @@ def render_pdf(data: IncomeStatementData) -> bytes:
     )
 
 
+def render_csv(data: IncomeStatementData) -> bytes:
+    """Render income statement as CSV (P7.3): one row per (period, section, account)."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = ["Period", "Section", "Code", "Account", "Currency", "Amount"]
+    rows: list[list[object]] = []
+    for label, period in [("current", data.current_period)] + (
+        [("prior", data.prior_period)] if data.prior_period else []
+    ):
+        for section in (period.revenue, period.expenses):
+            for row in section.rows:
+                rows.append(
+                    [label, section.title, row.code or "", row.name, row.currency, row.amount]
+                )
+            for currency, subtotal in section.subtotals_by_currency.items():
+                rows.append([label, section.title, "SUBTOTAL", "", currency, subtotal])
+        for currency, net in period.net_income_by_currency.items():
+            rows.append([label, "Net income", "", "", currency, net])
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "IncomeStatementData",
     "IncomeStatementPeriod",
     "IncomeStatementRow",
     "IncomeStatementSection",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

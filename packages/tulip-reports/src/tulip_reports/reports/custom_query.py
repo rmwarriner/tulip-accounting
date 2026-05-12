@@ -92,9 +92,17 @@ def render_pdf(data: CustomQueryData) -> bytes:
     )
 
 
+def render_csv(data: CustomQueryData) -> bytes:
+    """Render custom-query result as CSV (P7.3): the column headers + raw rows."""
+    from tulip_reports.engine import ReportRenderer
+
+    return ReportRenderer.csv_bytes(data.columns, [list(row) for row in data.rows])
+
+
 __all__ = [
     "CustomQueryData",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]

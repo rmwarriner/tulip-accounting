@@ -26,7 +26,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 **Tests:** 1478 passing · **CI:** green on `main`
 
-**Phase 7 (reports + journal export/import):** in flight — P7.1 shipped (9 reports in HTML), P7.2 in PR (same 9 reports now also render as PDF via weasyprint). Up next: P7.3 CSV, P7.4 journal export (hledger), P7.5 journal import. CLI subcommands deferred as P7.1.b.
+**Phase 7 (reports + journal export/import):** in flight — P7.1 (HTML) + P7.2 (PDF) shipped; P7.3 (CSV) in PR. Up next: P7.4 journal export (hledger), P7.5 journal import. CLI subcommands deferred as P7.1.b.
 
 ---
 
@@ -567,7 +567,40 @@ hledger-compatible journal export + basic journal import. "Workstream
 slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
 journal import.
 
-### P7.2 — PDF rendering via weasyprint — 🔄 *(in PR)*
+### P7.3 — CSV output for all 9 reports — 🔄 *(in PR)*
+
+Third Phase-7 slice. Layers CSV output on top of HTML (P7.1) and PDF
+(P7.2). No new dependencies — stdlib `csv` + `io.StringIO` handle
+RFC 4180 quoting/escaping per row.
+
+**Engine**:
+- `ReportRenderer.csv_bytes(headers, rows)` static helper — encodes
+  a list-of-lists table as UTF-8 CSV bytes with `\r\n` line
+  terminators.
+
+**Per-report**:
+- Each module gains `render_csv(data) -> bytes`. Shape varies per
+  report:
+  - Trial balance, envelope status, sinking-fund progress,
+    reconciliation summary, audit log → one row per data record.
+  - Balance sheet, income statement, cash flow → one row per
+    (section, account) with a `Section` column.
+  - Custom query → raw column headers + result rows.
+
+**HTTP**:
+- Each endpoint's `format` widened to
+  `Literal["json", "html", "pdf", "csv"]`.
+- CSV responses return `text/csv` with
+  `Content-Disposition: attachment; filename=<report>-<date>.csv`
+  (attachment, not inline — CSVs typically download).
+
+**Tests** — +8 (engine has no new tests since `csv_bytes` is a
+trivial wrapper; coverage comes from the parametrized integration
+tests + the trial-balance integration test).
+
+Full suite: 1495 passed locally.
+
+### P7.2 — PDF rendering via weasyprint — ✅ *(2026-05-12)*
 
 Second Phase-7 slice. P7.1 shipped the 9 reports as HTML; this
 slice layers PDF output on top via `weasyprint>=63`. Same templates,

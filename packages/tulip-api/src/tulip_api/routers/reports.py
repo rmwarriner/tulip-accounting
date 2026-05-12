@@ -76,7 +76,7 @@ def trial_balance(
             "transactions on or before this date. Defaults to today."
         ),
     ),
-    format: Literal["json", "html", "pdf"] = Query(
+    format: Literal["json", "html", "pdf", "csv"] = Query(
         default="json",
         description=(
             "Response format. ``json`` (default) returns the structured "
@@ -139,7 +139,7 @@ def trial_balance(
     ]
 
     json_body = TrialBalanceRead(as_of=effective_as_of, rows=rows, totals_by_currency=totals)
-    if format in ("html", "pdf"):
+    if format in ("html", "pdf", "csv"):
         from tulip_reports.reports import trial_balance as report_module
 
         data = report_module.build(
@@ -153,7 +153,9 @@ def trial_balance(
             report_module.render_html,
             format,
             render_pdf=report_module.render_pdf,
+            render_csv=report_module.render_csv,
             pdf_filename=f"trial-balance-{effective_as_of.isoformat()}.pdf",
+            csv_filename=f"trial-balance-{effective_as_of.isoformat()}.csv",
         )
     return Response(
         content=json_body.model_dump_json(),
@@ -194,20 +196,15 @@ def _report_response(
     format: str,
     *,
     render_pdf: Callable[..., bytes] | None = None,
+    render_csv: Callable[..., bytes] | None = None,
     pdf_filename: str = "report.pdf",
+    csv_filename: str = "report.csv",
 ) -> Response:
-    """Common JSON / HTML / PDF branch used by the new report endpoints.
-
-    ``render_pdf`` defaults to None — the trial-balance endpoint that
-    constructs its data inline doesn't need it; the matrix of new
-    reports each pass the report module's ``render_pdf`` so PDF works
-    uniformly. When PDF is requested without a renderer, returns 400.
-    """
+    """Common JSON / HTML / PDF / CSV branch used by the report endpoints."""
     if format == "html":
         return HTMLResponse(content=render_html(data))
     if format == "pdf":
         if render_pdf is None:
-            from tulip_api.errors import TulipProblem
 
             class _PdfUnavailable(TulipProblem):
                 def __init__(self) -> None:
@@ -224,6 +221,24 @@ def _report_response(
             media_type="application/pdf",
             headers={"Content-Disposition": f'inline; filename="{pdf_filename}"'},
         )
+    if format == "csv":
+        if render_csv is None:
+
+            class _CsvUnavailable(TulipProblem):
+                def __init__(self) -> None:
+                    super().__init__(
+                        code="report.csv_not_supported",
+                        title="CSV not supported for this report",
+                        status=400,
+                        detail="This report doesn't have a CSV renderer wired up.",
+                    )
+
+            raise _CsvUnavailable()
+        return Response(
+            content=render_csv(data),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{csv_filename}"'},
+        )
     return Response(content=json.dumps(_to_jsonable(data)), media_type="application/json")
 
 
@@ -237,7 +252,7 @@ def _report_response(
 )
 def balance_sheet(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -256,6 +271,8 @@ def balance_sheet(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="trial-balance.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="trial-balance.csv",
     )
 
 
@@ -272,7 +289,7 @@ def income_statement(
     end: date = Query(...),  # noqa: B008
     prior_start: date | None = Query(default=None),  # noqa: B008
     prior_end: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -294,6 +311,8 @@ def income_statement(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="income-statement.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="income-statement.csv",
     )
 
 
@@ -308,7 +327,7 @@ def income_statement(
 def cash_flow(
     start: date = Query(...),  # noqa: B008
     end: date = Query(...),  # noqa: B008
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -328,6 +347,8 @@ def cash_flow(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="cash-flow.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="cash-flow.csv",
     )
 
 
@@ -341,7 +362,7 @@ def cash_flow(
 )
 def envelope_status(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -355,6 +376,8 @@ def envelope_status(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="envelope-status.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="envelope-status.csv",
     )
 
 
@@ -368,7 +391,7 @@ def envelope_status(
 )
 def sinking_fund_progress(
     as_of: date | None = Query(default=None),  # noqa: B008
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -382,6 +405,8 @@ def sinking_fund_progress(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="sinking-fund-progress.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="sinking-fund-progress.csv",
     )
 
 
@@ -395,7 +420,7 @@ def sinking_fund_progress(
 )
 def reconciliation_summary(
     status_filter: str | None = Query(default=None, alias="status"),
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -413,6 +438,8 @@ def reconciliation_summary(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="reconciliation-summary.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="reconciliation-summary.csv",
     )
 
 
@@ -431,7 +458,7 @@ def audit_log(
     entity_type: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -454,6 +481,8 @@ def audit_log(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="audit-log.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="audit-log.csv",
     )
 
 
@@ -487,7 +516,7 @@ class CustomQueryUnsafeError(TulipProblem):
 )
 def custom_query(
     sql: str = Query(..., description="Read-only SELECT against AI views (P6.2)."),
-    format: Literal["json", "html", "pdf"] = Query(default="json"),
+    format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -510,4 +539,6 @@ def custom_query(
         format,
         render_pdf=report_module.render_pdf,
         pdf_filename="custom-query.pdf",
+        render_csv=report_module.render_csv,
+        csv_filename="custom-query.csv",
     )

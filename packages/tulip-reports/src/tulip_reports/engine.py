@@ -112,6 +112,26 @@ class ReportRenderer:
         template = self._env.get_template(template_name)
         return template.render(**context)
 
+    @staticmethod
+    def csv_bytes(headers: list[str], rows: list[list[object]]) -> bytes:
+        r"""Encode tabular data as UTF-8 CSV bytes (P7.3).
+
+        Per-row cells go through ``str(cell)`` unless ``None`` (rendered
+        as empty). The stdlib ``csv`` module handles quoting + escaping
+        per RFC 4180. Output uses ``\r\n`` line terminators because the
+        CSV spec says so; most consumers handle either, but stdlib's
+        default is the safer choice.
+        """
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow(["" if cell is None else str(cell) for cell in row])
+        return buf.getvalue().encode("utf-8")
+
     def render_pdf(self, template_name: str, **context: object) -> bytes:
         """Render ``template_name`` to PDF bytes via weasyprint (P7.2).
 

@@ -149,11 +149,28 @@ def render_pdf(data: BalanceSheetData) -> bytes:
     )
 
 
+def render_csv(data: BalanceSheetData) -> bytes:
+    """Render balance sheet as CSV (P7.3): one row per (section, account)."""
+    from tulip_reports.engine import ReportRenderer
+
+    headers = ["Section", "Code", "Account", "Currency", "Balance"]
+    rows: list[list[object]] = []
+    for section in (data.assets, data.liabilities, data.equity):
+        for row in section.rows:
+            rows.append([section.title, row.code or "", row.name, row.currency, row.balance])
+        for currency, subtotal in section.subtotals_by_currency.items():
+            rows.append([section.title, "SUBTOTAL", "", currency, subtotal])
+    for currency, amount in data.retained_earnings.items():
+        rows.append(["Retained earnings", "", "", currency, amount])
+    return ReportRenderer.csv_bytes(headers, rows)
+
+
 __all__ = [
     "BalanceSheetData",
     "BalanceSheetRow",
     "BalanceSheetSection",
     "build",
+    "render_csv",
     "render_html",
     "render_pdf",
 ]
