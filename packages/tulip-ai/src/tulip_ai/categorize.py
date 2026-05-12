@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from tulip_ai._sessions import use_session_or_make_one
 from tulip_ai.adapters import ProviderAdapter, ProviderResponse
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
 from tulip_ai.cost import PreCallApproval, enforce_pre_call
@@ -104,20 +105,30 @@ class AICategorizer:
         self._adapter = adapter
 
     async def categorize(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Session | None = None,
     ) -> CategorizationResult:
         """Suggest a category for one statement line.
+
+        ``session`` is the opt-in session-sharing path (#199, #200): callers
+        that are mid-transaction (the import-apply flow is the motivating
+        case) pass their session so the audit-row write doesn't deadlock
+        against the caller's own write lock. Standalone callers pass
+        nothing and the capability opens its own session.
 
         Wide ``except`` is intentional at the outer boundary: importer
         failures from a flaky AI provider — or from any AI-stack bug —
         must not block the whole apply batch. The provider-error branch
         produces an explicit ``ai_invocations`` row; deeper failures
-        (DB lock, decryption, unexpected exception) fall through to a
-        silent ``Imbalance:Unknown`` so the apply succeeds and the
-        operator gets the signal via structlog.
+        (decryption, unexpected exception) fall through to a silent
+        ``Imbalance:Unknown`` so the apply succeeds and the operator
+        gets the signal via structlog.
         """
         try:
-            return await self._categorize_inner(line, household_context)
+            return await self._categorize_inner(line, household_context, session=session)
         except Exception:
             log.exception(
                 "ai.categorize.failed",
@@ -126,10 +137,14 @@ class AICategorizer:
             return _FALLBACK_RESULT
 
     async def _categorize_inner(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Session | None,
     ) -> CategorizationResult:
         """Inner categorize body — caller wraps in a broad exception guard."""
-        with self._session_maker() as session:
+        with use_session_or_make_one(session, self._session_maker) as (session, should_commit):
             inputs = self._load_inputs(session, household_context.household_id)
             if inputs is None:
                 # Household vanished mid-call (shouldn't happen) — fall back silently.
@@ -150,7 +165,8 @@ class AICategorizer:
                         prompt_hash=hash_prompt_payload(payload.to_dict()),
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             if inputs.api_key is None and policy.provider != "ollama":
@@ -168,7 +184,8 @@ class AICategorizer:
                         response_text="no api key configured for provider",
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             payload = build_categorize_prompt(line, inputs.chart)
@@ -212,7 +229,8 @@ class AICategorizer:
                         response_text=gate.reason[:500],
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             call_provider = gate.provider or ""
@@ -239,7 +257,8 @@ class AICategorizer:
                         response_text=str(exc)[:500],
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             result = _parse_response(response, fallback_chart=inputs.chart)
@@ -264,7 +283,8 @@ class AICategorizer:
                     response_text=response.text if policy.log_prompts else None,
                 )
             )
-            session.commit()
+            if should_commit:
+                session.commit()
             return result
 
     def _load_inputs(self, session: Session, household_id: UUID) -> _PromptInputs | None:

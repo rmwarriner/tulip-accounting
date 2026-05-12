@@ -264,7 +264,9 @@ class TestPromoteStatementLine:
     @pytest.mark.asyncio
     async def test_unknown_categorizer_account_raises(self, session_maker, setup):
         class _BadCategorizer:
-            async def categorize(self, line, household_context) -> CategorizationResult:
+            async def categorize(
+                self, line, household_context, *, session=None
+            ) -> CategorizationResult:
                 return CategorizationResult(account_code="DoesNotExist", confidence=0.5)
 
         with session_maker() as s:

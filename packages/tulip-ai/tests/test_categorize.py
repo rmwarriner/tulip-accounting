@@ -153,6 +153,74 @@ async def test_categorize_falls_back_when_policy_disabled(
 
 
 @pytest.mark.asyncio
+async def test_categorize_inside_open_write_transaction_does_not_deadlock(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """Regression for #199 + #200: categorize must accept the caller's session.
+
+    Before the fix, the import-apply path held a write lock on connection
+    A while calling categorize; categorize opened connection B for its
+    audit row write, which failed with ``database is locked``. The fix
+    threads the caller's session into categorize so the audit lands in
+    the same transaction (and the same connection).
+    """
+    household, _ = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {"capabilities": {"categorize": {"policy": "disabled"}}}
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+
+    with session_maker() as shared:
+        # Simulate the import-apply path: hold a write lock by inserting
+        # an account without committing, then call categorize within the
+        # same session. The audit row must land in this session's
+        # transaction rather than via a second connection.
+        shared.add(
+            Account(
+                household_id=household.id,
+                id=uuid4(),
+                name="Cash",
+                type=AccountType.ASSET,
+                currency="USD",
+                code="1110",
+                visibility="shared",
+                created_by_user_id=None,
+            )
+        )
+        shared.flush()  # write lock acquired here
+
+        result = await categorizer.categorize(
+            _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+            HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+            session=shared,
+        )
+        # No deadlock; categorize returned the fallback (policy_disabled).
+        assert result.account_code == "Imbalance:Unknown"
+
+        # Audit row is pending in the shared session — not committed yet
+        # (caller owns commit when sharing).
+        pending_rows = shared.execute(select(AIInvocation)).scalars().all()
+        assert len(pending_rows) == 1
+        assert pending_rows[0].outcome == "policy_disabled"
+
+        shared.commit()
+
+    # After commit, the audit row + the seeded Account are both visible.
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_categorize_falls_back_when_no_api_key(
     session_maker: sessionmaker[Session], household_and_user, master_key: bytes
 ) -> None:

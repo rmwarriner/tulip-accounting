@@ -147,6 +147,7 @@ async def promote_statement_line(
     suggestion = await categorizer.categorize(
         domain_line,
         HouseholdContext(household_id=household_id, account_whitelist=frozenset()),
+        session=session,
     )
     other_account = accounts.get_by_code(suggestion.account_code)
     if other_account is None:
