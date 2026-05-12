@@ -54,6 +54,10 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # collision the AST checker can't disambiguate without context.
         "tulip-api/src/tulip_api/routers/reconciliations.py",
         "tulip-api/src/tulip_api/services/reconciliation_match.py",
+        # P7.1 reconciliation summary report reads ``reconciliation_id`` as
+        # the entity id for display; never writes. Same kwarg-name collision
+        # the AST checker can't disambiguate without context.
+        "tulip-reports/src/tulip_reports/reports/reconciliation_summary.py",
     }
 )
 

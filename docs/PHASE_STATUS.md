@@ -24,9 +24,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Phase 6 (AI integration):** ✅ shipped — P6.0–P6.5.c complete (ADR + categorize + NL query + daily-insights/anomaly + envelope AI forecast + sinking-fund AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability` (envelopes + sinking funds), `AIProposalCapability`, the proposal executor registry, the shared `enforce_pre_call` gate, and the `GET|PUT /v1/ai/config` admin surface. The daily-insights handler now forecasts both envelopes and sinking funds via a single `ForecastRequest` dataclass; production wiring of the forecaster into the runner is the only remaining no-op slot, intentionally deferred to a deploy-time toggle. Phase 6 closes.
 
-**Tests:** 1426 passing · **CI:** green on `main`
+**Tests:** 1478 passing · **CI:** green on `main`
 
-**Next:** Phase 7 — reports + journal export/import (per [ARCHITECTURE.md §10](ARCHITECTURE.md)). All v1 reports rendered as HTML + PDF, hledger-compatible journal export, basic journal import. Phase 7 entry is unblocked; no pre-phase gate.
+**Phase 7 (reports + journal export/import):** in flight — P7.1 in PR (all 9 v1 reports in HTML via `tulip-reports`). Up next per the workstream slicing in [ADR-0006](adrs/0006-ci-test-runtime.md): P7.2 PDF rendering layered on, P7.3 CSV, P7.4 journal export (hledger), P7.5 journal import. CLI subcommands (deferred from P7.1) land as P7.1.b.
 
 ---
 
@@ -557,6 +557,76 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 - **New server-side endpoint** `GET /v1/reconciliations` with optional `account_id` + `status` query params. Tenant-scoped via the existing `claims.household_id` dependency. Unknown-account-id returns an empty list (silent scoping; 404 reserved for malformed paths). Invalid status values get FastAPI's 422.
 - **Tests**: 8 CLI integration tests (subprocess against a live API per the existing `live_api` + `authed_session` fixture pattern; exercises every command + the negative paths for unbalanced complete and missing `--cascade`) + 8 router tests for the new GET endpoint (filters, tenant scoping, 422 on bad status, empty-on-unknown-account). Project total: **1129 passing** (up from 1113).
 - **Phase 5 closes** with this slice. Importers + reconciliation are fully wired end-to-end: upload → apply → match → complete, with carry-forward and manual override available, all via API + CLI.
+
+---
+
+## Phase 7 — Reports + journal export/import — in flight
+
+Per ARCHITECTURE.md §8 + §10. v1 ships 9 reports in HTML+PDF+CSV, plus
+hledger-compatible journal export + basic journal import. "Workstream
+slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
+journal import.
+
+### P7.1 — `tulip-reports` skeleton + 9 reports in HTML — 🔄 *(in PR)*
+
+First Phase-7 slice. Stands up the `tulip-reports` package + all 9 v1
+reports rendered to HTML. Toner-friendly per ARCHITECTURE.md §8 (white
+background, thin black rules, sans-serif, color reserved for emphasis,
+print stylesheet @media block).
+
+**Rendering pipeline**:
+- `tulip_reports.engine.ReportRenderer` — Jinja2 environment with
+  custom filters (`money` for Decimal formatting + currency suffix,
+  `isodate` for date/datetime → ISO 8601, `negative` test for the
+  toner-friendly emphasis class). `StrictUndefined` catches template
+  typos at render time; `autoescape` is on for HTML safety.
+- `templates/base.html` — shared chrome + the §8 CSS contract.
+- Per-report modules under `tulip_reports.reports.*` each expose a
+  `build(session, **filters) -> ReportData` dataclass and
+  `render_html(data) -> str`.
+
+**Reports** (all 9):
+1. **Trial balance** — extended the existing JSON endpoint with
+   `?format=html`. Existing contract unchanged.
+2. **Balance sheet** — regroups trial-balance rows by account type
+   (assets / liabilities / equity) + retained earnings as cumulative
+   income − expenses through `as_of`.
+3. **Income statement** — revenue + expenses over a date range, with
+   optional prior-period comparison. Income signs flipped server-side
+   so "money in" is positive in both columns.
+4. **Cash flow** — net change per asset account over a date range,
+   split into inflows (positive delta) vs outflows.
+5. **Envelope status** — active envelopes with current balance vs
+   budget + utilization percentage.
+6. **Sinking-fund progress** — active sinking funds with balance vs
+   target_amount + target_date + days remaining.
+7. **Reconciliation summary** — aggregated reconciliations (status
+   filter optional) with match + carry-forward counts.
+8. **Audit log** — paginated audit-log query with date / actor /
+   entity_type filters; bounded at 500 rows per page.
+9. **Custom query** — read-only SQL against AI views (P6.2),
+   validated via `tulip_ai.sql_safety.validate_and_rewrite`. Same
+   safety gate as the NL-query capability; failures surface as a
+   `report.unsafe_query` 400.
+
+**HTTP**: `GET /v1/reports/<name>?format=json|html` for each report.
+Default `json` preserves backward compat for the existing trial
+balance endpoint; HTML is the new path.
+
+**Architecture-test exemptions**: the reconciliation-summary report
+reads the `Reconciliation` model directly for display; same read-only
+allowlist entry as `csv_profiles.py` (P5.0 precedent).
+
+**Tests** — +52: 16 engine + filter unit tests, 1 trial-balance HTML
+integration test (the foundational pattern), +35 across the new
+report endpoints (JSON shape, HTML response Content-Type, auth gate,
+date filters, custom-query SQL safety gate).
+
+**Out of scope** (deferred):
+- PDF rendering via weasyprint — P7.2.
+- CSV output — P7.3.
+- CLI subcommands (`tulip reports <name>`) — P7.1.b.
+- Journal export/import — P7.4 / P7.5.
 
 ---
 

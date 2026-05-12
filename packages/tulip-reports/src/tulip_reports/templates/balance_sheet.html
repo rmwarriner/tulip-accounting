@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Balance sheet · {{ data.household_name }}{% endblock %}
+{% block report_title %}Balance sheet{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>As of:</dt><dd>{{ data.as_of | isodate }}</dd>
+</dl>
+{% endblock %}
+
+{% macro section(section) %}
+<h2>{{ section.title }}</h2>
+{% if section.rows %}
+<table>
+  <thead>
+    <tr><th>Code</th><th>Account</th><th class="num">Balance</th><th>Currency</th></tr>
+  </thead>
+  <tbody>
+    {% for row in section.rows %}
+    <tr>
+      <td>{{ row.code or "" }}</td>
+      <td>{{ row.name }}</td>
+      <td class="num{% if row.balance is negative %} negative{% endif %}">{{ row.balance | money }}</td>
+      <td>{{ row.currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    {% for currency, subtotal in section.subtotals_by_currency.items() %}
+    <tr class="totals">
+      <td colspan="2">Subtotal</td>
+      <td class="num{% if subtotal is negative %} negative{% endif %}">{{ subtotal | money }}</td>
+      <td>{{ currency }}</td>
+    </tr>
+    {% endfor %}
+  </tfoot>
+</table>
+{% else %}
+<p class="empty">No {{ section.title | lower }} accounts.</p>
+{% endif %}
+{% endmacro %}
+
+{% block content %}
+{{ section(data.assets) }}
+{{ section(data.liabilities) }}
+{{ section(data.equity) }}
+
+{% if data.retained_earnings %}
+<h2>Retained earnings</h2>
+<table>
+  <thead><tr><th>Currency</th><th class="num">Amount</th></tr></thead>
+  <tbody>
+    {% for currency, amount in data.retained_earnings.items() %}
+    <tr>
+      <td>{{ currency }}</td>
+      <td class="num{% if amount is negative %} negative{% endif %}">{{ amount | money }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

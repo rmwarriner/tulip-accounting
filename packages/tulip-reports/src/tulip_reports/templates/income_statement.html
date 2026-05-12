@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Income statement · {{ data.household_name }}{% endblock %}
+{% block report_title %}Income statement{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>Current period:</dt><dd>{{ data.current_period.start | isodate }} → {{ data.current_period.end | isodate }}</dd>
+  {% if data.prior_period %}
+  <dt>Prior period:</dt><dd>{{ data.prior_period.start | isodate }} → {{ data.prior_period.end | isodate }}</dd>
+  {% endif %}
+</dl>
+{% endblock %}
+
+{% macro section(section) %}
+<h3>{{ section.title }}</h3>
+{% if section.rows %}
+<table>
+  <thead><tr><th>Code</th><th>Account</th><th class="num">Amount</th><th>Currency</th></tr></thead>
+  <tbody>
+    {% for row in section.rows %}
+    <tr>
+      <td>{{ row.code or "" }}</td>
+      <td>{{ row.name }}</td>
+      <td class="num{% if row.amount is negative %} negative{% endif %}">{{ row.amount | money }}</td>
+      <td>{{ row.currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    {% for currency, subtotal in section.subtotals_by_currency.items() %}
+    <tr class="totals">
+      <td colspan="2">Subtotal</td>
+      <td class="num">{{ subtotal | money }}</td>
+      <td>{{ currency }}</td>
+    </tr>
+    {% endfor %}
+  </tfoot>
+</table>
+{% else %}
+<p class="empty">No {{ section.title | lower }} in this period.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro period_block(period) %}
+{{ section(period.revenue) }}
+{{ section(period.expenses) }}
+<h3>Net income</h3>
+{% if period.net_income_by_currency %}
+<table>
+  <thead><tr><th>Currency</th><th class="num">Net</th></tr></thead>
+  <tbody>
+    {% for currency, net in period.net_income_by_currency.items() %}
+    <tr class="totals">
+      <td>{{ currency }}</td>
+      <td class="num{% if net is negative %} negative{% endif %}">{{ net | money }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No activity in this period.</p>
+{% endif %}
+{% endmacro %}
+
+{% block content %}
+<h2>Current period</h2>
+{{ period_block(data.current_period) }}
+
+{% if data.prior_period %}
+<h2>Prior period (comparison)</h2>
+{{ period_block(data.prior_period) }}
+{% endif %}
+{% endblock %}

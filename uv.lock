@@ -3208,6 +3208,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tulip-core" },
     { name = "tulip-importers" },
+    { name = "tulip-reports" },
     { name = "tulip-storage" },
     { name = "uvicorn" },
 ]
@@ -3228,6 +3229,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.1" },
     { name = "tulip-core", editable = "packages/tulip-core" },
     { name = "tulip-importers", editable = "packages/tulip-importers" },
+    { name = "tulip-reports", editable = "packages/tulip-reports" },
     { name = "tulip-storage", editable = "packages/tulip-storage" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
@@ -3287,6 +3289,20 @@ requires-dist = [
 name = "tulip-reports"
 version = "0.0.0"
 source = { editable = "packages/tulip-reports" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "tulip-ai" },
+    { name = "tulip-core" },
+    { name = "tulip-storage" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "tulip-ai", editable = "packages/tulip-ai" },
+    { name = "tulip-core", editable = "packages/tulip-core" },
+    { name = "tulip-storage", editable = "packages/tulip-storage" },
+]
 
 [[package]]
 name = "tulip-storage"

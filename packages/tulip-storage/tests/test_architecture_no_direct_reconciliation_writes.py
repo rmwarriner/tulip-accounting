@@ -72,6 +72,9 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # the import is read-only, mirroring how P5.0's void-link guard
         # allowed the API router for read-side access).
         "tulip-api/src/tulip_api/routers/csv_profiles.py",
+        # Reconciliation summary report (P7.1) reads the model for
+        # display; never writes. Same justification as csv_profiles.py.
+        "tulip-reports/src/tulip_reports/reports/reconciliation_summary.py",
     }
 )
 

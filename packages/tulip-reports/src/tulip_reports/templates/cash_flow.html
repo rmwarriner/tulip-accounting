@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Cash flow · {{ data.household_name }}{% endblock %}
+{% block report_title %}Cash flow{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>Period:</dt><dd>{{ data.start | isodate }} → {{ data.end | isodate }}</dd>
+</dl>
+{% endblock %}
+
+{% macro flow_table(title, rows) %}
+<h3>{{ title }}</h3>
+{% if rows %}
+<table>
+  <thead><tr><th>Code</th><th>Account</th><th class="num">Net change</th><th>Currency</th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>{{ row.code or "" }}</td>
+      <td>{{ row.name }}</td>
+      <td class="num{% if row.delta is negative %} negative{% endif %}">{{ row.delta | money }}</td>
+      <td>{{ row.currency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No {{ title | lower }} in this period.</p>
+{% endif %}
+{% endmacro %}
+
+{% block content %}
+{{ flow_table("Inflows", data.inflows) }}
+{{ flow_table("Outflows", data.outflows) }}
+<h3>Net cash flow</h3>
+{% if data.net_by_currency %}
+<table>
+  <thead><tr><th>Currency</th><th class="num">Net</th></tr></thead>
+  <tbody>
+    {% for currency, net in data.net_by_currency.items() %}
+    <tr class="totals">
+      <td>{{ currency }}</td>
+      <td class="num{% if net is negative %} negative{% endif %}">{{ net | money }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No movement in this period.</p>
+{% endif %}
+{% endblock %}
