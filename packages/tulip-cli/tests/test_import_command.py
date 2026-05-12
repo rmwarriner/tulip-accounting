@@ -138,6 +138,84 @@ def test_imports_apply_happy_path(authed_session: str) -> None:
 
 
 @pytest.mark.integration
+def test_imports_show_renders_header_and_lines(authed_session: str) -> None:
+    """`tulip imports show BATCH_ID` renders batch header + per-line table."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert upload.returncode == 0, upload.stderr
+    batch_id = json.loads(upload.stdout)["id"]
+
+    show = _run_cli("imports", "show", batch_id, api_url=authed_session)
+    assert show.returncode == 0, show.stderr
+    assert batch_id in show.stdout
+    assert "OFX" in show.stdout
+    assert "Statement lines" in show.stdout
+
+
+@pytest.mark.integration
+def test_imports_show_json_passthrough(authed_session: str) -> None:
+    """`tulip --json imports show BATCH_ID` emits raw ImportBatchRead body."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    batch_id = json.loads(upload.stdout)["id"]
+
+    show = _run_cli("--json", "imports", "show", batch_id, api_url=authed_session)
+    assert show.returncode == 0, show.stderr
+    payload = json.loads(show.stdout)
+    assert payload["id"] == batch_id
+    assert isinstance(payload.get("lines"), list)
+
+
+@pytest.mark.integration
+def test_imports_show_unknown_batch_returns_problem(authed_session: str) -> None:
+    """Unknown batch UUID surfaces the typed import_batch.not_found problem."""
+    from uuid import uuid4
+
+    show = _run_cli("imports", "show", str(uuid4()), api_url=authed_session)
+    assert show.returncode != 0
+    combined = (show.stdout + show.stderr).lower()
+    assert "import_batch.not_found" in combined or "not found" in combined
+
+
+@pytest.mark.integration
 def test_imports_apply_already_applied_returns_409(authed_session: str) -> None:
     """Re-applying renders the typed Problem and exits non-zero."""
     _seed_checking(authed_session)

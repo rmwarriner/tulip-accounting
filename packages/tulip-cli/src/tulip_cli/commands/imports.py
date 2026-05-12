@@ -185,6 +185,87 @@ def import_csv(
     )
 
 
+@imports_app.command("show")
+def show_import(
+    ctx: typer.Context,
+    batch_id: Annotated[
+        str,
+        typer.Argument(
+            help="Import batch UUID returned by `tulip imports ofx/qif/csv`.",
+            metavar="BATCH_ID",
+        ),
+    ],
+) -> None:
+    """Render an import batch's header + parsed statement lines."""
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(f"/v1/imports/{batch_id}", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    _render_batch(response.json())
+
+
+def _render_batch(body: dict[str, Any]) -> None:
+    """Render an ``ImportBatchRead`` body to stdout."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    header_lines = [
+        f"Batch:    {body.get('id', '')}",
+        f"Source:   {body.get('source_filename', '')} ({body.get('source_format', '?').upper()})",
+        f"Account:  {body.get('account_id', '')}",
+        f"Status:   {body.get('status', '?')}",
+        f"Counts:   imported={body.get('imported_count', 0)}  "
+        f"skipped={body.get('skipped_count', 0)}  "
+        f"errors={body.get('error_count', 0)}",
+        f"Created:  {body.get('created_at', '')}",
+    ]
+    applied_at = body.get("applied_at")
+    if applied_at:
+        header_lines.append(f"Applied:  {applied_at}")
+    reverted_at = body.get("reverted_at")
+    if reverted_at:
+        header_lines.append(f"Reverted: {reverted_at}")
+    for line in header_lines:
+        typer.echo(line)
+
+    lines = body.get("lines") or []
+    if not lines:
+        typer.echo("\n(no statement lines)")
+        return
+
+    table = Table(title=f"\nStatement lines ({len(lines)})", show_header=True)
+    table.add_column("#", justify="right")
+    table.add_column("date")
+    table.add_column("amount", justify="right")
+    table.add_column("ccy")
+    table.add_column("description")
+    table.add_column("flag")
+    for line in lines:
+        flag_bits: list[str] = []
+        if line.get("is_excluded"):
+            flag_bits.append("excluded")
+        if line.get("reconciliation_match_id"):
+            flag_bits.append("reconciled")
+        table.add_row(
+            str(line.get("line_number", "")),
+            str(line.get("posted_date", "")),
+            str(line.get("amount", "")),
+            str(line.get("currency", "")),
+            str(line.get("description", "") or ""),
+            ", ".join(flag_bits),
+        )
+    console.print(table)
+
+
 @imports_app.command("apply")
 def apply_import(
     ctx: typer.Context,
