@@ -26,6 +26,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Skip docs-only / tooling-only PRs — CodeQL has no Python to analyze
+    # there, and the analyze step is ~1–2 min per run. The `push` trigger
+    # above still runs CodeQL unconditionally on every merge to main, so
+    # nothing slips through if a future docs PR accidentally touches code.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'justfile'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/labeler.yml'
   schedule:
     # Weekly Monday 06:30 UTC. Cron must exist on the default branch to fire.
     - cron: "30 6 * * 1"
