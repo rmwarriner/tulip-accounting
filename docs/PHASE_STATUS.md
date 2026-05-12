@@ -26,7 +26,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 **Tests:** 1478 passing · **CI:** green on `main`
 
-**Phase 7 (reports + journal export/import):** in flight — P7.1 (HTML) + P7.2 (PDF) + P7.3 (CSV) shipped; P7.4 (hledger journal export) in PR. Up next: P7.5 journal import. CLI subcommands deferred as P7.1.b.
+**Phase 7 (reports + journal export/import):** P7.1–P7.4 shipped; P7.5 (journal import) in PR — closes Phase 7. CLI subcommands deferred as P7.1.b.
 
 ---
 
@@ -567,7 +567,53 @@ hledger-compatible journal export + basic journal import. "Workstream
 slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
 journal import.
 
-### P7.4 — hledger-compatible journal export — 🔄 *(in PR)*
+### P7.5 — hledger journal import — 🔄 *(in PR; closes Phase 7)*
+
+Final Phase-7 slice. Closes the round-trip with P7.4: users can pull
+their ledger out as hledger journal text and push it back in. Imported
+transactions land in **PENDING status** for user review — same
+convention as the existing OFX / QIF / CSV importers (#74).
+
+**Parsing** (`tulip_reports.journal.parse`):
+- `parse_journal(text) -> ParsedJournal` — pure function, no DB
+  access. Accepts the subset of hledger that `export_journal` emits
+  plus forgiveness for hand-edits (extra blank lines, comments).
+- Errors don't abort parsing; they're collected with line numbers
+  so the user can fix and retry.
+
+**Resolution** (`tulip_reports.journal.import_`):
+- `resolve_journal(session, *, household_id, parsed) -> ImportResult`
+  maps each posting's `<Type>:<code>:<name>` path back to a tulip
+  account. By code first (most reliable), then by exact `(type, name)`.
+- Validates: every account resolves, posting currency matches
+  account currency, postings balance per currency.
+
+**HTTP** (`tulip_api.routers.journal`):
+- `POST /v1/journal/import` accepts plain-text body (5 MB cap),
+  parses + resolves, inserts as PENDING transactions via
+  `TransactionRepository.save_balanced`. Response carries
+  `created` count + the `transaction_ids` array.
+- Parse errors → `journal.parse_failed` (400) with `errors`
+  extension array.
+- Resolve errors → `journal.import_failed` (400) with the same shape.
+
+**Tests** — +8 in `test_journal_import.py`:
+- Happy path: minimal two-posting tx creates one PENDING transaction.
+- **Export → import round-trip** through the existing transactions
+  endpoint — the primary acceptance criterion.
+- Parse error: non-date header surfaces with line number.
+- Resolve error: unknown account path.
+- Resolve error: unbalanced postings.
+- Resolve error: currency mismatch.
+- Empty body returns 201 with `created: 0`.
+- Auth gate.
+
+Full suite: 1511 passed locally.
+
+**Phase 7 closes** after this slice merges. CLI subcommands
+(deferred from P7.1) remain as P7.1.b follow-up.
+
+### P7.4 — hledger-compatible journal export — ✅ *(2026-05-12)*
 
 Fourth Phase-7 slice. Adds a plain-text export of the household
 ledger in hledger journal format — the de-facto standard for the
