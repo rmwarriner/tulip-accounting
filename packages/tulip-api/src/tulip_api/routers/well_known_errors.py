@@ -50,6 +50,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         )
     },
     "UnsupportedProposalKindError": {"kind": "transfer_pools"},
+    "CustomQueryUnsafeError": {"reason": "table 'users' is not in the AI view allowlist"},
     "PoolNotFoundError": {"pool_id": "<pool-uuid>"},
     "PoolInactiveError": {"pool_id": "<pool-uuid>"},
     "PoolCurrencyMismatchError": {
