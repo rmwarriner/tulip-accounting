@@ -33,6 +33,7 @@ from tulip_api.routers import (
     envelopes,
     health,
     imports,
+    journal,
     notifications,
     periods,
     pools,
@@ -162,6 +163,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(pools.router)
     app.include_router(refill_schedules.router)
     app.include_router(reports.router)
+    app.include_router(journal.router)
     # csv_profiles must register BEFORE imports — both prefix on
     # /v1/imports, and the more specific /v1/imports/profiles router
     # must win route matching for the profile endpoints. (FastAPI

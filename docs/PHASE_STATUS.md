@@ -26,7 +26,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 **Tests:** 1478 passing · **CI:** green on `main`
 
-**Phase 7 (reports + journal export/import):** in flight — P7.1 (HTML) + P7.2 (PDF) shipped; P7.3 (CSV) in PR. Up next: P7.4 journal export (hledger), P7.5 journal import. CLI subcommands deferred as P7.1.b.
+**Phase 7 (reports + journal export/import):** in flight — P7.1 (HTML) + P7.2 (PDF) + P7.3 (CSV) shipped; P7.4 (hledger journal export) in PR. Up next: P7.5 journal import. CLI subcommands deferred as P7.1.b.
 
 ---
 
@@ -567,7 +567,46 @@ hledger-compatible journal export + basic journal import. "Workstream
 slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
 journal import.
 
-### P7.3 — CSV output for all 9 reports — 🔄 *(in PR)*
+### P7.4 — hledger-compatible journal export — 🔄 *(in PR)*
+
+Fourth Phase-7 slice. Adds a plain-text export of the household
+ledger in hledger journal format — the de-facto standard for the
+plain-text-accounting community. Output round-trips cleanly through
+hledger / ledger-cli for users who want analysis in those tools.
+
+**Storage-side**:
+- `tulip_reports.journal.export.export_journal(session, *,
+  household_id, start=None, end=None) -> bytes` — pure function
+  rendering all POSTED + RECONCILED transactions (excluding voided)
+  as a hledger journal. Account paths use the colon hierarchy
+  `<Type>:<code>:<name>` (or `<Type>:<name>` when no code is set).
+
+**HTTP**:
+- New router `tulip_api.routers.journal` with one endpoint:
+  `GET /v1/journal/export[?start=...&end=...]`. Returns
+  `text/plain; charset=utf-8` with `Content-Disposition:
+  attachment; filename=tulip-journal-<date>.journal` so browsers
+  download to a sensible name.
+
+**Format details**:
+- One `YYYY-MM-DD description` header per transaction.
+- Two-space indent before each posting; account / amount separated
+  by at least two spaces (hledger's minimum).
+- Amounts use `.` decimal, no thousand separators (canonical
+  hledger), banker's-rounded to two decimals.
+- One blank line between transactions.
+- `tx.reference` is prefixed to the description as `(REF) desc`
+  when present.
+- Pending + voided transactions excluded — same convention as the
+  trial balance / income statement.
+
+**Tests** — +6: empty household, single tx renders correctly,
+date-range filter, sensible filename in Content-Disposition,
+auth gate, code-less accounts fall back to `<Type>:<name>`.
+
+Full suite: 1502 passed locally.
+
+### P7.3 — CSV output for all 9 reports — ✅ *(2026-05-12)*
 
 Third Phase-7 slice. Layers CSV output on top of HTML (P7.1) and PDF
 (P7.2). No new dependencies — stdlib `csv` + `io.StringIO` handle
