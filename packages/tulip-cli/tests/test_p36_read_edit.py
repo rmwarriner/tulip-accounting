@@ -150,6 +150,35 @@ def test_transactions_list_renders_all(seeded_session: tuple[str, str, str, str]
 
 
 @pytest.mark.integration
+def test_transactions_list_shows_id_prefix(seeded_session: tuple[str, str, str, str]) -> None:
+    """Default table prints the first 8 chars of each transaction id (#207)."""
+    api_url, _checking, _food, _rent = seeded_session
+    json_result = _run_cli("--json", "transactions", "list", api_url=api_url)
+    rows = json.loads(json_result.stdout)
+    assert len(rows) == 3
+
+    table_result = _run_cli("transactions", "list", api_url=api_url)
+    assert table_result.returncode == 0, table_result.stderr
+    for row in rows:
+        prefix = row["id"][:8]
+        assert prefix in table_result.stdout, (prefix, table_result.stdout)
+
+
+@pytest.mark.integration
+def test_transactions_list_json_payload_unchanged(
+    seeded_session: tuple[str, str, str, str],
+) -> None:
+    """--json passthrough still emits full UUIDs (not truncated)."""
+    api_url, _checking, _food, _rent = seeded_session
+    result = _run_cli("--json", "transactions", "list", api_url=api_url)
+    assert result.returncode == 0, result.stderr
+    rows = json.loads(result.stdout)
+    for row in rows:
+        # Full UUIDs are 36 characters with hyphens.
+        assert len(row["id"]) == 36
+
+
+@pytest.mark.integration
 def test_transactions_list_filters_by_account_code(
     seeded_session: tuple[str, str, str, str],
 ) -> None:

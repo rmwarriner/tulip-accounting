@@ -386,6 +386,7 @@ def _resolve_account_id_for_filter(client: TulipClient, identifier: str) -> str:
 
 def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
     table = Table(show_header=True, show_lines=False)
+    table.add_column("id")
     table.add_column("date")
     table.add_column("description")
     table.add_column("reference")
@@ -401,7 +402,9 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
             short = str(account)[:8] if account else "—"
             summary_parts.append(f"{short} {amount} {currency}")
         summary = "\n".join(summary_parts)
+        tx_id = row.get("id") or ""
         table.add_row(
+            str(tx_id)[:8] if tx_id else "—",
             str(row.get("date") or ""),
             row.get("description") or "",
             row.get("reference") or "—",
