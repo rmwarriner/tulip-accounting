@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, cast, delete, func, select, update
 
 from tulip_storage.models import Posting, Transaction, TransactionStatus
 
@@ -91,13 +91,16 @@ class TransactionRepository:
         from_date: date_type | None = None,
         to_date: date_type | None = None,
         status: TransactionStatus | None = None,
+        id_prefix: str | None = None,
         limit: int | None = None,
     ) -> list[Transaction]:
         """List transaction headers in this household, newest first.
 
         Filters compose with AND. ``account_id`` matches any transaction
         with at least one posting on that account (any currency). Date
-        filters are inclusive on both ends. ``limit`` caps the number of
+        filters are inclusive on both ends. ``id_prefix`` matches
+        transactions whose string-rendered UUID begins with the given
+        hex prefix (case-insensitive). ``limit`` caps the number of
         rows returned; ``None`` means no cap.
         """
         query = select(Transaction).where(Transaction.household_id == self._household_id)
@@ -116,6 +119,12 @@ class TransactionRepository:
             query = query.where(Transaction.date <= to_date)
         if status is not None:
             query = query.where(Transaction.status == status)
+        if id_prefix is not None:
+            # Cast bypasses the GUID type decorator (which would try to
+            # parse the LIKE pattern as a UUID). Stored ids are always
+            # lowercased by ``str(UUID(...))`` in ``GUID.process_bind_param``,
+            # so a lowercased prefix gives case-insensitive matching.
+            query = query.where(cast(Transaction.id, String).like(f"{id_prefix.lower()}%"))
         query = query.order_by(Transaction.date.desc(), Transaction.created_at.desc())
         if limit is not None:
             query = query.limit(limit)

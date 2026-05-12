@@ -324,3 +324,39 @@ class TestListTransactionsFilters:
             },
         ).json()
         assert {r["description"] for r in rows} == {"lunch-nov"}
+
+    def test_filter_by_id_prefix(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        all_rows = client.get("/v1/transactions", headers=auth_h).json()
+        target = all_rows[0]
+        prefix = target["id"][:8]
+        rows = client.get("/v1/transactions", headers=auth_h, params={"id_prefix": prefix}).json()
+        assert [r["id"] for r in rows] == [target["id"]]
+
+    def test_filter_by_id_prefix_no_match(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        # 8 hex chars that almost certainly don't collide with seeded data.
+        rows = client.get(
+            "/v1/transactions", headers=auth_h, params={"id_prefix": "deadbeef"}
+        ).json()
+        assert rows == []
+
+    def test_id_prefix_rejects_wildcards(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        seeded: tuple[str, str, str],
+    ):
+        # LIKE wildcards must not leak through — the regex rejects '%' and '_'.
+        r = client.get("/v1/transactions", headers=auth_h, params={"id_prefix": "%"})
+        assert_problem(r, code="validation.failed", status=422)
+        r = client.get("/v1/transactions", headers=auth_h, params={"id_prefix": "ab_cd"})
+        assert_problem(r, code="validation.failed", status=422)

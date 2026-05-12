@@ -594,6 +594,15 @@ def list_transactions(
         description="One of 'pending', 'posted', 'reconciled'.",
         pattern="^(pending|posted|reconciled)$",
     ),
+    id_prefix: str | None = Query(
+        default=None,
+        description=(
+            "Restrict to transactions whose UUID begins with this hex prefix "
+            "(case-insensitive). Hyphens are accepted so callers can paste a "
+            "partial UUID like '5df7-822c'. Excludes LIKE wildcards by regex."
+        ),
+        pattern="^[0-9a-fA-F-]{1,36}$",
+    ),
     limit: int | None = Query(
         default=None,
         ge=1,
@@ -617,6 +626,7 @@ def list_transactions(
         from_date=from_date,
         to_date=to_date,
         status=storage_status,
+        id_prefix=id_prefix,
         limit=limit,
     )
     return [_read_response(t.id, claims.household_id, session) for t in rows]

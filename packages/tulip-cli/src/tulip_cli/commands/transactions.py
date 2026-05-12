@@ -384,6 +384,60 @@ def _resolve_account_id_for_filter(client: TulipClient, identifier: str) -> str:
     return str(resolved["id"])
 
 
+_HEX_PREFIX_CHARS = frozenset("0123456789abcdefABCDEF-")
+
+
+def _resolve_tx_id(client: TulipClient, identifier: str, *, as_json: bool) -> UUID:
+    """Resolve a TXID argument to a full UUID.
+
+    Fast path: a valid UUID string is returned unchanged with no API
+    call. Otherwise the identifier is treated as a hex prefix and
+    looked up via ``GET /v1/transactions?id_prefix=…``. Zero matches
+    raises ``transaction.not_found``; multiple matches raises
+    ``transaction.ambiguous_id_prefix`` with a sample so the user
+    can lengthen the prefix.
+    """
+    try:
+        return UUID(identifier)
+    except ValueError:
+        pass
+    if not identifier or not all(c in _HEX_PREFIX_CHARS for c in identifier):
+        raise typer.BadParameter("TXID must be a UUID or hex prefix (0-9, a-f, -)")
+    response = client.get(
+        "/v1/transactions",
+        authenticated=True,
+        params={"id_prefix": identifier},
+    )
+    rows = response.json()
+    if len(rows) == 0:
+        raise CliError(
+            problem={
+                "type": "/.well-known/errors/transaction.not_found",
+                "title": "No transaction matches that id prefix",
+                "status": 404,
+                "detail": f"No transaction's id begins with {identifier!r}.",
+                "code": "transaction.not_found",
+            },
+            as_json=as_json,
+        )
+    if len(rows) > 1:
+        sample = ", ".join(str(r["id"])[:12] for r in rows[:5])
+        raise CliError(
+            problem={
+                "type": "/.well-known/errors/transaction.ambiguous_id_prefix",
+                "title": "Ambiguous transaction id prefix",
+                "status": 400,
+                "detail": (
+                    f"Prefix {identifier!r} matched {len(rows)} transactions "
+                    f"(e.g. {sample}). Use more characters."
+                ),
+                "code": "transaction.ambiguous_id_prefix",
+            },
+            as_json=as_json,
+        )
+    return UUID(str(rows[0]["id"]))
+
+
 def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
     table = Table(show_header=True, show_lines=False)
     table.add_column("id")
@@ -526,23 +580,19 @@ def show_transaction(
     tx_id: Annotated[
         str,
         typer.Argument(
-            help="Transaction UUID.",
+            help="Transaction UUID or unambiguous hex prefix.",
             metavar="TXID",
         ),
     ],
 ) -> None:
-    """Show one transaction (header + postings) by UUID."""
+    """Show one transaction (header + postings) by UUID or prefix."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
     try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
-    try:
         with _client(config, as_json=as_json) as client:
-            response = client.get(f"/v1/transactions/{tx_id}", authenticated=True)
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            response = client.get(f"/v1/transactions/{resolved}", authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -558,7 +608,10 @@ def void_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to void.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to void.",
+            metavar="TXID",
+        ),
     ],
     reason: Annotated[
         str,
@@ -591,22 +644,8 @@ def void_transaction(
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
     if reversal_date is not None:
         _validate_iso_date(reversal_date, flag="--date")
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"Void transaction {tx_id}? This posts a reversal sibling.",
-            default=False,
-        )
-        if not confirmed:
-            typer.echo("Aborted; no changes made.")
-            return
 
     body: dict[str, Any] = {"reason": reason}
     if reversal_date is not None:
@@ -614,8 +653,17 @@ def void_transaction(
 
     try:
         with _client(config, as_json=as_json) as client:
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            if not yes:
+                confirmed = typer.confirm(
+                    f"Void transaction {resolved}? This posts a reversal sibling.",
+                    default=False,
+                )
+                if not confirmed:
+                    typer.echo("Aborted; no changes made.")
+                    return
             response = client.post(
-                f"/v1/transactions/{tx_id}/void",
+                f"/v1/transactions/{resolved}/void",
                 json=body,
                 authenticated=True,
             )
@@ -637,7 +685,10 @@ def delete_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to delete.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to delete.",
+            metavar="TXID",
+        ),
     ],
     yes: Annotated[
         bool,
@@ -653,30 +704,26 @@ def delete_transaction(
     as_json: bool = ctx.obj["json"]
 
     try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"Hard-delete transaction {tx_id}? Only PENDING transactions can be deleted.",
-            default=False,
-        )
-        if not confirmed:
-            typer.echo("Aborted; no changes made.")
-            return
-
-    try:
         with _client(config, as_json=as_json) as client:
-            client.delete(f"/v1/transactions/{tx_id}", authenticated=True)
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            if not yes:
+                confirmed = typer.confirm(
+                    f"Hard-delete transaction {resolved}? "
+                    "Only PENDING transactions can be deleted.",
+                    default=False,
+                )
+                if not confirmed:
+                    typer.echo("Aborted; no changes made.")
+                    return
+            client.delete(f"/v1/transactions/{resolved}", authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
     if as_json:
-        sys.stdout.write('{"deleted": "' + tx_id + '"}\n')
+        sys.stdout.write('{"deleted": "' + str(resolved) + '"}\n')
         return
-    typer.echo(f"Deleted transaction {tx_id}.")
+    typer.echo(f"Deleted transaction {resolved}.")
 
 
 @transactions_app.command("edit")
@@ -684,7 +731,10 @@ def edit_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to edit.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to edit.",
+            metavar="TXID",
+        ),
     ],
 ) -> None:
     """Edit a PENDING transaction in ``$EDITOR`` (hledger format).
@@ -695,16 +745,12 @@ def edit_transaction(
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
     # Pre-flight: load the existing transaction so we can render it into the
     # editor buffer and reject early when it's not PENDING.
     try:
         with _client(config, as_json=as_json) as client:
-            current = client.get(f"/v1/transactions/{tx_id}", authenticated=True).json()
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            current = client.get(f"/v1/transactions/{resolved}", authenticated=True).json()
             if current.get("status") != "pending":
                 from tulip_cli.errors import CliError as _CliError
 
@@ -736,17 +782,17 @@ def edit_transaction(
                     buffer = _with_banner(edited, str(exc))
                     continue
                 try:
-                    resolved = _resolve_postings(
+                    resolved_postings = _resolve_postings(
                         client,
                         [ParsedPosting(p.account, p.amount, p.currency) for p in parsed.postings],
                     )
                     body = {
                         "date": parsed.date.isoformat(),
                         "description": parsed.description,
-                        "postings": resolved,
+                        "postings": resolved_postings,
                     }
                     response = client.patch(
-                        f"/v1/transactions/{tx_id}",
+                        f"/v1/transactions/{resolved}",
                         json=body,
                         authenticated=True,
                     )
