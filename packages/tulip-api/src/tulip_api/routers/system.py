@@ -73,5 +73,7 @@ def get_system_diagnostics(
         alembic_head_match=head_in_db == head_expected,
         master_key_source=settings.master_key_source,
         master_key_loaded=settings.master_key_source != "ephemeral",
+        jwt_secret_source=settings.jwt_secret_source,
+        deployment_mode=settings.deployment_mode,
         attachment_root_writable=_probe_attachment_root_writable(settings),
     )
