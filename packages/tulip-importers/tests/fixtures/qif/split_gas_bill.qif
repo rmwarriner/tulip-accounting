@@ -1,0 +1,13 @@
+!Type:Bank
+D1/2/26
+T-58.99
+CC
+PCenterPoint Energy
+MNet gas bill due
+ECurrent gas charges
+SNeeds:Utilities:Natural Gas/TulipDrive
+$-45.27
+ECurrent home service charges
+SNeeds:Insurance:Home Warranty/TulipDrive
+$-13.72
+^
