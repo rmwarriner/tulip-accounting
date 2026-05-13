@@ -128,6 +128,23 @@ _APP = _build_app()
 _SCHEMA = schemathesis.openapi.from_asgi("/openapi.json", _APP)
 
 
+@pytest.fixture(autouse=True)
+def _disable_auth_rate_limit_for_schemathesis():  # type: ignore[no-untyped-def]
+    # H-4 (#219): each parametrized schemathesis case can fire dozens of
+    # requests against the same endpoint within one pytest test, easily
+    # exceeding the 10/min /v1/auth/* limit. The contract test's brief is
+    # schema conformance, not the limiter — so we disable the gate for
+    # the duration of each case.
+    from tulip_api.auth.rate_limit import limiter as _auth_limiter
+
+    previous = _auth_limiter.enabled
+    _auth_limiter.enabled = False
+    try:
+        yield
+    finally:
+        _auth_limiter.enabled = previous
+
+
 @_SCHEMA.parametrize()
 def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     """Every documented operation: response shape matches the OpenAPI spec.

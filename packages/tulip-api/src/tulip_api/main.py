@@ -18,9 +18,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from tulip_api.auth.rate_limit import auth_rate_limit_handler, limiter
 from tulip_api.config import get_settings
 from tulip_api.errors import install_problem_handlers
 from tulip_api.logging_config import configure_logging
@@ -143,6 +145,15 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     # Request-id stamping must run before any router-level logging so the
     # request_id is in scope for every log line emitted during handling.
     app.add_middleware(RequestIdMiddleware)
+
+    # H-4 (#219): slowapi limiter for /v1/auth/* — wires the limiter into
+    # the app state and registers a Problem-Details exception handler for
+    # RateLimitExceeded. Per-route quotas are declared on each endpoint.
+    app.state.limiter = limiter
+    # Starlette types the handler arg as Exception; our narrower
+    # RateLimitExceeded signature is correct at runtime (Starlette
+    # dispatches by isinstance) and clearer at the callsite.
+    app.add_exception_handler(RateLimitExceeded, auth_rate_limit_handler)  # type: ignore[arg-type]
 
     install_problem_handlers(app)
 

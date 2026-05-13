@@ -208,3 +208,137 @@ class TestLoginMfaCompletion:
         code = pyotp.TOTP(secret).now()
         r = client.post("/v1/auth/login/mfa", json={"mfa_token": access, "code": code})
         assert_problem(r, code="auth.invalid_mfa_token", status=401)
+
+
+class TestMfaChallengeJtiSingleUse:
+    """M-7 (#219): a successfully redeemed MFA-challenge JWT cannot be replayed."""
+
+    def _challenge(self, client: TestClient, registered: dict[str, str]) -> tuple[str, str]:
+        access = _login(client, registered["email"]).json()["access_token"]
+        secret = _enroll_and_verify(client, access)
+        challenge = _login(client, registered["email"]).json()
+        return challenge["mfa_token"], secret
+
+    def test_replay_after_success_is_rejected(self, client: TestClient, registered: dict[str, str]):
+        mfa_token, secret = self._challenge(client, registered)
+        code = pyotp.TOTP(secret).now()
+        first = client.post("/v1/auth/login/mfa", json={"mfa_token": mfa_token, "code": code})
+        assert first.status_code == 200, first.text
+        # Same jti → invalid_mfa_token even with a fresh TOTP code.
+        replay_code = pyotp.TOTP(secret).now()
+        replay = client.post(
+            "/v1/auth/login/mfa", json={"mfa_token": mfa_token, "code": replay_code}
+        )
+        assert_problem(replay, code="auth.invalid_mfa_token", status=401)
+
+    def test_replay_after_failure_is_rejected(self, client: TestClient, registered: dict[str, str]):
+        # Even a failed first attempt spends the jti — otherwise a thief
+        # of the mfa_token could brute-force the 6-digit TOTP within the
+        # 5-minute TTL.
+        mfa_token, secret = self._challenge(client, registered)
+        bad = client.post("/v1/auth/login/mfa", json={"mfa_token": mfa_token, "code": "000000"})
+        assert_problem(bad, code="auth.mfa_invalid_code", status=401)
+        good_code = pyotp.TOTP(secret).now()
+        retry = client.post("/v1/auth/login/mfa", json={"mfa_token": mfa_token, "code": good_code})
+        assert_problem(retry, code="auth.invalid_mfa_token", status=401)
+
+
+class TestAuthFailureAuditRows:
+    """M-20 (#219): failed credential / MFA attempts emit audit_log rows."""
+
+    def test_login_failed_writes_audit_row(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker: sessionmaker[Session],
+    ):
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": "wrong-password-12345"},
+        )
+        assert_problem(r, code="auth.invalid_credentials", status=401)
+        with session_maker() as s:
+            rows = (
+                s.execute(select(AuditLog).where(AuditLog.action == "login_failed")).scalars().all()
+            )
+        assert len(rows) == 1
+        assert rows[0].metadata_ == {"email": registered["email"]}
+        assert rows[0].actor_kind == "user"
+
+    def test_no_audit_row_for_unknown_email(
+        self,
+        client: TestClient,
+        session_maker: sessionmaker[Session],
+    ):
+        # If we have no household to attribute the row to, the failure
+        # stays in app logs only — no orphan audit rows.
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": "nobody@example.com", "password": "irrelevant-12345"},
+        )
+        assert_problem(r, code="auth.invalid_credentials", status=401)
+        with session_maker() as s:
+            rows = (
+                s.execute(select(AuditLog).where(AuditLog.action == "login_failed")).scalars().all()
+            )
+        assert rows == []
+
+    def test_mfa_code_rejected_writes_audit_row(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker: sessionmaker[Session],
+    ):
+        access = _login(client, registered["email"]).json()["access_token"]
+        _enroll_and_verify(client, access)
+        mfa_token = _login(client, registered["email"]).json()["mfa_token"]
+        r = client.post("/v1/auth/login/mfa", json={"mfa_token": mfa_token, "code": "000000"})
+        assert_problem(r, code="auth.mfa_invalid_code", status=401)
+        with session_maker() as s:
+            actions = [
+                row.action
+                for row in s.execute(select(AuditLog).order_by(AuditLog.occurred_at)).scalars()
+            ]
+        assert "mfa.code_rejected" in actions
+
+    def test_mfa_recovery_rejected_writes_audit_row(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker: sessionmaker[Session],
+    ):
+        access = _login(client, registered["email"]).json()["access_token"]
+        _enroll_and_verify(client, access)
+        mfa_token = _login(client, registered["email"]).json()["mfa_token"]
+        r = client.post(
+            "/v1/auth/login/recover",
+            json={"mfa_token": mfa_token, "recovery_code": "AAAA-BBBB-CCCC-DDDD"},
+        )
+        assert_problem(r, code="auth.mfa_invalid_recovery_code", status=401)
+        with session_maker() as s:
+            actions = [
+                row.action
+                for row in s.execute(select(AuditLog).order_by(AuditLog.occurred_at)).scalars()
+            ]
+        assert "mfa.recovery_rejected" in actions
+
+
+class TestAuthRateLimit:
+    """H-4 (#219): /v1/auth/login is gated by slowapi at 10/min per IP."""
+
+    def test_login_returns_429_after_burst(self, client: TestClient, registered: dict[str, str]):
+        from tulip_api.auth.rate_limit import limiter as _auth_limiter
+
+        # The conftest resets the limiter per-test; we re-arm an empty
+        # bucket here, then drive 10 wrong-password attempts so the 11th
+        # is gated rather than rejected at credentials check.
+        _auth_limiter.reset()
+        last = None
+        for _ in range(11):
+            last = client.post(
+                "/v1/auth/login",
+                json={"email": registered["email"], "password": "still-wrong-12345"},
+            )
+        assert last is not None
+        assert_problem(last, code="auth.rate_limited", status=429)
+        assert "Retry-After" in last.headers
