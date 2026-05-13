@@ -72,6 +72,105 @@ class TestParseHappy:
         assert lines[0].amount.amount == Decimal("-42.17")
 
 
+class TestParseSplits:
+    """Per #270: each S/$/E triple emits its own ParsedStatementLine.
+
+    QIF encodes a multi-category transaction as a single record with
+    ``S`` (split category), ``$`` (split amount), and ``E`` (split memo)
+    field-triples. Banktivity's gas-bill export from the issue body is
+    the canonical 2-split debit case; the BNSF paycheck shape is the
+    multi-split credit case (a positive gross + negative withholdings
+    netting to the deposited total).
+
+    We model splits as N statement lines — one per split — rather than
+    one transaction with N+1 postings because ``ParsedStatementLine`` is
+    the parser surface and downstream (``import_apply``) already turns
+    each statement line into a 2-posting PENDING transaction. This
+    preserves per-category fidelity (the issue's headline requirement)
+    without a schema change across packages.
+    """
+
+    def test_split_gas_bill_two_lines(self):
+        # The exact snippet from #270: -45.27 + -13.72 = -58.99.
+        lines = parse(_read("split_gas_bill.qif"), currency="USD")
+        assert len(lines) == 2
+
+        gas, warranty = lines
+        # Per-split amounts replace the consolidated T-total.
+        assert gas.amount.amount == Decimal("-45.27")
+        assert warranty.amount.amount == Decimal("-13.72")
+        # Sum reconciles to the row's T-total (cross-check, not asserted
+        # by the parser at the file level — but it must, per #270).
+        assert gas.amount.amount + warranty.amount.amount == Decimal("-58.99")
+
+    def test_split_gas_bill_carries_per_split_category_and_memo(self):
+        lines = parse(_read("split_gas_bill.qif"), currency="USD")
+        gas, warranty = lines
+
+        # QIF S-field (split category) lives in raw["L"] (categorizer's
+        # input). Per-split memo lives in raw["E"] and is folded into
+        # description so the operator-facing renderer surfaces it.
+        assert gas.raw["L"] == "Needs:Utilities:Natural Gas/TulipDrive"
+        assert warranty.raw["L"] == "Needs:Insurance:Home Warranty/TulipDrive"
+        assert "Current gas charges" in gas.description
+        assert "Current home service charges" in warranty.description
+
+    def test_split_gas_bill_shares_payee_and_date(self):
+        lines = parse(_read("split_gas_bill.qif"), currency="USD")
+        gas, warranty = lines
+
+        # All splits share the parent record's date + payee — they're
+        # the same bank transaction split across categories.
+        assert gas.posted_date == date(2026, 1, 2)
+        assert warranty.posted_date == date(2026, 1, 2)
+        assert gas.counterparty == "CenterPoint Energy"
+        assert warranty.counterparty == "CenterPoint Energy"
+        # Each split gets its own 1-based line_number so downstream
+        # idempotency (UNIQUE (batch_id, line_number)) still holds.
+        assert gas.line_number == 1
+        assert warranty.line_number == 2
+
+    def test_split_paycheck_emits_one_line_per_split(self):
+        # BNSF gross-paycheck shape: +3500 wages, -420 fed, -150 state,
+        # -115.50 FICA, netting to +2814.50 deposited.
+        lines = parse(_read("split_paycheck.qif"), currency="USD")
+        assert len(lines) == 4
+
+        amounts = [line.amount.amount for line in lines]
+        assert amounts == [
+            Decimal("3500.00"),
+            Decimal("-420.00"),
+            Decimal("-150.00"),
+            Decimal("-115.50"),
+        ]
+        assert sum(amounts) == Decimal("2814.50")
+
+        # Per-split category survives parsing.
+        categories = [line.raw["L"] for line in lines]
+        assert categories == [
+            "Income:Wages/BNSF",
+            "Expenses:Taxes:Federal/BNSF",
+            "Expenses:Taxes:State/BNSF",
+            "Expenses:Taxes:FICA/BNSF",
+        ]
+
+    def test_split_sum_mismatch_raises(self):
+        # Per #270: "If split amounts don't sum to T, the row is
+        # rejected with an import error rather than silently dropped."
+        with pytest.raises(QifParseError, match="split"):
+            parse(_read("split_sum_mismatch.qif"), currency="USD")
+
+    def test_single_line_unsplit_still_one_statement_line(self):
+        # Regression: non-split QIF entries continue to produce exactly
+        # one ParsedStatementLine (which downstream turns into a
+        # two-posting transaction, per #270's regression requirement).
+        lines = parse(_read("minimal.qif"), currency="USD")
+        assert len(lines) == 3  # three records, no splits, three lines.
+        for line in lines:
+            # Non-split lines carry no S-field; raw["L"] is absent.
+            assert "L" not in line.raw
+
+
 class TestParseErrors:
     def test_empty_bytes_raises(self):
         with pytest.raises(QifParseError):

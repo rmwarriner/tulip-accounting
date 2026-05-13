@@ -1,0 +1,19 @@
+!Type:Bank
+D1/15/26
+T2814.50
+CC
+PBNSF Railway
+MGross paycheck Jan 15
+EGross wages
+SIncome:Wages/BNSF
+$3500.00
+EFederal income tax
+SExpenses:Taxes:Federal/BNSF
+$-420.00
+EState income tax
+SExpenses:Taxes:State/BNSF
+$-150.00
+EFICA / Medicare
+SExpenses:Taxes:FICA/BNSF
+$-115.50
+^
