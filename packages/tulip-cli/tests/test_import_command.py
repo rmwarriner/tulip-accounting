@@ -24,6 +24,9 @@ def _run_cli(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
+    # Give Rich a wide terminal so Typer's usage / error panels don't
+    # wrap mid-word in CI and drop substrings the tests assert on.
+    env.setdefault("COLUMNS", "200")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
