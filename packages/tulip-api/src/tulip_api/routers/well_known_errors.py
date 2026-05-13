@@ -141,6 +141,13 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "period_end": "2026-05-31",
     },
     # ReconciliationTxNotFoundError takes no args.
+    "ReconciliationPaperMatchNotPaperReconError": {
+        "reconciliation_id": "<reconciliation-uuid>",
+    },
+    "ReconciliationTxAlreadyMatchedError": {
+        "ledger_transaction_id": "<transaction-uuid>",
+        "existing_match_id": "<match-uuid>",
+    },
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),

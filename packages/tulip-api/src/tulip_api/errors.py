@@ -1507,6 +1507,50 @@ class ReconciliationTxNotFoundError(TulipProblem):
         )
 
 
+class ReconciliationPaperMatchNotPaperReconError(TulipProblem):
+    """POST /paper-matches called on a reconciliation that has a source batch (#275).
+
+    The paper-statement endpoint is only valid for batch-less recons. For
+    OFX-driven flows the caller must use ``POST /matches`` with a
+    ``statement_line_id``.
+    """
+
+    def __init__(self, *, reconciliation_id: str) -> None:
+        """Build the reconciliation.paper_match_not_paper_recon problem (400)."""
+        super().__init__(
+            code="reconciliation.paper_match_not_paper_recon",
+            title="Paper match not allowed on OFX-driven reconciliation",
+            status=400,
+            detail=(
+                "This reconciliation has a source_import_batch_id, so it uses "
+                "the OFX-driven flow. Paper-statement matches are only valid "
+                "for batch-less reconciliations. Use POST /matches with a "
+                "statement_line_id instead."
+            ),
+            extensions={"reconciliation_id": reconciliation_id},
+        )
+
+
+class ReconciliationTxAlreadyMatchedError(TulipProblem):
+    """The ledger transaction is already matched in this reconciliation (#275)."""
+
+    def __init__(self, *, ledger_transaction_id: str, existing_match_id: str) -> None:
+        """Build the reconciliation.tx_already_matched problem (409)."""
+        super().__init__(
+            code="reconciliation.tx_already_matched",
+            title="Ledger transaction already matched in this reconciliation",
+            status=409,
+            detail=(
+                "The ledger transaction already has a match in this "
+                "reconciliation. Reject the existing match before re-matching."
+            ),
+            extensions={
+                "ledger_transaction_id": ledger_transaction_id,
+                "existing_match_id": existing_match_id,
+            },
+        )
+
+
 class ReconciliationCascadeRequiredError(TulipProblem):
     """DELETE /v1/reconciliations/{id} called without ``?cascade=true`` (P5.4.b).
 
