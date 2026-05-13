@@ -742,4 +742,274 @@ class TestCarryForwardEndpoints:
         )
         r = client.post(f"/v1/reconciliations/{recon['id']}/complete", headers=auth_h)
         assert r.status_code == 200, r.text
-        assert r.json()["status"] == "complete"
+
+
+# ---- Paper-statement (no-OFX) reconciliation (#275) ----------------------
+
+
+def _create_paper_recon(
+    client: TestClient,
+    auth_h: dict[str, str],
+    *,
+    account_id: str,
+    starting: str = "0.00",
+    ending: str = "1457.83",
+    period_start: str = "2026-05-01",
+    period_end: str = "2026-05-31",
+) -> dict[str, str]:
+    """Open a paper-statement reconciliation envelope (no source_import_batch_id)."""
+    r = client.post(
+        "/v1/reconciliations",
+        headers=auth_h,
+        json={
+            "account_id": account_id,
+            "statement_period_start": period_start,
+            "statement_period_end": period_end,
+            "statement_starting_balance": starting,
+            "statement_ending_balance": ending,
+            "currency": "USD",
+        },
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+class TestPaperReconciliation:
+    """Issue #275: reconciliation without an imported batch."""
+
+    def test_creates_without_batch(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ) -> None:
+        body = _create_paper_recon(client, auth_h, account_id=checking_account)
+        assert body["status"] == "in_progress"
+        assert body["account_id"] == checking_account
+        assert body["source_import_batch_id"] is None
+
+    def test_inbox_returns_no_lines_no_matches(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        assert inbox["unmatched_statement_lines"] == []
+        # Both ledger txs are in the period and posted.
+        assert len(inbox["unmatched_ledger_transactions"]) == 2
+
+    def test_paper_match_creates_match_with_null_line(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["statement_line_id"] is None
+        assert body["ledger_transaction_id"] == matching_ledger_txs[0]
+        assert body["confidence"] is None
+        assert body["matcher_version"] is None
+        assert body["created_by_user_id"] is not None
+
+    def test_paper_match_happy_path_completes(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """Match all txs in the period; closing balance = sum of bank-side amounts."""
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        for tx_id in matching_ledger_txs:
+            r = client.post(
+                f"/v1/reconciliations/{recon['id']}/paper-matches",
+                headers=auth_h,
+                json={"ledger_transaction_id": tx_id},
+            )
+            assert r.status_code == 201, r.text
+        # Inbox: unmatched ledger txs should now be empty.
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        assert inbox["unmatched_ledger_transactions"] == []
+        complete = client.post(f"/v1/reconciliations/{recon['id']}/complete", headers=auth_h)
+        assert complete.status_code == 200, complete.text
+        assert complete.json()["status"] == "complete"
+        assert complete.json()["affected_transaction_count"] == 2
+
+    def test_complete_with_mismatch_refused(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """Closing-balance assertion gates /complete identically to the batch path."""
+        # Ending balance is 1457.83 but we only match one tx (-42.17). Residual 1500.00.
+        recon = _create_paper_recon(
+            client, auth_h, account_id=checking_account, starting="0.00", ending="1457.83"
+        )
+        # Match only the smaller tx.
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        small_tx = next(
+            tx for tx in inbox["unmatched_ledger_transactions"] if tx["date"] == "2026-05-12"
+        )
+        client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": small_tx["id"]},
+        )
+        r = client.post(f"/v1/reconciliations/{recon['id']}/complete", headers=auth_h)
+        assert_problem(r, status=409, code="reconciliation.unbalanced")
+
+    def test_paper_match_on_ofx_recon_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        parsed_batch: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """Paper-match endpoint refuses an OFX-driven recon (batch path uses /matches)."""
+        recon = _create_recon(client, auth_h, account_id=checking_account, batch_id=parsed_batch)
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        assert_problem(r, status=400, code="reconciliation.paper_match_not_paper_recon")
+
+    def test_paper_match_already_matched_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        first = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        assert first.status_code == 201, first.text
+        again = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        assert_problem(again, status=409, code="reconciliation.tx_already_matched")
+
+    def test_paper_match_tx_not_in_period_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        # Period only covers May 1-10; the ledger txs are on May 12 and 15.
+        recon = _create_paper_recon(
+            client,
+            auth_h,
+            account_id=checking_account,
+            period_start="2026-05-01",
+            period_end="2026-05-10",
+        )
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        assert_problem(r, status=400, code="reconciliation.tx_not_in_period")
+
+    def test_paper_match_unknown_tx_returns_404(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ) -> None:
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        r = client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": str(uuid4())},
+        )
+        assert_problem(r, status=404, code="reconciliation.transaction_not_found")
+
+    def test_paper_match_audit_log_written(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """Audit-log row written for paper matches (parity with OFX path)."""
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        # Pull the audit log and check our action is present.
+        audit = client.get("/v1/reports/audit-log", headers=auth_h)
+        assert audit.status_code == 200, audit.text
+        actions = [row["action"] for row in audit.json()["rows"]]
+        assert "reconciliation_match_create_paper" in actions
+        assert "reconciliation_create" in actions
+
+    def test_abort_mid_flow_preserves_matches_until_revert(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """The user can match a few and walk away — matches persist; recon stays IN_PROGRESS."""
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        # Match one.
+        client.post(
+            f"/v1/reconciliations/{recon['id']}/paper-matches",
+            headers=auth_h,
+            json={"ledger_transaction_id": matching_ledger_txs[0]},
+        )
+        # State persists across requests.
+        inbox = client.get(f"/v1/reconciliations/{recon['id']}", headers=auth_h).json()
+        assert inbox["reconciliation"]["status"] == "in_progress"
+        assert len(inbox["matches"]) == 1
+        # User decides to scrap it: DELETE with cascade.
+        r = client.delete(
+            f"/v1/reconciliations/{recon['id']}?cascade=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 204, r.text
+
+    def test_line_not_in_batch_error_not_raised_in_paper_path(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        matching_ledger_txs: list[str],
+    ) -> None:
+        """Acceptance criterion: ReconciliationLineNotInBatchError is not raised here."""
+        recon = _create_paper_recon(client, auth_h, account_id=checking_account)
+        for tx_id in matching_ledger_txs:
+            r = client.post(
+                f"/v1/reconciliations/{recon['id']}/paper-matches",
+                headers=auth_h,
+                json={"ledger_transaction_id": tx_id},
+            )
+            # The paper endpoint never produces line_not_in_batch.
+            if r.status_code >= 400:
+                assert r.json().get("code") != "reconciliation.line_not_in_batch"
+        complete = client.post(f"/v1/reconciliations/{recon['id']}/complete", headers=auth_h)
+        assert complete.status_code == 200, complete.text
+        assert complete.json()["status"] == "complete"

@@ -66,7 +66,7 @@ class ReconciliationMatchRepository:
         self,
         *,
         reconciliation_id: UUID,
-        statement_line_id: UUID,
+        statement_line_id: UUID | None,
         ledger_transaction_id: UUID,
         match_amount: Decimal,
         currency: str,
@@ -78,6 +78,8 @@ class ReconciliationMatchRepository:
 
         Matcher-produced matches set ``confidence`` + ``matcher_version`` and
         leave ``created_by_user_id`` NULL. Manual matches do the inverse.
+        Paper-statement matches (#275) leave ``statement_line_id`` NULL
+        because there's no imported batch to point at.
         """
         match = ReconciliationMatch(
             household_id=self._household_id,
@@ -94,11 +96,13 @@ class ReconciliationMatchRepository:
         )
         self._session.add(match)
         self._session.flush()
-        # Update the statement line's denormalised pointer.
-        line = self._session.get(StatementLine, (self._household_id, statement_line_id))
-        if line is not None:
-            line.reconciliation_match_id = match.id
-            self._session.flush()
+        # Update the statement line's denormalised pointer (only when a line
+        # is supplied — paper-statement matches don't have one).
+        if statement_line_id is not None:
+            line = self._session.get(StatementLine, (self._household_id, statement_line_id))
+            if line is not None:
+                line.reconciliation_match_id = match.id
+                self._session.flush()
         return match
 
     def filter_to_completed_recons(self, match_ids: set[UUID]) -> set[UUID]:
@@ -137,10 +141,12 @@ class ReconciliationMatchRepository:
             raise LookupError(
                 f"reconciliation_match {match_id} not found in household {self._household_id}"
             )
-        # Clear the statement_line's match pointer.
-        line = self._session.get(StatementLine, (self._household_id, match.statement_line_id))
-        if line is not None:
-            line.reconciliation_match_id = None
+        # Clear the statement_line's match pointer (no-op for paper-statement
+        # matches where statement_line_id is NULL).
+        if match.statement_line_id is not None:
+            line = self._session.get(StatementLine, (self._household_id, match.statement_line_id))
+            if line is not None:
+                line.reconciliation_match_id = None
         self._session.execute(
             delete(ReconciliationMatch).where(
                 ReconciliationMatch.household_id == self._household_id,

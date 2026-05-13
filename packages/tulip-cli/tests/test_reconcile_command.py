@@ -620,3 +620,212 @@ def test_reconcile_delete_requires_cascade(session_setup: dict[str, str]) -> Non
     )
     assert with_cascade.returncode == 0, with_cascade.stderr
     assert "Deleted" in with_cascade.stdout
+
+
+# ---- paper-statement (no-OFX) flow (#275) --------------------------------
+
+
+@pytest.mark.integration
+def test_reconcile_start_paper_happy_path(session_setup: dict[str, str]) -> None:
+    """`tulip reconcile start` opens a batch-less reconciliation."""
+    result = _run_cli(
+        "reconcile",
+        "start",
+        "--account",
+        "1110",
+        "--statement-date",
+        "2026-05-31",
+        "--period-start",
+        "2026-05-01",
+        "--closing-balance",
+        "1457.83",
+        "--starting-balance",
+        "0.00",
+        api_url=session_setup["api_url"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Opened paper reconciliation" in result.stdout
+    assert "Closing balance asserted: 1457.83" in result.stdout
+
+
+@pytest.mark.integration
+def test_reconcile_start_invalid_date_returns_2(session_setup: dict[str, str]) -> None:
+    result = _run_cli(
+        "reconcile",
+        "start",
+        "--account",
+        "1110",
+        "--statement-date",
+        "not-a-date",
+        "--closing-balance",
+        "1457.83",
+        api_url=session_setup["api_url"],
+    )
+    assert result.returncode != 0
+    assert "statement-date" in (result.stdout + result.stderr).lower()
+
+
+@pytest.mark.integration
+def test_reconcile_walk_paper_happy_path(session_setup: dict[str, str]) -> None:
+    """Open a paper recon, walk through two txs marking them, then complete."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "1457.83",
+            "--starting-balance",
+            "0.00",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+
+    # Walk: pipe "m\nm\n" to match both txs.
+    walk = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nm\n",
+        timeout=20,
+    )
+    assert walk.returncode == 0, walk.stderr
+    assert "matched" in walk.stdout
+
+    # Complete: closing-balance assertion should pass.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode == 0, complete.stderr
+    assert "Completed reconciliation" in complete.stdout
+
+
+@pytest.mark.integration
+def test_reconcile_walk_abort_preserves_state(session_setup: dict[str, str]) -> None:
+    """Quit mid-walk via 'q'; remaining tx stays unmatched."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "1457.83",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+
+    # Walk: match first, quit before second.
+    walk = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nq\n",
+        timeout=20,
+    )
+    assert walk.returncode == 0, walk.stderr
+    assert "1 matched" in walk.stdout
+
+    # /complete should refuse because balance is incomplete.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode != 0
+
+
+@pytest.mark.integration
+def test_reconcile_complete_mismatch_refused(session_setup: dict[str, str]) -> None:
+    """Wrong --closing-balance fails /complete with reconciliation.unbalanced."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "9999.99",  # wrong by a wide margin
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+    # Match both txs.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nm\n",
+        timeout=20,
+    )
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode != 0

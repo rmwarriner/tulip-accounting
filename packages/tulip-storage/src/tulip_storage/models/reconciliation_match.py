@@ -47,7 +47,7 @@ class ReconciliationMatch(Base):
     household_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     reconciliation_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
-    statement_line_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
+    statement_line_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
     ledger_transaction_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     match_amount: Mapped[Decimal] = mapped_column(Numeric(precision=20, scale=8), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)

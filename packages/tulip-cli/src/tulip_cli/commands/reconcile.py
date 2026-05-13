@@ -571,6 +571,249 @@ def complete_command(
     )
 
 
+# ---- paper-statement (no-OFX) flow (#275) ---------------------------------
+
+
+@reconcile_app.command("start")
+def start_command(
+    ctx: typer.Context,
+    account: Annotated[
+        str,
+        typer.Option(
+            "--account",
+            help="Account this reconciliation belongs to. UUID or code.",
+        ),
+    ],
+    statement_date: Annotated[
+        str,
+        typer.Option(
+            "--statement-date",
+            help=(
+                "Statement period end date (YYYY-MM-DD). Period start defaults "
+                "to the previous reconciliation's end + 1 day (or 30 days "
+                "prior if no prior reconciliation)."
+            ),
+        ),
+    ],
+    closing_balance: Annotated[
+        str,
+        typer.Option(
+            "--closing-balance",
+            help="Statement ending balance (decimal).",
+        ),
+    ],
+    starting_balance: Annotated[
+        str,
+        typer.Option(
+            "--starting-balance",
+            help=(
+                "Statement starting balance (decimal). Defaults to '0.00' — "
+                "first paper reconciliation should set this to the account's "
+                "opening balance on --statement-date - 30d."
+            ),
+        ),
+    ] = "0.00",
+    period_start: Annotated[
+        str | None,
+        typer.Option(
+            "--period-start",
+            help=(
+                "Override the period start date (YYYY-MM-DD). Defaults to "
+                "30 days before --statement-date."
+            ),
+        ),
+    ] = None,
+    currency: Annotated[
+        str,
+        typer.Option("--currency", help="Currency code (3 chars)."),
+    ] = "USD",
+) -> None:
+    """Open a paper-statement reconciliation envelope (no imported batch).
+
+    Per issue #275: the user has a physical statement and wants to tick
+    off ledger transactions one at a time. No --batch — the reconciliation
+    is opened with ``source_import_batch_id IS NULL``.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    try:
+        end_date = _date.fromisoformat(statement_date)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"--statement-date must be YYYY-MM-DD (got {statement_date!r})"
+        ) from exc
+    if period_start is None:
+        from datetime import timedelta
+
+        start_date = end_date - timedelta(days=30)
+    else:
+        try:
+            start_date = _date.fromisoformat(period_start)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--period-start must be YYYY-MM-DD (got {period_start!r})"
+            ) from exc
+    if start_date > end_date:
+        raise typer.BadParameter(
+            f"--period-start ({start_date}) must be <= --statement-date ({end_date})"
+        )
+    try:
+        starting_dec = Decimal(starting_balance)
+        ending_dec = Decimal(closing_balance)
+    except (ValueError, ArithmeticError) as exc:
+        raise typer.BadParameter(
+            f"--starting-balance / --closing-balance must be decimal numbers "
+            f"(got {starting_balance!r}, {closing_balance!r})"
+        ) from exc
+    try:
+        with _client(config, as_json=as_json) as client:
+            account_record = _resolve_account(client, account)
+            response = client.post(
+                "/v1/reconciliations",
+                authenticated=True,
+                json={
+                    "account_id": str(account_record["id"]),
+                    "statement_period_start": start_date.isoformat(),
+                    "statement_period_end": end_date.isoformat(),
+                    "statement_starting_balance": str(starting_dec),
+                    "statement_ending_balance": str(ending_dec),
+                    "currency": currency,
+                },
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    body = response.json()
+    typer.echo(
+        f"Opened paper reconciliation {body['id']} for account "
+        f"{account_record.get('code') or account_record['id']} "
+        f"({body['statement_period_start']}..{body['statement_period_end']}). "
+        f"Closing balance asserted: {body['statement_ending_balance']} "
+        f"{body['currency']}."
+    )
+    typer.echo(
+        f"Run `tulip reconcile walk {body['id']}` to step through ledger "
+        f"transactions, then `tulip reconcile complete {body['id']}`."
+    )
+
+
+def _read_walk_choice() -> str:
+    """Read one line from stdin for the paper-walk wizard.
+
+    Returns the first lowercased char of input. Empty input (just Enter)
+    returns ``""`` so the caller can default. EOF returns ``"q"`` so a
+    piped script with too few inputs cleanly quits.
+    """
+    try:
+        line = input("[m]atch  [s]kip  [q]uit > ").strip().lower()
+    except EOFError:
+        return "q"
+    return line[:1]
+
+
+@reconcile_app.command("walk")
+def walk_command(
+    ctx: typer.Context,
+    reconciliation_id: Annotated[
+        UUID,
+        typer.Argument(help="Reconciliation UUID.", metavar="RECONCILIATION_ID"),
+    ],
+) -> None:
+    """Walk posted ledger txs in the recon's period; tick off matches one at a time.
+
+    Designed for paper-statement reconciliation (#275): the user has a
+    physical statement and wants to mark each ledger tx ``[m]atch`` /
+    ``[s]kip`` / ``[q]uit`` against it. Match flips a per-tx flag (persisted
+    as a ``ReconciliationMatch`` with ``statement_line_id IS NULL``).
+
+    Quit at any time — the envelope keeps all accepted matches; run
+    ``tulip reconcile complete`` when ready.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    if as_json:
+        raise typer.BadParameter("--json is incompatible with the paper-walk wizard")
+
+    console = Console()
+    try:
+        with _client(config, as_json=as_json) as client:
+            inbox = client.get(
+                f"/v1/reconciliations/{reconciliation_id}",
+                authenticated=True,
+            ).json()
+            recon = inbox["reconciliation"]
+            if recon.get("source_import_batch_id") is not None:
+                typer.echo(
+                    "This reconciliation has a source import batch; use "
+                    f"`tulip reconcile interactive {reconciliation_id}` instead.",
+                    err=True,
+                )
+                raise typer.Exit(2)
+            unmatched_txs = inbox["unmatched_ledger_transactions"]
+            if not unmatched_txs:
+                typer.echo("No unmatched ledger transactions in the period.")
+                typer.echo(
+                    f"Run `tulip reconcile complete {reconciliation_id}` "
+                    f"to finalise, or post the missing transactions first."
+                )
+                return
+            matched, skipped = _run_paper_walk(
+                client,
+                console,
+                reconciliation_id,
+                unmatched_txs,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    typer.echo(f"\nReviewed: {matched} matched, {skipped} skipped.")
+    typer.echo(
+        f"Run `tulip reconcile complete {reconciliation_id}` when ready "
+        "to finalise (closing-balance assertion will be checked)."
+    )
+
+
+def _run_paper_walk(
+    client: TulipClient,
+    console: Console,
+    reconciliation_id: UUID,
+    unmatched_txs: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Iterate posted ledger txs; return ``(matched, skipped)``."""
+    matched = skipped = 0
+    total = len(unmatched_txs)
+    for idx, tx in enumerate(unmatched_txs, start=1):
+        console.print(f"\n[bold][{idx}/{total}][/bold]")
+        console.print(
+            f"  ledger tx: {str(tx.get('id', ''))[:8]}  {tx.get('date', '?')}  "
+            f"{(tx.get('description') or '')[:60]}  status={tx.get('status', '?')}"
+        )
+        choice = _read_walk_choice()
+        if choice == "" or choice == "m":
+            client.post(
+                f"/v1/reconciliations/{reconciliation_id}/paper-matches",
+                authenticated=True,
+                json={"ledger_transaction_id": tx["id"]},
+            )
+            matched += 1
+            console.print("  [green]✓ matched[/green]")
+        elif choice == "s":
+            skipped += 1
+            console.print("  skipped")
+        elif choice == "q":
+            console.print("  quit")
+            break
+        else:
+            console.print(f"  unknown choice {choice!r}; skipping")
+            skipped += 1
+    return matched, skipped
+
+
 # ---- interactive (guided wizard) ------------------------------------------
 
 
