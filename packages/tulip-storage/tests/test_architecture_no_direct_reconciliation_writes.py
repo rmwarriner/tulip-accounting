@@ -75,6 +75,15 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # Reconciliation summary report (P7.1) reads the model for
         # display; never writes. Same justification as csv_profiles.py.
         "tulip-reports/src/tulip_reports/reports/reconciliation_summary.py",
+        # Attachment GC handler (#235) reads Attachment.content_hash to
+        # decide which files on disk are orphaned. It never writes the
+        # row — the unlink is on disk only; row writes still go through
+        # AttachmentRepository.
+        "tulip-storage/src/tulip_storage/runner/handlers/attachment_gc.py",
+        # Household-erasure endpoint (#235) reads Attachment.content_hash
+        # before the cascade delete to know which blobs to unlink from
+        # disk afterward. Same read-only justification.
+        "tulip-api/src/tulip_api/routers/households.py",
     }
 )
 

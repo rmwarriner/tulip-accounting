@@ -32,6 +32,7 @@ from tulip_storage.models.notification import (
     NotificationKind,
     NotificationSeverity,
 )
+from tulip_storage.models.pending_household_erasure import PendingHouseholdErasure
 from tulip_storage.models.pending_proposal import (
     PendingProposal,
     ProposalCreatorKind,
@@ -86,6 +87,7 @@ __all__ = [
     "Notification",
     "NotificationKind",
     "NotificationSeverity",
+    "PendingHouseholdErasure",
     "PendingProposal",
     "Period",
     "PeriodStatus",
