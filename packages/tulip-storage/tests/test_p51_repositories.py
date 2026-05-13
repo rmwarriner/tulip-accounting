@@ -235,6 +235,92 @@ class TestImportBatchAndStatementLine:
                 source_file_attachment_id=attachment.id,
             )
 
+    def test_list_recent_filters_and_pagination(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment_root: Path,
+        master_key: bytes,
+    ):
+        """list_recent applies status/account filters and keyset pagination."""
+        from tulip_storage.models import ImportBatchStatus
+
+        # Two attachments so we can create two batches under the relaxed
+        # idempotency index (#114 — non-unique).
+        att_repo = AttachmentRepository(
+            session,
+            household.id,
+            master_key=master_key,
+            attachment_root=attachment_root,
+        )
+        a1 = att_repo.create(filename="a.ofx", content_type="x", raw_bytes=b"alpha")
+        a2 = att_repo.create(filename="b.ofx", content_type="x", raw_bytes=b"beta")
+        session.commit()
+
+        repo = ImportBatchRepository(session, household.id)
+        first = repo.create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="first.ofx",
+            source_file_attachment_id=a1.id,
+        )
+        second = repo.create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="second.ofx",
+            source_file_attachment_id=a2.id,
+        )
+        session.commit()
+
+        # Newest first; both rows returned.
+        rows = repo.list_recent()
+        assert [r.id for r in rows] == [second.id, first.id]
+
+        # Limit + cursor paginate.
+        page1 = repo.list_recent(limit=1)
+        assert [r.id for r in page1] == [second.id]
+        cursor = (page1[0].created_at, page1[0].id)
+        page2 = repo.list_recent(limit=1, after=cursor)
+        assert [r.id for r in page2] == [first.id]
+
+        # Status filter — flip ``first`` to applied; ``second`` stays parsed.
+        repo.mark_applied(first.id)
+        session.commit()
+        only_applied = repo.list_recent(status=ImportBatchStatus.APPLIED)
+        assert [r.id for r in only_applied] == [first.id]
+        only_parsed = repo.list_recent(status=ImportBatchStatus.PARSED)
+        assert [r.id for r in only_parsed] == [second.id]
+
+    def test_list_recent_tenant_isolated(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment_root: Path,
+        master_key: bytes,
+    ):
+        """A different household's repository sees zero rows."""
+        att = AttachmentRepository(
+            session,
+            household.id,
+            master_key=master_key,
+            attachment_root=attachment_root,
+        ).create(filename="a.ofx", content_type="x", raw_bytes=b"alpha")
+        session.commit()
+        ImportBatchRepository(session, household.id).create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="a.ofx",
+            source_file_attachment_id=att.id,
+        )
+        session.commit()
+
+        other = Household(id=uuid4(), name="Other", base_currency="USD")
+        session.add(other)
+        session.commit()
+        assert ImportBatchRepository(session, other.id).list_recent() == []
+
     def test_mark_applied_and_reverted(
         self,
         session: Session,

@@ -185,6 +185,116 @@ def import_csv(
     )
 
 
+_VALID_LIST_STATUSES = ("parsed", "applied", "reverted")
+
+
+@imports_app.command("list")
+def list_imports(
+    ctx: typer.Context,
+    status_: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="Filter by batch status. One of: parsed, applied, reverted.",
+        ),
+    ] = None,
+    account: Annotated[
+        str | None,
+        typer.Option(
+            "--account",
+            help=(
+                "Filter to batches uploaded against this account. UUID or code "
+                "(resolved the same way as `accounts show`)."
+            ),
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on rows returned (1-200). Defaults to 25.",
+            min=1,
+            max=200,
+        ),
+    ] = None,
+) -> None:
+    """List recent import batches, newest first.
+
+    Use the printed ID prefix (first 8 chars) with ``tulip imports show
+    <prefix>`` to drill into a batch.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    if status_ is not None and status_ not in _VALID_LIST_STATUSES:
+        raise typer.BadParameter(
+            f"--status must be one of {', '.join(_VALID_LIST_STATUSES)} (got {status_!r})"
+        )
+
+    params: dict[str, str] = {}
+    try:
+        with _client(config, as_json=as_json) as client:
+            if account is not None:
+                resolved = _resolve_account(client, account)
+                params["account_id"] = str(resolved["id"])
+            if status_ is not None:
+                params["status"] = status_
+            if limit is not None:
+                params["limit"] = str(limit)
+            response = client.get("/v1/imports", authenticated=True, params=params)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    items = body.get("items") or []
+    if not items:
+        typer.echo("No import batches match.")
+        return
+    _render_list_table(items)
+    if body.get("next_cursor"):
+        typer.echo(
+            "\nMore batches available. Re-run with --limit to widen the page, or filter further."
+        )
+
+
+def _render_list_table(items: list[dict[str, Any]]) -> None:
+    """Render a list of ``ImportBatchListItem`` dicts as a Rich table."""
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(show_header=True, show_lines=False)
+    table.add_column("id")
+    table.add_column("created")
+    table.add_column("status")
+    table.add_column("format")
+    table.add_column("account")
+    table.add_column("filename")
+    table.add_column("counts")
+    for item in items:
+        batch_id = str(item.get("id") or "")
+        account_id = str(item.get("account_id") or "")
+        created = str(item.get("created_at") or "")
+        # ISO-8601 timestamps are 19+ chars; trim microseconds + timezone for
+        # readability while keeping date + time-of-day.
+        if len(created) >= 19:
+            created = created[:19].replace("T", " ")
+        table.add_row(
+            batch_id[:8] if batch_id else "—",
+            created,
+            str(item.get("status") or ""),
+            str(item.get("source_format") or "").upper(),
+            account_id[:8] if account_id else "—",
+            str(item.get("source_filename") or ""),
+            f"{item.get('imported_count', 0)}/{item.get('skipped_count', 0)}",
+        )
+    Console().print(table)
+
+
 @imports_app.command("show")
 def show_import(
     ctx: typer.Context,

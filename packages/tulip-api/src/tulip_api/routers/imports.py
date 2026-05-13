@@ -18,7 +18,10 @@ the OFX path; QIF and CSV land in P5.2.b/c. The handler:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+from datetime import datetime
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
@@ -50,6 +53,8 @@ from tulip_api.errors import (
 )
 from tulip_api.schemas.import_batch import (
     ImportBatchApplyResponse,
+    ImportBatchListItem,
+    ImportBatchListResponse,
     ImportBatchRead,
     ImportBatchSummary,
     StatementLinePromoteResponse,
@@ -70,7 +75,7 @@ from tulip_importers.ofx import OfxParseError
 from tulip_importers.ofx import parse as ofx_parse
 from tulip_importers.qif import QifParseError
 from tulip_importers.qif import parse as qif_parse
-from tulip_storage.models import SourceFormat
+from tulip_storage.models import ImportBatchStatus, SourceFormat
 from tulip_storage.repositories import (
     AccountRepository,
     AttachmentRepository,
@@ -527,6 +532,127 @@ async def promote_line(
     return StatementLinePromoteResponse(
         statement_line_id=line.id,
         transaction_id=tx.id,
+    )
+
+
+_LIST_DEFAULT_LIMIT: Final[int] = 25
+_LIST_MAX_LIMIT: Final[int] = 200
+
+
+def _encode_cursor(created_at: datetime, batch_id: UUID) -> str:
+    """Encode an (created_at, id) tuple as an opaque base64 cursor.
+
+    The cursor pairs the timestamp with the id so paging is stable when
+    multiple batches land in the same microsecond (a tiebreaker the SQL
+    ORDER BY already uses). Base64 keeps the value URL-safe and signals
+    "opaque" to callers — they should not try to construct one by hand.
+    """
+    payload = f"{created_at.isoformat()}|{batch_id}".encode()
+    return base64.urlsafe_b64encode(payload).decode("ascii")
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
+    """Inverse of :func:`_encode_cursor`. Raises ValueError on malformed input."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("ascii")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid cursor: {exc}") from exc
+    if "|" not in raw:
+        raise ValueError("invalid cursor: missing separator")
+    ts_str, _, id_str = raw.partition("|")
+    return datetime.fromisoformat(ts_str), UUID(id_str)
+
+
+@router.get(
+    "",
+    response_model=ImportBatchListResponse,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        422: problem_response("validation.failed"),
+    },
+)
+def list_import_batches(
+    status_: str | None = Query(
+        default=None,
+        alias="status",
+        description=(
+            "Filter to batches with this status. One of ``parsed``, ``applied``, ``reverted``."
+        ),
+        pattern="^(parsed|applied|reverted)$",
+    ),
+    account_id: UUID | None = Query(  # noqa: B008
+        default=None,
+        description="Filter to batches belonging to this account.",
+    ),
+    after: str | None = Query(
+        default=None,
+        description=(
+            "Opaque cursor returned by a prior call as ``next_cursor``. Pass to "
+            "fetch the next page; omit on the first request."
+        ),
+    ),
+    limit: int = Query(
+        default=_LIST_DEFAULT_LIMIT,
+        ge=1,
+        le=_LIST_MAX_LIMIT,
+        description=(
+            f"Cap on rows returned (1-{_LIST_MAX_LIMIT}). Defaults to {_LIST_DEFAULT_LIMIT}."
+        ),
+    ),
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> ImportBatchListResponse:
+    """List recent import batches for the caller's household, newest first.
+
+    Page size defaults to 25 (capped at 200). Pass ``next_cursor`` from a
+    prior response back as ``?after=…`` to fetch the next page. Filters
+    AND together: ``?status=parsed&account_id=…`` returns only parsed
+    batches for that account.
+    """
+    storage_status: ImportBatchStatus | None = (
+        ImportBatchStatus(status_) if status_ is not None else None
+    )
+
+    cursor: tuple[datetime, UUID] | None = None
+    if after is not None:
+        try:
+            cursor = _decode_cursor(after)
+        except ValueError as exc:
+            # Surface as 422 so the schemathesis contract test recognises
+            # the failure mode; mirror the body_invalid pattern.
+            from tulip_api.errors import ValidationFailedError
+
+            raise ValidationFailedError(
+                errors=[{"loc": ["query", "after"], "msg": str(exc), "type": "value_error"}]
+            ) from exc
+
+    batches = ImportBatchRepository(session, claims.household_id).list_recent(
+        status=storage_status,
+        account_id=account_id,
+        after=cursor,
+        limit=limit,
+    )
+
+    next_cursor: str | None = None
+    if len(batches) == limit:
+        last = batches[-1]
+        next_cursor = _encode_cursor(last.created_at, last.id)
+
+    return ImportBatchListResponse(
+        items=[
+            ImportBatchListItem(
+                id=batch.id,
+                account_id=batch.account_id,
+                source_format=batch.source_format.value,
+                source_filename=batch.source_filename,
+                status=batch.status.value,
+                imported_count=batch.imported_count,
+                skipped_count=batch.skipped_count,
+                created_at=batch.created_at,
+            )
+            for batch in batches
+        ],
+        next_cursor=next_cursor,
     )
 
 
