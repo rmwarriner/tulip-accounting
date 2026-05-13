@@ -95,33 +95,30 @@ def create_proposal(
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ProposalRead:
-    """Create a new pending proposal.
+    """Create a new user-originated pending proposal.
 
-    AI-generated proposals (P6.4.b) supply ``ai_invocation_id`` and set
-    ``created_by_kind=ai_agent`` server-side based on its presence.
-    Direct user-created proposals omit it and stamp ``created_by_kind=user``.
+    Always stamps ``created_by_kind=user``. AI-originated proposals are
+    written via ``PendingProposalRepository.create`` from inside the
+    capability layer (e.g. ``/v1/ai/proposals/suggest/budget``) — that
+    path stamps ``ai_agent`` server-side with a verified ``ai_invocation_id``.
+    See #218 for why we don't accept the field on this HTTP body.
     """
-    creator_kind = (
-        ProposalCreatorKind.AI_AGENT.value
-        if body.ai_invocation_id is not None
-        else ProposalCreatorKind.USER.value
-    )
     repo = PendingProposalRepository(session, claims.household_id)
     row = repo.create(
         kind=body.kind,
         title=body.title,
         payload=body.payload,
         rationale=body.rationale,
-        created_by_kind=creator_kind,
+        created_by_kind=ProposalCreatorKind.USER.value,
         created_by_user_id=claims.user_id,
-        ai_invocation_id=body.ai_invocation_id,
+        ai_invocation_id=None,
     )
     session.commit()
     log.info(
         "proposal.created",
         proposal_id=str(row.id),
         kind=row.kind,
-        created_by_kind=creator_kind,
+        created_by_kind=ProposalCreatorKind.USER.value,
     )
     return _to_read(row)
 
