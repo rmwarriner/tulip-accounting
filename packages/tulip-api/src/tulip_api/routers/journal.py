@@ -32,6 +32,15 @@ router = APIRouter(prefix="/v1/journal", tags=["journal"])
 _MAX_JOURNAL_BYTES = 5 * 1024 * 1024  # 5 MB — matches the OFX cap (#74).
 
 
+def _filter_for_role(account_visibility: str, created_by: object, claims: Claims) -> bool:
+    """Mirror routers.reports._filter_for_role for journal-export filtering."""
+    if account_visibility == "shared":
+        return True
+    if claims.role == "admin":
+        return True
+    return created_by == claims.user_id
+
+
 class JournalParseFailedError(TulipProblem):
     """The uploaded journal couldn't be parsed (P7.5)."""
 
@@ -107,6 +116,8 @@ def export(
         household_id=claims.household_id,
         start=start,
         end=end,
+        # #229: drop postings on private accounts the caller can't see.
+        visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
     )
     suffix_parts = []
     if start is not None:

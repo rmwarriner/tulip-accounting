@@ -29,7 +29,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, Response
 
-from tulip_api.auth.deps import get_current_claims
+from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
 from tulip_api.errors import TulipProblem, problem_response
 from tulip_api.schemas.balance import (
@@ -369,7 +369,12 @@ def envelope_status(
     """Active envelopes with current balance + budget snapshot at ``as_of``."""
     from tulip_reports.reports import envelope_status as report_module
 
-    data = report_module.build(session, household_id=claims.household_id, as_of=as_of)
+    data = report_module.build(
+        session,
+        household_id=claims.household_id,
+        as_of=as_of,
+        visible_pool_filter=lambda vis, by: _filter_for_role(vis, by, claims),
+    )
     return _report_response(
         data,
         report_module.render_html,
@@ -398,7 +403,12 @@ def sinking_fund_progress(
     """Active sinking funds with balance vs target snapshot at ``as_of``."""
     from tulip_reports.reports import sinking_fund_progress as report_module
 
-    data = report_module.build(session, household_id=claims.household_id, as_of=as_of)
+    data = report_module.build(
+        session,
+        household_id=claims.household_id,
+        as_of=as_of,
+        visible_pool_filter=lambda vis, by: _filter_for_role(vis, by, claims),
+    )
     return _report_response(
         data,
         report_module.render_html,
@@ -459,10 +469,16 @@ def audit_log(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
-    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008 — #229 admin-only
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
-    """Filtered, paginated audit-log report."""
+    """Filtered, paginated audit-log report (**admin-only** per #229).
+
+    Audit rows carry user-typed `description`, `reference`, and `before/after`
+    JSON snapshots — exposing them to non-admin household members would
+    let any member study another member's activity at high fidelity.
+    Gating on admin matches the Phase-7 docs' implicit intent.
+    """
     from tulip_reports.reports import audit_log as report_module
 
     data = report_module.build(

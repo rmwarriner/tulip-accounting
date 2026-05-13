@@ -7,6 +7,7 @@ as a percentage; days-to-target gives a sense of time pressure.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import date as date_type
@@ -18,6 +19,9 @@ from tulip_reports.engine import get_renderer
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+#: Same shape as `envelope_status.VisiblePoolFilter`. See #229.
+VisiblePoolFilter = Callable[[str, "UUID | None"], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,8 +54,13 @@ def build(
     *,
     household_id: UUID,
     as_of: date_type | None = None,
+    visible_pool_filter: VisiblePoolFilter | None = None,
 ) -> SinkingFundProgressData:
-    """List active sinking funds with balance + target snapshot."""
+    """List active sinking funds with balance + target snapshot.
+
+    ``visible_pool_filter`` drops private sinking funds the caller can't
+    see (#229). Mirrors `envelope_status.build`.
+    """
     from sqlalchemy import select
 
     from tulip_storage.models import AllocationPool, Household, PoolType, SinkingFund
@@ -62,7 +71,7 @@ def build(
     household = session.get(Household, household_id)
     assert household is not None  # noqa: S101
 
-    pools = session.execute(
+    raw_pools = session.execute(
         select(AllocationPool, SinkingFund)
         .join(
             SinkingFund,
@@ -75,6 +84,11 @@ def build(
             AllocationPool.is_active.is_(True),
         )
     ).all()
+    pools: list[tuple[AllocationPool, SinkingFund]] = [(p, f) for p, f in raw_pools]
+    if visible_pool_filter is not None:
+        pools = [
+            (p, f) for p, f in pools if visible_pool_filter(p.visibility, p.created_by_user_id)
+        ]
     pool_ids = [p.id for p, _ in pools]
     balances = shadow_repo.balances_for_pools(pool_ids, as_of=effective_as_of)
 
