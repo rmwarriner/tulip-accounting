@@ -156,6 +156,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
             }
         ],
     },
+    "AuthRateLimitedError": {"retry_after_seconds": 60},
 }
 
 

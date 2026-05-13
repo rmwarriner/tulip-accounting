@@ -26,6 +26,13 @@ from tulip_api.auth.mfa import (
     verify_totp_code,
 )
 from tulip_api.auth.passwords import hash_password, needs_rehash, verify_password
+from tulip_api.auth.rate_limit import (
+    AUTH_LOGIN_LIMIT,
+    AUTH_LOGIN_MFA_LIMIT,
+    AUTH_LOGIN_RECOVER_LIMIT,
+    AUTH_REFRESH_LIMIT,
+    limiter,
+)
 from tulip_api.auth.recovery_codes import (
     generate_recovery_codes,
     hash_recovery_code,
@@ -80,6 +87,7 @@ from tulip_storage.models import (
     Household,
     MfaPolicy,
     MfaRecoveryCode,
+    UsedMfaChallenge,
     User,
     UserRole,
 )
@@ -206,8 +214,10 @@ def register(
         403: problem_response("auth.mfa_enrollment_required"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_LIMIT)
 def login(
     body: LoginRequest,
     request: Request,
@@ -250,6 +260,26 @@ def login(
         if not candidates:
             # Force the no-such-email path to pay ~argon2 cost too.
             verify_password(body.password, _timing_defense_dummy_hash())
+        else:
+            # We had at least one matching email but the password didn't
+            # match any of them. M-20 (#219): write an audit row anchored
+            # on the first candidate so per-user enumeration / brute-force
+            # patterns are reconstructable. No row for the truly unknown-
+            # email case — there's no household_id to scope the row to,
+            # and structlog already records the attempt below.
+            first = candidates[0]
+            AuditLogWriter(session, first.household_id).write(
+                action="login_failed",
+                actor_kind="user",
+                actor_user_id=first.id,
+                entity_type="user",
+                entity_id=first.id,
+                metadata={"email": body.email},
+                request_id=_request_uuid(request),
+                ip_address=_client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            session.commit()
         log.info("login.failed", email=body.email)
         raise InvalidCredentialsError()
 
@@ -288,8 +318,10 @@ def login(
         401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_code"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_MFA_LIMIT)
 def login_mfa(
     body: MfaLoginRequest,
     request: Request,
@@ -307,17 +339,32 @@ def login_mfa(
     except InvalidTokenError as exc:
         log.info("user.login.mfa_token_rejected", reason=str(exc))
         raise InvalidMfaTokenError() from exc
+    if not _consume_mfa_challenge(session, claims.jti, claims.expires_at):
+        log.info("user.login.mfa_token_replay", jti=str(claims.jti))
+        raise InvalidMfaTokenError()
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
         # Token was valid but the user is no longer enrolled (or the row
         # vanished). Treat as a token-rejection rather than an MFA-code
         # error — there's nothing to verify against.
+        session.commit()
         raise InvalidMfaTokenError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
     if not verify_totp_code(secret, body.code):
         log.info("user.login.mfa_code_rejected", user_id=str(user.id))
+        AuditLogWriter(session, user.household_id).write(
+            action="mfa.code_rejected",
+            actor_kind="user",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        session.commit()
         raise MfaInvalidCodeError()
 
     AuditLogWriter(session, user.household_id).write(
@@ -349,8 +396,10 @@ def _enrollment_required(policy: MfaPolicy, role: UserRole) -> bool:
         401: problem_response("auth.invalid_refresh_token"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_REFRESH_LIMIT)
 def refresh(
     body: RefreshRequest,
     request: Request,
@@ -531,8 +580,10 @@ def mfa_verify(
         401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_recovery_code"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_RECOVER_LIMIT)
 def login_recover(
     body: MfaRecoveryLoginRequest,
     request: Request,
@@ -552,14 +603,29 @@ def login_recover(
     except InvalidTokenError as exc:
         log.info("user.login.recover_token_rejected", reason=str(exc))
         raise InvalidMfaTokenError() from exc
+    if not _consume_mfa_challenge(session, claims.jti, claims.expires_at):
+        log.info("user.login.recover_token_replay", jti=str(claims.jti))
+        raise InvalidMfaTokenError()
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_enrolled_at is None:
+        session.commit()
         raise InvalidMfaTokenError()
 
     matched = _consume_recovery_code(session, user, body.recovery_code)
     if matched is None:
         log.info("user.login.recover_rejected", user_id=str(user.id))
+        AuditLogWriter(session, user.household_id).write(
+            action="mfa.recovery_rejected",
+            actor_kind="user",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        session.commit()
         raise MfaInvalidRecoveryCodeError()
 
     AuditLogWriter(session, user.household_id).write(
@@ -735,6 +801,24 @@ def _is_expired(expires_at: datetime) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return expires_at <= datetime.now(tz=UTC)
+
+
+def _consume_mfa_challenge(session: Session, jti: UUID, expires_at: datetime) -> bool:
+    """Mark ``jti`` as redeemed; return False if it was already redeemed.
+
+    M-7 (#219): single-use enforcement for the MFA-challenge JWT. The
+    UNIQUE PK turns a replay into an IntegrityError. Committed eagerly
+    so that a second attempt landing 50 ms later is rejected even if
+    the first attempt's downstream verification fails.
+    """
+    session.add(UsedMfaChallenge(jti=jti, expires_at=expires_at))
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        return False
+    session.commit()
+    return True
 
 
 def _mint_recovery_codes(session: Session, user: User) -> list[str]:

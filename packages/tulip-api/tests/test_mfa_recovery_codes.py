@@ -55,15 +55,18 @@ def _challenge_token(client: TestClient, email: str = "alice@example.com") -> st
 
 
 class TestVerifyMintsCodes:
-    def test_returns_eight_codes_in_xxxx_dash_xxxx_form(
+    def test_returns_eight_codes_in_four_group_dash_form(
         self, client: TestClient, registered: dict[str, str]
     ):
+        # H-3 (#219): 16 chars + 3 dashes = 19, four 4-char groups.
         access = _login_access_token(client)
         _, codes = _enroll_through_verify(client, access)
         assert len(codes) == 8
         assert len(set(codes)) == 8  # unique within the batch
         for c in codes:
-            assert len(c) == 9 and c[4] == "-"
+            assert len(c) == 19
+            assert c[4] == "-" and c[9] == "-" and c[14] == "-"
+            assert all(len(g) == 4 for g in c.split("-"))
 
     def test_codes_are_stored_hashed_not_plaintext(
         self,

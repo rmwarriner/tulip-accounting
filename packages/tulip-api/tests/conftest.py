@@ -85,6 +85,18 @@ def app(session_maker: sessionmaker[Session], settings: Settings) -> Iterator[Fa
     # a separate fixture.
     a = create_app(enable_runner=False)
 
+    # H-4 (#219): the auth rate-limiter is module-scoped, so its
+    # in-memory counters accumulate across tests in the same process.
+    # Reset it per-test so a feature test that incidentally calls
+    # /login many times doesn't trip the 10/min gate. Per-limit reset
+    # methods exercising the gate itself opt back in. ``enabled`` is
+    # re-toggled in case the OpenAPI contract test disabled it first
+    # (it imports the same module-level limiter).
+    from tulip_api.auth.rate_limit import limiter as _auth_limiter
+
+    _auth_limiter.enabled = True
+    _auth_limiter.reset()
+
     def _override_session() -> Iterator[Session]:
         with session_maker() as s:
             yield s
