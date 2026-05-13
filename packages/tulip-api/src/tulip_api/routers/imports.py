@@ -31,6 +31,7 @@ from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountUnknownError,
     CsvProfileNotFoundError,
+    ForbiddenError,
     ImportAlreadyAppliedError,
     ImportBatchNotFoundError,
     ImportCategorizeUnknownAccountError,
@@ -170,13 +171,19 @@ async def upload_import(
         description=(
             "When true, skip the same-file/same-account duplicate check and "
             "create a second import batch referencing the existing attachment. "
-            "Per ADR-0004 §Q6. The audit log records the override."
+            "**Admin-only** per #230 (audit M-16) — members are rejected with "
+            "403 `auth.forbidden`. The audit log records every force-override."
         ),
     ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchSummary:
     """Upload a statement file; parse it; persist as an ``import_batches`` row."""
+    if force and claims.role != "admin":
+        # The dedup override is a deliberate admin action — refuse for members
+        # so the audit-row "force=true" stays correctly attributable.
+        raise ForbiddenError(detail="force=true requires admin role.")
+
     if source_format not in _SUPPORTED_FORMATS:
         raise ImportUnsupportedFormatError(
             format_name=source_format,
