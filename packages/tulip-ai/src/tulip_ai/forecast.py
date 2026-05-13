@@ -260,7 +260,10 @@ class AIForecastCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "forecast", "envelope_id": str(envelope_id)}
                     ),
-                    response_text="no api key configured for provider",
+                    # H-1 (#234): gate error-path response_text on log_prompts.
+                    response_text=(
+                        "no api key configured for provider" if policy.log_prompts else None
+                    ),
                 )
                 return ForecastResult(text="", error="no api key")
 
@@ -288,7 +291,7 @@ class AIForecastCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "forecast", "envelope_id": str(envelope_id)}
                     ),
-                    response_text=gate.reason[:500],
+                    response_text=gate.reason[:500] if policy.log_prompts else None,
                 )
                 return ForecastResult(text="", error=gate.outcome)
 
@@ -325,7 +328,7 @@ class AIForecastCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload(payload.to_dict()),
-                response_text=str(exc)[:500],
+                response_text=str(exc)[:500] if policy.log_prompts else None,
             )
             return ForecastResult(text="", error=f"provider error: {exc}")
 

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tulip_ai.adapters import RecordingAdapter
 from tulip_ai.categorize import AICategorizer, build_categorize_prompt
+from tulip_ai.errors import AIProviderError
 from tulip_ai.redaction import ChartEntry
 from tulip_core.money import Money
 from tulip_core.reconciliation.categorizer import HouseholdContext
@@ -248,6 +249,40 @@ async def test_categorize_falls_back_when_no_api_key(
     with session_maker() as s:
         rows = s.execute(select(AIInvocation)).scalars().all()
         assert rows[0].outcome == "provider_error"
+        # H-1 (#234): response_text is gated on log_prompts; default is
+        # False, so the structured ``outcome`` is the assertion target.
+        assert rows[0].response_text is None
+
+
+@pytest.mark.asyncio
+async def test_categorize_no_api_key_response_text_opt_in_when_log_prompts(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): log_prompts=True restores the diagnostic response_text."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {
+            "default_provider": "anthropic",
+            "default_model": "claude-opus-4-7",
+            "log_prompts": True,
+        }
+        s.commit()
+
+    categorizer = AICategorizer(
+        session_maker=session_maker,
+        master_key=master_key,
+        adapter=RecordingAdapter(canned_reply=""),
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
         assert rows[0].response_text == "no api key configured for provider"
 
 
@@ -420,7 +455,9 @@ async def test_categorize_cost_cap_hard_fail_blocks_with_audit(
             .all()
         )
         assert len(rows) == 1
-        assert "cap" in (rows[0].response_text or "").lower()
+        # H-1 (#234): outcome is the structured field; response_text is
+        # gated on log_prompts (False by default).
+        assert rows[0].outcome == "cost_capped"
 
 
 @pytest.mark.asyncio
@@ -466,3 +503,65 @@ async def test_categorize_rate_limited_blocks_with_audit(
             .all()
         )
         assert len(rows) == 1
+
+
+class _RaisingAdapter:
+    """Adapter that always raises AIProviderError — proves the gate on the
+    provider-error branch of every capability."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def chat(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        raise AIProviderError("provider blew up: prompt fragment was 'WHOLE FOODS 12.00'")
+
+
+@pytest.mark.asyncio
+async def test_provider_error_response_text_gated_off_by_default(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): provider-error response_text is NULL when log_prompts=False."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-real"}, master_key=master_key)
+
+    categorizer = AICategorizer(
+        session_maker=session_maker, master_key=master_key, adapter=_RaisingAdapter()
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+        assert rows[0].response_text is None
+
+
+@pytest.mark.asyncio
+async def test_provider_error_response_text_persisted_when_log_prompts_on(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): log_prompts=True preserves diagnostic content."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-real"}, master_key=master_key)
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {**dict(h.ai_policy or {}), "log_prompts": True}
+        s.commit()
+
+    categorizer = AICategorizer(
+        session_maker=session_maker, master_key=master_key, adapter=_RaisingAdapter()
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+        assert rows[0].response_text is not None
+        assert "provider blew up" in rows[0].response_text

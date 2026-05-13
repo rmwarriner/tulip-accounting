@@ -215,9 +215,9 @@ async def test_ask_rejects_unsafe_emitted_sql(
             .scalars()
             .all()
         )
-        assert any(
-            r.outcome == "provider_error" and "unsafe_sql" in (r.response_text or "") for r in rows
-        )
+        # H-1 (#234): response_text is gated on log_prompts; rely on the
+        # structured ``outcome`` to identify the unsafe-SQL rejection.
+        assert any(r.outcome == "provider_error" for r in rows)
 
 
 @pytest.mark.asyncio
