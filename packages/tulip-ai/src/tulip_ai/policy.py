@@ -22,6 +22,16 @@ PolicyLevel = Literal["permissive", "requires_approval", "disabled"]
 Capability = Literal["categorize", "nl_query", "forecast", "agentic"]
 CostCapBehaviour = Literal["degrade", "hard_fail"]
 
+#: Providers that run entirely on the household's machine. ADR-0005 §Q4
+#: locks ``profile=local_only`` to one of these regardless of any other
+#: provider config — see C-1 in the deep privacy audit (#233). Extending
+#: this set is a deliberate one-time decision per engine.
+_LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+
+#: Default local provider when ``profile=local_only`` and the household
+#: hasn't configured a specific one.
+_DEFAULT_LOCAL_PROVIDER: str = "ollama"
+
 _SEVERITY: dict[PolicyLevel, int] = {
     "permissive": 0,
     "requires_approval": 1,
@@ -135,7 +145,13 @@ def resolve_policy(
     model = cap_settings.get("model") or household_policy.get("default_model")
 
     if profile == "local_only":
-        provider = household_policy.get("fallback_provider") or "ollama"
+        # C-1 (#233): ADR-0005 §Q4 — local_only must never resolve to a
+        # cloud provider. Honour an explicit local fallback_provider so
+        # operators can name a self-hosted alternative; otherwise pin to
+        # the default local engine. fallback_model still acts as the
+        # "local model" hint so existing configs keep working.
+        candidate = household_policy.get("fallback_provider")
+        provider = candidate if candidate in _LOCAL_PROVIDERS else _DEFAULT_LOCAL_PROVIDER
         model = household_policy.get("fallback_model") or model
 
     from tulip_ai.cost import DEFAULT_RATE_LIMIT_PER_HOUR
