@@ -188,6 +188,63 @@ class TestUploadErrorPaths:
         assert second.status_code == 201, second.text
         assert second.json()["id"] != first.json()["id"]
 
+    def test_force_override_rejected_for_member_role(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        session_maker,
+    ):
+        """force=true is admin-only — a member can upload but cannot force a duplicate (#230)."""
+        from uuid import uuid4
+
+        from tulip_api.auth.passwords import hash_password
+        from tulip_storage.models import User, UserRole
+
+        # First admin upload establishes the duplicate.
+        first = _upload(client, auth_h, checking_account)
+        assert first.status_code == 201
+
+        # Provision a member in the same household.
+        admin_user_row = client.get("/v1/system/diagnostics").json()  # warm pre-auth
+        from sqlalchemy import select
+
+        from tulip_storage.models import User as UserModel
+
+        with session_maker() as s:
+            admin_row = s.execute(
+                select(UserModel).where(UserModel.email == "admin@example.com")
+            ).scalar_one()
+            household_id = admin_row.household_id
+            s.add(
+                User(
+                    household_id=household_id,
+                    id=uuid4(),
+                    email="member@example.com",
+                    password_hash=hash_password("correct horse battery staple"),
+                    display_name="Member",
+                    role=UserRole.MEMBER,
+                )
+            )
+            s.commit()
+        del admin_user_row  # silence unused
+
+        member_token = client.post(
+            "/v1/auth/login",
+            json={"email": "member@example.com", "password": "correct horse battery staple"},
+        ).json()["access_token"]
+        member_h = {"Authorization": f"Bearer {member_token}"}
+
+        # Member with force=true → 403 auth.forbidden.
+        body_bytes = (_OFX_FIXTURES / "minimal_ofx2.ofx").read_bytes()
+        r = client.post(
+            "/v1/imports?force=true",
+            headers=member_h,
+            files={"file": ("may.ofx", body_bytes, "application/x-ofx")},
+            data={"account_id": checking_account, "source_format": "ofx"},
+        )
+        assert_problem(r, code="auth.forbidden", status=403)
+
 
 class TestUploadQif:
     def test_uploads_qif_and_persists_lines(
