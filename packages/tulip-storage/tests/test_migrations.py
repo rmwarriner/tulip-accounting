@@ -58,6 +58,64 @@ def migrated_db(tmp_path):
     eng.dispose()
 
 
+class TestCompositeFkAiInvocationId:
+    """#231: pending_proposals + notifications carry a composite FK to ai_invocations.
+
+    Prevents cross-household references (a row in household A pointing at
+    an invocation in household B) at the schema level.
+    """
+
+    def test_cross_household_ai_invocation_id_rejected_on_pending_proposals(self, migrated_db):
+        from datetime import UTC, datetime
+
+        from tulip_storage.models import AIInvocation, PendingProposal
+
+        _, maker = migrated_db
+        with maker() as s:
+            household_a = Household(id=uuid4(), name="A", base_currency="USD")
+            household_b = Household(id=uuid4(), name="B", base_currency="USD")
+            s.add(household_a)
+            s.add(household_b)
+            s.flush()
+
+            inv_b = AIInvocation(
+                household_id=household_b.id,
+                id=uuid4(),
+                created_at=datetime.now(tz=UTC),
+                capability="categorize",
+                policy_resolved="default",
+                profile="default",
+                provider="ollama",
+                model="llama3",
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=0,
+                outcome="success",
+                cost_estimate_usd=Decimal("0"),
+                prompt_hash=b"\x00" * 32,
+                actor_user_id=None,
+                request_id=None,
+                provider_response_id=None,
+            )
+            s.add(inv_b)
+            s.flush()
+
+            # Now try to land a proposal in household_a referencing inv_b.
+            bad_proposal = PendingProposal(
+                household_id=household_a.id,
+                id=uuid4(),
+                kind="envelope_budget_update",
+                title="spoof",
+                payload={"x": 1},
+                created_by_kind="ai_agent",
+                ai_invocation_id=inv_b.id,
+            )
+            s.add(bad_proposal)
+            with pytest.raises(IntegrityError):
+                s.flush()
+            s.rollback()
+
+
 class TestMigrationsRoundTrip:
     def test_upgrade_then_downgrade_is_clean(self, tmp_path):
         db_path = tmp_path / "tulip.db"

@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tulip_storage.models.base import GUID, Base
@@ -38,6 +38,15 @@ class Notification(Base):
     """
 
     __tablename__ = "notifications"
+    __table_args__ = (
+        # Composite FK so `ai_invocation_id` cannot cross households (#231).
+        ForeignKeyConstraint(
+            ["household_id", "ai_invocation_id"],
+            ["ai_invocations.household_id", "ai_invocations.id"],
+            ondelete="SET NULL",
+            name="fk_notifications_ai_invocation_id_ai_invocations",
+        ),
+    )
 
     household_id: Mapped[UUID] = mapped_column(
         GUID(), ForeignKey("households.id", ondelete="CASCADE"), primary_key=True
