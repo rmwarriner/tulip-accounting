@@ -307,6 +307,7 @@ def restore_backup(
                 f"{attachment_root}. Pass --force to overwrite."
             )
 
+    safe_attachment_root = attachment_root.resolve()
     with tarfile.open(in_path, mode="r:gz") as tar:
         for member in tar.getmembers():
             name = member.name
@@ -322,6 +323,19 @@ def restore_backup(
                     continue  # the directory entry itself
                 attachment_root.mkdir(parents=True, exist_ok=True)
                 target = attachment_root / stripped
+                # Reject any member whose resolved path escapes
+                # attachment_root (`..` segments, absolute paths, etc.).
+                # The DB branch uses `tar.extract(..., filter="data")`
+                # which has Python 3.12+'s built-in safe filter; the
+                # attachment branch writes manually so it needs its own
+                # guard. See #217.
+                resolved = target.resolve()
+                if not resolved.is_relative_to(safe_attachment_root):
+                    raise RestoreError(
+                        f"backup contains path traversal in attachment "
+                        f"member {name!r}: resolves to {resolved} which "
+                        f"escapes attachment_root {safe_attachment_root}"
+                    )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
