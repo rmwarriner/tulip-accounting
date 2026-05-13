@@ -169,6 +169,69 @@ class InvalidCredentialsError(TulipProblem):
         )
 
 
+class UserNotFoundError(TulipProblem):
+    """The targeted user does not exist within the caller's household."""
+
+    def __init__(self) -> None:
+        """Build the user.not_found problem."""
+        super().__init__(
+            code="user.not_found",
+            title="User not found",
+            status=404,
+            detail="No user with the given id exists in your household.",
+        )
+
+
+class LastAdminDeletionError(TulipProblem):
+    """Refused: deleting this user would leave the household with no admin."""
+
+    def __init__(self) -> None:
+        """Build the user.last_admin problem."""
+        super().__init__(
+            code="user.last_admin",
+            title="Cannot delete the last admin",
+            status=409,
+            detail=(
+                "This user is the only admin in the household; "
+                "promote another member to admin first."
+            ),
+        )
+
+
+class HouseholdErasureNotRequestedError(TulipProblem):
+    """``DELETE /v1/households/me`` requires a fresh confirmation token."""
+
+    def __init__(self) -> None:
+        """Build the household.erasure_not_requested problem."""
+        super().__init__(
+            code="household.erasure_not_requested",
+            title="Erasure not requested",
+            status=409,
+            detail=(
+                "Issue a confirmation token first via "
+                "POST /v1/households/me/erase-request, then resubmit with "
+                "the token in the X-Erasure-Token header."
+            ),
+        )
+
+
+class HouseholdErasureTokenInvalidError(TulipProblem):
+    """The X-Erasure-Token header is missing, malformed, or doesn't match."""
+
+    def __init__(self) -> None:
+        """Build the household.erasure_token_invalid problem."""
+        super().__init__(
+            code="household.erasure_token_invalid",
+            title="Invalid erasure token",
+            status=401,
+            detail=(
+                "The X-Erasure-Token header is missing, expired, or does "
+                "not match the most recent erasure request. Request a "
+                "fresh token via POST /v1/households/me/erase-request."
+            ),
+        )
+
+
 class DuplicateEmailError(TulipProblem):
     """Registration was attempted with an email that already exists in the household."""
 

@@ -34,6 +34,7 @@ from tulip_api.routers import (
     csv_profiles,
     envelopes,
     health,
+    households,
     imports,
     journal,
     notifications,
@@ -46,6 +47,7 @@ from tulip_api.routers import (
     sinking_funds,
     system,
     transactions,
+    users,
     well_known_errors,
 )
 from tulip_core.reconciliation.categorizer import register_categorizer
@@ -122,6 +124,16 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             settings = get_settings()
             session_maker = _build_session_maker(settings.database_url)
             runner = Runner(session_maker)
+            # H-3 (#235): register the attachment GC handler so orphaned
+            # ciphertext files get swept periodically. The runner reads
+            # ``scheduled_jobs`` for the actual fire cadence; an installer
+            # is expected to seed a daily rrule for ``attachment_gc``.
+            from tulip_storage.runner.handlers import make_attachment_gc_handler
+
+            runner.register_handler(
+                "attachment_gc",
+                make_attachment_gc_handler(session_maker, settings.attachment_root),
+            )
             app.state.runner = runner
             _register_ai_categorizer(session_maker)
             await runner.start()
@@ -164,6 +176,8 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(ai.router)
     app.include_router(well_known_errors.router)
     app.include_router(auth.router)
+    app.include_router(users.router)
+    app.include_router(households.router)
     app.include_router(accounts.router)
     app.include_router(transactions.router)
     app.include_router(periods.router)

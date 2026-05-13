@@ -17,15 +17,18 @@ when they have one (`find_by_hash`).
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tulip_storage.encryption import encrypt_field
 from tulip_storage.models import Attachment
+
+log = logging.getLogger("tulip_storage.repositories.attachment")
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -114,3 +117,35 @@ class AttachmentRepository:
         path = self._attachment_root / att.content_hash
         ciphertext = path.read_bytes()
         return decrypt_field(ciphertext, self._master_key)
+
+    def delete(self, attachment_id: UUID) -> bool:
+        """Delete an attachment row and unlink its ciphertext if no rows remain.
+
+        Within-household dedup means one blob on disk may back several
+        attachment rows (different filenames, same content). The blob is
+        unlinked only when the last row referencing its content_hash is
+        deleted — refcount check across the whole ``attachments`` table.
+
+        Returns True if the row existed and was deleted; False if no
+        such attachment was found in this household. Caller commits.
+        """
+        att = self.get(attachment_id)
+        if att is None:
+            return False
+        content_hash = att.content_hash
+        self._session.delete(att)
+        self._session.flush()
+        remaining = self._session.execute(
+            select(func.count())
+            .select_from(Attachment)
+            .where(Attachment.content_hash == content_hash)
+        ).scalar_one()
+        if remaining == 0:
+            blob = self._attachment_root / content_hash
+            try:
+                blob.unlink()
+            except FileNotFoundError:
+                # Already gone (concurrent GC, partial-write, manual cleanup) —
+                # not an error; the row is deleted either way.
+                log.info("attachment.blob_already_missing", extra={"content_hash": content_hash})
+        return True
