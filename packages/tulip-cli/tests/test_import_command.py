@@ -24,6 +24,9 @@ def _run_cli(
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
+    # Give Rich a wide terminal so Typer's usage / error panels don't
+    # wrap mid-word in CI and drop substrings the tests assert on.
+    env.setdefault("COLUMNS", "200")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -489,3 +492,124 @@ def test_import_ofx_unauthenticated_exits_2(live_api: str, tmp_path: Path) -> No
         env={**os.environ, "TULIP_TOKEN_STORE": str(tmp_path / "no-tokens.json")},
     )
     assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.integration
+def test_imports_list_empty_household(authed_session: str) -> None:
+    """`tulip imports list` says so when the household has no batches yet."""
+    result = _run_cli("imports", "list", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    assert "No import batches match" in result.stdout
+
+
+@pytest.mark.integration
+def test_imports_list_renders_table(authed_session: str) -> None:
+    """`tulip imports list` prints a table with ID prefixes after an upload."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert upload.returncode == 0, upload.stderr
+    batch_id = json.loads(upload.stdout)["id"]
+
+    result = _run_cli("imports", "list", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    # ID prefix (first 8 chars) of the new batch should appear in the table.
+    assert batch_id[:8] in result.stdout
+    assert "OFX" in result.stdout
+    # Full UUID is intentionally truncated in the table.
+    assert batch_id not in result.stdout
+
+
+@pytest.mark.integration
+def test_imports_list_json_passthrough(authed_session: str) -> None:
+    """`tulip --json imports list` emits the raw ImportBatchListResponse body."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    result = _run_cli("--json", "imports", "list", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert isinstance(payload.get("items"), list)
+    assert len(payload["items"]) == 1
+    # Full UUIDs are preserved in JSON output.
+    assert len(payload["items"][0]["id"]) == 36
+
+
+@pytest.mark.integration
+def test_imports_list_status_filter(authed_session: str) -> None:
+    """`tulip imports list --status applied` filters via the API query param."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    # The fresh upload is parsed, not applied — applied filter sees nothing.
+    result = _run_cli("imports", "list", "--status", "applied", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    assert "No import batches match" in result.stdout
+
+
+@pytest.mark.integration
+def test_imports_list_invalid_status_rejected(authed_session: str) -> None:
+    """`tulip imports list --status bogus` exits with a usage error."""
+    result = _run_cli("imports", "list", "--status", "bogus", api_url=authed_session)
+    assert result.returncode != 0
+    # CI's narrower Typer/Rich rendering sometimes truncates the panel
+    # before our --status substring — match any of the unambiguous
+    # error signals instead.
+    combined = (result.stdout + result.stderr).lower()
+    assert any(needle in combined for needle in ("status", "bogus", "usage"))

@@ -64,6 +64,38 @@ class ImportBatchRead(BaseModel):
     lines: list[StatementLineRead]
 
 
+class ImportBatchListItem(BaseModel):
+    """One row of ``GET /v1/imports`` — batch summary without per-line detail.
+
+    Mirrors :class:`ImportBatchRead` but omits the embedded statement-line
+    list (which can be hundreds of rows) and the ``applied_at`` /
+    ``reverted_at`` timestamps — discovery surface is "what's there", not
+    "what state-machine transitions has it gone through".
+    """
+
+    id: UUID
+    account_id: UUID
+    source_format: str
+    source_filename: str
+    status: str
+    imported_count: int
+    skipped_count: int
+    created_at: datetime
+
+
+class ImportBatchListResponse(BaseModel):
+    """Response for ``GET /v1/imports`` — page of batches + opaque cursor.
+
+    ``next_cursor`` is non-null exactly when more rows are available; the
+    client passes it back as ``?after=<cursor>`` to fetch the next page.
+    The cursor encoding is an opaque base64 token — clients must treat it
+    as a black box.
+    """
+
+    items: list[ImportBatchListItem]
+    next_cursor: str | None = None
+
+
 class ImportBatchApplyResponse(BaseModel):
     """Response for ``POST /v1/imports/{id}/apply`` (P5.4.a)."""
 

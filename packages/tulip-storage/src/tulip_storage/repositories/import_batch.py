@@ -63,6 +63,39 @@ class ImportBatchRepository:
             .all()
         )
 
+    def list_recent(
+        self,
+        *,
+        status: ImportBatchStatus | None = None,
+        account_id: UUID | None = None,
+        after: tuple[datetime, UUID] | None = None,
+        limit: int = 25,
+    ) -> list[ImportBatch]:
+        """List import batches in this household, newest first.
+
+        ``limit`` caps the number of rows returned. ``status`` and
+        ``account_id`` are optional AND filters. ``after`` is a
+        keyset-pagination cursor — pass the ``(created_at, id)`` tuple
+        of the last row of the previous page to fetch the next page.
+        Ordering is ``(created_at DESC, id DESC)`` so the ``id`` is a
+        stable tiebreaker when many batches land at the same timestamp.
+        """
+        query = select(ImportBatch).where(ImportBatch.household_id == self._household_id)
+        if status is not None:
+            query = query.where(ImportBatch.status == status)
+        if account_id is not None:
+            query = query.where(ImportBatch.account_id == account_id)
+        if after is not None:
+            after_created_at, after_id = after
+            # Standard keyset pagination: rows strictly older than the cursor,
+            # or with the same timestamp but a lower id.
+            query = query.where(
+                (ImportBatch.created_at < after_created_at)
+                | ((ImportBatch.created_at == after_created_at) & (ImportBatch.id < after_id))
+            )
+        query = query.order_by(ImportBatch.created_at.desc(), ImportBatch.id.desc()).limit(limit)
+        return list(self._session.execute(query).scalars().all())
+
     def create(
         self,
         *,

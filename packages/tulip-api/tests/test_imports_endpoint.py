@@ -425,3 +425,206 @@ class TestGetImport:
         bogus = "11111111-1111-1111-1111-111111111111"
         r = client.get(f"/v1/imports/{bogus}")
         assert r.status_code == 401
+
+
+class TestListImports:
+    """``GET /v1/imports`` — list batches in the caller's household."""
+
+    def test_empty_household_returns_empty_list(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        r = client.get("/v1/imports", headers=auth_h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["items"] == []
+        assert body["next_cursor"] is None
+
+    def test_unauthenticated_returns_401(self, client: TestClient):
+        r = client.get("/v1/imports")
+        assert r.status_code == 401
+
+    def test_single_batch_round_trips(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        upload = _upload(client, auth_h, checking_account)
+        assert upload.status_code == 201, upload.text
+        batch_id = upload.json()["id"]
+
+        r = client.get("/v1/imports", headers=auth_h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["id"] == batch_id
+        assert item["account_id"] == checking_account
+        assert item["source_format"] == "ofx"
+        assert item["status"] == "parsed"
+        assert item["imported_count"] == 2
+        assert item["skipped_count"] == 0
+        assert "created_at" in item
+        # The list shape intentionally omits ``lines`` — that's the show
+        # endpoint's concern.
+        assert "lines" not in item
+        assert body["next_cursor"] is None
+
+    def test_sorted_newest_first(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        first = _upload(client, auth_h, checking_account, fixture="minimal_ofx2.ofx")
+        assert first.status_code == 201
+        second = _upload(client, auth_h, checking_account, fixture="minimal_ofx1.sgml")
+        assert second.status_code == 201
+        first_id = first.json()["id"]
+        second_id = second.json()["id"]
+
+        r = client.get("/v1/imports", headers=auth_h)
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert [i["id"] for i in items] == [second_id, first_id]
+
+    def test_pagination_via_limit_and_after(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        a = _upload(client, auth_h, checking_account, fixture="minimal_ofx2.ofx").json()["id"]
+        b = _upload(client, auth_h, checking_account, fixture="minimal_ofx1.sgml").json()["id"]
+
+        page1 = client.get("/v1/imports", headers=auth_h, params={"limit": 1}).json()
+        assert [i["id"] for i in page1["items"]] == [b]
+        assert page1["next_cursor"] is not None
+
+        page2 = client.get(
+            "/v1/imports",
+            headers=auth_h,
+            params={"limit": 1, "after": page1["next_cursor"]},
+        ).json()
+        assert [i["id"] for i in page2["items"]] == [a]
+        # With keyset pagination, ``len == limit`` always returns a cursor;
+        # the next fetch confirms there are no more rows.
+        assert page2["next_cursor"] is not None
+        page3 = client.get(
+            "/v1/imports",
+            headers=auth_h,
+            params={"limit": 1, "after": page2["next_cursor"]},
+        ).json()
+        assert page3["items"] == []
+        assert page3["next_cursor"] is None
+
+    def test_filter_by_status(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        upload = _upload(client, auth_h, checking_account)
+        assert upload.status_code == 201
+        # status=applied should currently match nothing.
+        empty = client.get(
+            "/v1/imports",
+            headers=auth_h,
+            params={"status": "applied"},
+        )
+        assert empty.status_code == 200
+        assert empty.json()["items"] == []
+        # status=parsed matches the freshly-uploaded batch.
+        parsed = client.get(
+            "/v1/imports",
+            headers=auth_h,
+            params={"status": "parsed"},
+        )
+        assert parsed.status_code == 200
+        assert len(parsed.json()["items"]) == 1
+
+    def test_filter_by_account(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        # Second account in the same household.
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Savings", "type": "asset", "currency": "USD", "code": "1115"},
+        )
+        savings_id = r.json()["id"]
+
+        _upload(client, auth_h, checking_account, fixture="minimal_ofx2.ofx")
+        _upload(client, auth_h, savings_id, fixture="minimal_ofx1.sgml")
+
+        only_savings = client.get(
+            "/v1/imports",
+            headers=auth_h,
+            params={"account_id": savings_id},
+        )
+        assert only_savings.status_code == 200
+        items = only_savings.json()["items"]
+        assert len(items) == 1
+        assert items[0]["account_id"] == savings_id
+
+    def test_invalid_status_returns_422(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        # FastAPI's regex pattern validation surfaces as 422 validation.failed.
+        r = client.get("/v1/imports", headers=auth_h, params={"status": "bogus"})
+        assert r.status_code == 422
+
+    def test_invalid_cursor_returns_422(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        r = client.get("/v1/imports", headers=auth_h, params={"after": "not-base64!"})
+        assert r.status_code == 422
+
+    def test_limit_out_of_range_returns_422(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        r = client.get("/v1/imports", headers=auth_h, params={"limit": 0})
+        assert r.status_code == 422
+        r2 = client.get("/v1/imports", headers=auth_h, params={"limit": 1000})
+        assert r2.status_code == 422
+
+    def test_tenant_isolation(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        # Upload a batch for the existing admin household.
+        _upload(client, auth_h, checking_account)
+
+        # Register a second household; the new caller must see zero batches.
+        client.post(
+            "/v1/auth/register",
+            json={
+                "email": "other@example.com",
+                "password": "another long password value",
+                "display_name": "Other",
+                "household_name": "Doe",
+            },
+        )
+        other_login = client.post(
+            "/v1/auth/login",
+            json={"email": "other@example.com", "password": "another long password value"},
+        )
+        other_token = other_login.json()["access_token"]
+        other_headers = {"Authorization": f"Bearer {other_token}"}
+
+        r = client.get("/v1/imports", headers=other_headers)
+        assert r.status_code == 200
+        assert r.json()["items"] == []
