@@ -331,6 +331,54 @@ class TestRefresh:
         assert_problem(r, code="auth.invalid_refresh_token", status=401)
 
 
+class TestAuditCoverage:
+    """#222: logout + refresh must write an audit_log row."""
+
+    def test_refresh_writes_audit_row(
+        self, client: TestClient, registered: dict[str, str], session_maker
+    ):
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": registered["password"]},
+        ).json()
+        rt = login["refresh_token"]
+        r = client.post("/v1/auth/refresh", json={"refresh_token": rt})
+        assert r.status_code == 200
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "auth.refresh")).scalars().all()
+            )
+        assert len(rows) >= 1
+        assert rows[-1].entity_type == "session"
+
+    def test_logout_writes_audit_row(
+        self, client: TestClient, registered: dict[str, str], session_maker
+    ):
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": registered["password"]},
+        ).json()
+        rt = login["refresh_token"]
+        r = client.post("/v1/auth/logout", json={"refresh_token": rt})
+        assert r.status_code == 204
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "auth.logout")).scalars().all()
+            )
+        assert len(rows) == 1
+        assert rows[0].entity_type == "session"
+
+
 class TestLogout:
     def test_revokes_refresh_token(self, client: TestClient, registered: dict[str, str]):
         login = client.post(

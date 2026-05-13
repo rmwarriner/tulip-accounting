@@ -44,6 +44,7 @@ from tulip_api.schemas.refill_schedule import (
     ScheduledJobRead,
 )
 from tulip_storage.repositories import (
+    AuditLogWriter,
     EnvelopeRepository,
     ScheduledJobRepository,
 )
@@ -61,6 +62,17 @@ REFILL_KIND = "envelope_refill"
 
 router = APIRouter(tags=["refill-schedules"])
 log = structlog.get_logger("tulip_api.refill_schedules")
+
+
+def _request_uuid(request: Request) -> UUID | None:
+    """Same shape as the helper in other routers; #222 audit-row request_id."""
+    rid = request.headers.get("x-request-id")
+    if rid:
+        try:
+            return UUID(rid)
+        except ValueError:
+            return None
+    return None
 
 
 def get_runner(request: Request) -> Runner:
@@ -192,13 +204,23 @@ def create_refill_schedule(
         # ``start_at`` (e.g. UNTIL already past).
         raise RefillScheduleInvalidRRuleError(reason=str(exc)) from exc
 
+    # Runner committed in its own session; record an audit row in ours.
+    AuditLogWriter(session, claims.household_id).write(
+        action="refill_schedule.create",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="scheduled_job",
+        entity_id=job_id,
+        after={"envelope_id": str(envelope_id), "rrule": body.rrule},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
     log.info(
         "refill_schedule.created",
         envelope_id=str(envelope_id),
         scheduled_job_id=str(job_id),
     )
 
-    # The runner committed in its own session; refresh ours and return.
     repo = ScheduledJobRepository(session, claims.household_id)
     job = repo.get(job_id)
     if job is None:
@@ -248,6 +270,7 @@ def get_refill_schedule(
 )
 def cancel_refill_schedule(
     envelope_id: UUID,
+    request: Request,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
     runner: Runner = Depends(get_runner),  # noqa: B008
@@ -274,6 +297,17 @@ def cancel_refill_schedule(
         raise RefillScheduleNotFoundError()
 
     runner.cancel(claims.household_id, job.id)
+    AuditLogWriter(session, claims.household_id).write(
+        action="refill_schedule.cancel",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="scheduled_job",
+        entity_id=job.id,
+        before={"envelope_id": str(envelope_id), "is_active": True},
+        after={"is_active": False},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
     log.info(
         "refill_schedule.cancelled",
         envelope_id=str(envelope_id),
