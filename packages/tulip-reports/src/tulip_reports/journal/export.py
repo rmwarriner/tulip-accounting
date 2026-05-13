@@ -31,6 +31,7 @@ exporting both halves would be technically correct but very noisy).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date as date_type
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -71,12 +72,18 @@ def export_journal(
     household_id: UUID,
     start: date_type | None = None,
     end: date_type | None = None,
+    visible_account_filter: Callable[[str, UUID | None], bool] | None = None,
 ) -> bytes:
     """Render the household's posted transactions as a hledger journal.
 
     Filter:
     - ``start`` / ``end`` bound the transaction date range (inclusive).
     - Pending + voided transactions are always excluded.
+    - ``visible_account_filter(visibility, created_by) → bool`` drops
+      postings on accounts the caller can't see, and skips transactions
+      whose every posting becomes invisible. The router supplies a
+      closure over the request's claims; tests can pass ``None``
+      to see every account (#229).
     """
     from sqlalchemy import select
 
@@ -125,12 +132,6 @@ def export_journal(
     lines.append("")
 
     for tx in transactions:
-        # Header line: date + description.
-        description = tx.description.replace("\n", " ").strip() or "(no description)"
-        if tx.reference:
-            description = f"({tx.reference}) {description}"
-        lines.append(f"{tx.date.isoformat()} {description}")
-
         # Postings: stable order by amount sign (debits first, then credits)
         # so the output reads naturally.
         postings = (
@@ -145,6 +146,29 @@ def export_journal(
             .scalars()
             .all()
         )
+
+        # Apply visibility filter at posting level. If every posting on a
+        # transaction is invisible to the caller, skip the whole tx — its
+        # description and amounts would all be derived from invisible
+        # data (#229).
+        if visible_account_filter is not None:
+            visible_postings = []
+            for p in postings:
+                a = accounts.get(p.account_id)
+                if a is None:
+                    # Orphaned posting — treat as invisible defensively.
+                    continue
+                if visible_account_filter(a.visibility, a.created_by_user_id):
+                    visible_postings.append(p)
+            if not visible_postings:
+                continue
+            postings = visible_postings
+
+        # Header line: date + description.
+        description = tx.description.replace("\n", " ").strip() or "(no description)"
+        if tx.reference:
+            description = f"({tx.reference}) {description}"
+        lines.append(f"{tx.date.isoformat()} {description}")
 
         for posting in postings:
             account = accounts.get(posting.account_id)

@@ -7,6 +7,7 @@ period. Reuses the existing shadow-balance query (the same one
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import date as date_type
@@ -18,6 +19,11 @@ from tulip_reports.engine import get_renderer
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+#: Callable taking (pool_visibility, created_by_user_id) → bool. Same shape
+#: as the account / pool visibility filters in `tulip_api.routers.reports`.
+#: Used to drop private pools the caller can't see (#229).
+VisiblePoolFilter = Callable[[str, "UUID | None"], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +55,14 @@ def build(
     *,
     household_id: UUID,
     as_of: date_type | None = None,
+    visible_pool_filter: VisiblePoolFilter | None = None,
 ) -> EnvelopeStatusData:
-    """List active envelopes with current balance + budget snapshot."""
+    """List active envelopes with current balance + budget snapshot.
+
+    ``visible_pool_filter`` is a callback used to drop private envelopes
+    the caller can't see (#229). The router supplies a closure over the
+    request's claims; tests can pass ``None`` to see every pool.
+    """
     from sqlalchemy import select
 
     from tulip_storage.models import AllocationPool, Envelope, Household, PoolType
@@ -61,7 +73,7 @@ def build(
     household = session.get(Household, household_id)
     assert household is not None  # noqa: S101
 
-    pools = session.execute(
+    raw_pools = session.execute(
         select(AllocationPool, Envelope)
         .join(
             Envelope,
@@ -74,6 +86,11 @@ def build(
             AllocationPool.is_active.is_(True),
         )
     ).all()
+    pools: list[tuple[AllocationPool, Envelope]] = [(p, e) for p, e in raw_pools]
+    if visible_pool_filter is not None:
+        pools = [
+            (p, e) for p, e in pools if visible_pool_filter(p.visibility, p.created_by_user_id)
+        ]
     pool_ids = [p.id for p, _ in pools]
     balances = shadow_repo.balances_for_pools(pool_ids, as_of=effective_as_of)
 
