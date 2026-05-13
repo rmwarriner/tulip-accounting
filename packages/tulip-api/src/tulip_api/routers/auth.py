@@ -420,6 +420,16 @@ def refresh(
 
     # Rotate: revoke this row, then issue a fresh pair.
     row.revoked_at = datetime.now(tz=UTC)
+    AuditLogWriter(session, user.household_id).write(
+        action="auth.refresh",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="session",
+        entity_id=row.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     session.flush()
     return _issue_tokens(session, user, settings, request)
 
@@ -434,6 +444,7 @@ def refresh(
 )
 def logout(
     body: LogoutRequest,
+    request: Request,
     session: Session = Depends(get_session),  # noqa: B008
 ) -> None:
     """Revoke a refresh token. Subsequent uses are rejected."""
@@ -443,6 +454,16 @@ def logout(
     ).scalar_one_or_none()
     if row is not None and row.revoked_at is None:
         row.revoked_at = datetime.now(tz=UTC)
+        AuditLogWriter(session, row.household_id).write(
+            action="auth.logout",
+            actor_kind="user",
+            actor_user_id=row.user_id,
+            entity_type="session",
+            entity_id=row.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
         session.commit()
 
 

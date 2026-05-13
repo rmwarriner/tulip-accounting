@@ -23,7 +23,7 @@ from tulip_api.services.proposal_executor import (
     supported_proposal_kinds,
 )
 from tulip_storage.models import PendingProposal, ProposalCreatorKind, ProposalStatus
-from tulip_storage.repositories import PendingProposalRepository
+from tulip_storage.repositories import AuditLogWriter, PendingProposalRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -92,6 +92,7 @@ def _to_read(row: PendingProposal) -> ProposalRead:
 )
 def create_proposal(
     body: ProposalCreate,
+    request: Request,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ProposalRead:
@@ -112,6 +113,15 @@ def create_proposal(
         created_by_kind=ProposalCreatorKind.USER.value,
         created_by_user_id=claims.user_id,
         ai_invocation_id=None,
+    )
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.create",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=row.id,
+        after={"kind": row.kind, "title": row.title},
+        request_id=_request_uuid(request),
     )
     session.commit()
     log.info(
@@ -198,6 +208,16 @@ async def approve_proposal(
         note=note,
     )
     assert updated is not None  # noqa: S101 — we just got it from the repo
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.approve",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before={"status": ProposalStatus.PENDING.value},
+        after={"status": ProposalStatus.APPROVED.value, "decision_note": note},
+        request_id=_request_uuid(request),
+    )
     session.commit()
     log.info("proposal.approved", proposal_id=str(proposal_id), kind=proposal.kind)
     return _to_read(updated)
@@ -216,6 +236,7 @@ async def approve_proposal(
 )
 def reject_proposal(
     proposal_id: UUID,
+    request: Request,
     body: ProposalDecisionBody | None = None,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
@@ -231,6 +252,7 @@ def reject_proposal(
     ):
         raise ProposalAlreadyDecidedError(proposal.status)
     note = body.note if body is not None else None
+    before_status = proposal.status
     updated = repo.mark_decided(
         proposal_id,
         status=ProposalStatus.REJECTED.value,
@@ -238,6 +260,16 @@ def reject_proposal(
         note=note,
     )
     assert updated is not None  # noqa: S101
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.reject",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before={"status": before_status},
+        after={"status": ProposalStatus.REJECTED.value, "decision_note": note},
+        request_id=_request_uuid(request),
+    )
     session.commit()
     log.info("proposal.rejected", proposal_id=str(proposal_id), kind=proposal.kind)
     return _to_read(updated)

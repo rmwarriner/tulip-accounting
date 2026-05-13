@@ -151,6 +151,47 @@ class TestCreateAndList:
         assert r.status_code == 200
         assert "envelope_budget_update" in r.json()
 
+    def test_create_writes_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """#222: proposal.create lands its own audit_log row."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        env_id = _make_envelope(client, auth_h)
+        _propose_envelope_budget_update(client, auth_h, envelope_id=env_id, new_amount="250.00")
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "proposal.create"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].entity_type == "proposal"
+
+    def test_reject_writes_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """#222: proposal.reject lands an audit_log row."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        env_id = _make_envelope(client, auth_h)
+        proposal = _propose_envelope_budget_update(
+            client, auth_h, envelope_id=env_id, new_amount="250.00"
+        )
+        r = client.post(f"/v1/ai/proposals/{proposal['id']}/reject", headers=auth_h)
+        assert r.status_code == 200
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "proposal.reject"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+
 
 class TestApprove:
     def test_approve_envelope_budget_update_changes_envelope(
