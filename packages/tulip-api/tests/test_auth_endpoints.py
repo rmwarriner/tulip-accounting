@@ -207,6 +207,73 @@ class TestLogin:
         # The new hash must still verify the same password.
         assert verify_password(registered["password"], new_hash)
 
+    def test_login_unknown_email_still_calls_verify_password(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """#221: no-such-email path runs the dummy verify so wall-clock matches single-match."""
+        import tulip_api.routers.auth as auth_router
+
+        calls: list[str] = []
+        original = auth_router.verify_password
+
+        def _counting(plain: str, hashed: str) -> bool:
+            calls.append(hashed)
+            return original(plain, hashed)
+
+        monkeypatch.setattr(auth_router, "verify_password", _counting)
+
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": "no-such-user@example.com", "password": "whatever"},
+        )
+        assert r.status_code == 401
+        assert len(calls) == 1
+        assert calls[0].startswith("$argon2id$")
+
+    def test_login_no_short_circuit_on_duplicate_email(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """#221: with N candidates, all N get verified (no short-circuit).
+
+        Constant-time within "N candidates" — eliminates the matched-first
+        vs matched-last position oracle. The multi-household-count oracle
+        (1 vs 2 verifies) is documented as residual.
+        """
+        r = client.post(
+            "/v1/auth/register",
+            json={
+                "email": registered["email"],
+                "password": "different-password-67890",
+                "display_name": "Other",
+                "household_name": "Other Family",
+            },
+        )
+        assert r.status_code == 201
+
+        import tulip_api.routers.auth as auth_router
+
+        calls: list[str] = []
+        original = auth_router.verify_password
+
+        def _counting(plain: str, hashed: str) -> bool:
+            calls.append(hashed)
+            return original(plain, hashed)
+
+        monkeypatch.setattr(auth_router, "verify_password", _counting)
+
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": registered["password"]},
+        )
+        assert r.status_code == 200
+        # Both candidates verified, despite the first one matching.
+        assert len(calls) == 2
+
     def test_login_does_not_rehash_when_params_unchanged(
         self,
         client: TestClient,
