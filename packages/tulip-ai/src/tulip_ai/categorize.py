@@ -181,7 +181,10 @@ class AICategorizer:
                         model=policy.model,
                         outcome="provider_error",
                         prompt_hash=hash_prompt_payload(payload.to_dict()),
-                        response_text="no api key configured for provider",
+                        # H-1 (#234): gate error-path response_text on log_prompts.
+                        response_text=(
+                            "no api key configured for provider" if policy.log_prompts else None
+                        ),
                     )
                 )
                 if should_commit:
@@ -226,7 +229,7 @@ class AICategorizer:
                         model=policy.model,
                         outcome=gate.outcome,
                         prompt_hash=hash_prompt_payload(body),
-                        response_text=gate.reason[:500],
+                        response_text=gate.reason[:500] if policy.log_prompts else None,
                     )
                 )
                 if should_commit:
@@ -254,7 +257,7 @@ class AICategorizer:
                         model=call_model,
                         outcome="provider_error",
                         prompt_hash=hash_prompt_payload(body),
-                        response_text=str(exc)[:500],
+                        response_text=str(exc)[:500] if policy.log_prompts else None,
                     )
                 )
                 if should_commit:

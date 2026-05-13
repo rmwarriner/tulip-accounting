@@ -157,7 +157,10 @@ class AIProposalCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "suggest_envelope_budget", "envelope_id": str(envelope_id)}
                     ),
-                    response_text="no api key configured for provider",
+                    # H-1 (#234): gate error-path response_text on log_prompts.
+                    response_text=(
+                        "no api key configured for provider" if policy.log_prompts else None
+                    ),
                 )
                 return SuggestionResult(proposal=None, error="no api key")
 
@@ -185,7 +188,7 @@ class AIProposalCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "suggest_envelope_budget", "envelope_id": str(envelope_id)}
                     ),
-                    response_text=gate.reason[:500],
+                    response_text=gate.reason[:500] if policy.log_prompts else None,
                 )
                 return SuggestionResult(proposal=None, error=gate.outcome)
 
@@ -236,7 +239,7 @@ class AIProposalCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload(prompt_body),
-                response_text=str(exc)[:500],
+                response_text=str(exc)[:500] if policy.log_prompts else None,
             )
             return SuggestionResult(proposal=None, error=f"provider error: {exc}")
 
@@ -251,7 +254,9 @@ class AIProposalCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload(prompt_body),
-                response_text=f"unparseable suggestion: {response.text[:300]}",
+                response_text=(
+                    f"unparseable suggestion: {response.text[:300]}" if policy.log_prompts else None
+                ),
                 tokens_in=response.tokens_in,
                 tokens_out=response.tokens_out,
                 cost_estimate_usd=response.cost_estimate_usd,
