@@ -18,6 +18,7 @@ separately in #28.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -141,6 +142,17 @@ class TokenStore:
     def _read_file(self) -> dict[str, str]:
         if self._file_path is None or not self._file_path.is_file():
             return {}
+        # #226: refuse to load if mode is loose. Mirrors the master-key-file
+        # gate in tulip_api.config — operators should keep tokens off shared
+        # filesystems. The JSON backend is documented as CI/tests only.
+        mode = self._file_path.stat().st_mode & 0o777
+        if mode & 0o077:
+            raise TokenStoreError(
+                f"token store {self._file_path} has mode {mode:#o}; "
+                f"group/other access is forbidden. Run `chmod 0600 "
+                f"{self._file_path}` and retry, or migrate to the keyring "
+                "backend (unset TULIP_TOKEN_STORE).",
+            )
         try:
             data = json.loads(self._file_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
@@ -151,7 +163,24 @@ class TokenStore:
         if self._file_path is None:
             return
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file_path.write_text(json.dumps(data), encoding="utf-8")
+        # #226: atomic write + 0600 mode.
+        #   * `os.open(..., O_CREAT|O_EXCL, 0o600)` would race with concurrent
+        #     writers; use the tempfile-in-same-dir + os.replace pattern which
+        #     is atomic on POSIX and tolerates concurrent overwrites.
+        #   * 0o600 enforced via the open() mode + an explicit chmod (umask
+        #     subtraction means open() alone is not sufficient on every host).
+        tmp = self._file_path.with_suffix(self._file_path.suffix + ".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data))
+            os.chmod(tmp, 0o600)  # defensive against permissive umask
+            os.replace(tmp, self._file_path)
+        except Exception:
+            # Best-effort cleanup of the half-written temp file.
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
 
 
 def default_token_store() -> TokenStore:
