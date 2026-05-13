@@ -99,3 +99,51 @@ def test_default_token_store_uses_keyring_when_env_var_unset(
     # Don't actually write to the user's keyring during tests; just check
     # that the store reports keyring mode.
     assert store.is_keyring_backed
+
+
+class TestKeyringUnavailable:
+    """When the OS keyring backend is missing, raise TokenStoreError (#227)."""
+
+    def test_save_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "set_password", _no_keyring)
+        store = TokenStore()  # keyring-backed
+        with pytest.raises(TokenStoreError) as excinfo:
+            store.save("https://api.example.com", _tokens())
+        # Operator guidance must mention how to recover.
+        assert "keyring" in str(excinfo.value).lower()
+
+    def test_load_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "get_password", _no_keyring)
+        store = TokenStore()
+        with pytest.raises(TokenStoreError):
+            store.load("https://api.example.com")
+
+    def test_clear_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "delete_password", _no_keyring)
+        store = TokenStore()
+        with pytest.raises(TokenStoreError):
+            store.clear("https://api.example.com")
