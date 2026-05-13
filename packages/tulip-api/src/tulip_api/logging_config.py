@@ -1,8 +1,17 @@
 """structlog configuration + PII redaction processor.
 
-`configure_logging()` wires structlog to emit JSON to stdout (or whatever
-the root logger's handler is), with timestamp, level, and request-scope
-contextvars (request_id, household_id, user_id).
+`configure_logging()` wires structlog to emit JSON to stdout, with
+timestamp, level, and request-scope contextvars (request_id, household_id,
+user_id). It also installs `_RedactExtraFilter` on the stdlib root logger
+so any caller using `logging.getLogger(...).info("...", extra={...})`
+(config module, dependency SDKs) gets the same whitelist applied to
+`extra=` keys. Native `structlog.get_logger(...)` calls run through the
+`redact_pii` processor directly. See #220 for context.
+
+Residual gap: %-style positional args (e.g. `log.info("user %s", email)`)
+inside the format string are NOT covered — neither pipeline parses the
+formatted message. This affects `uvicorn.access` URL paths with embedded
+UUIDs; documented in `THREAT_MODEL.md` as a Phase-9 concern.
 
 `redact_pii(logger, method_name, event_dict)` is a structlog processor
 that replaces known-sensitive field values with the literal string
@@ -38,6 +47,10 @@ _SENSITIVE_FIELDS: Final[frozenset[str]] = frozenset(
         "notes_encrypted",
         "master_key",
         "master_key_wrapped",
+        # Email is personal data under GDPR Art. 4 §1; threat-model §1.4 + §2
+        # promise it's redacted-by-default. #220 (H-5).
+        "email",
+        "user_email",
     }
 )
 
@@ -74,10 +87,62 @@ def _redact_value(value: object) -> object:
     return value
 
 
+_REDACTOR_INSTALLED_MARKER: Final[str] = "_tulip_stdlib_redactor_installed"
+
+
+def _install_stdlib_redactor() -> None:
+    """Monkeypatch `Logger.makeRecord` so stdlib `extra={...}` keys get redacted.
+
+    Structlog calls are already redacted by the `redact_pii` processor.
+    Stdlib callers — `tulip_api.config`, dependency SDKs, uvicorn — bypass
+    that pipeline. Neither the LogRecord factory (extras land AFTER the
+    factory) nor a Filter on the root logger (Python's filter chain
+    doesn't re-run on propagation from child loggers) catches the case
+    we care about, which is `log.info("...", extra={"password": x})` on
+    a child logger.
+
+    `Logger.makeRecord` is the right chokepoint: it's the method that
+    constructs the LogRecord *and* applies the `extra` dict to it, so
+    redacting after `makeRecord` returns catches both cases. The marker
+    on the wrapper prevents double-installation across repeated
+    `configure_logging` calls.
+
+    Caveat: %-style positional args inside the format string (e.g.
+    `log.info("user %s", email)`) are NOT redacted — the wrapper doesn't
+    know the field name of a positional arg. That residual gap (mostly
+    `uvicorn.access` URL paths with embedded UUIDs) is documented in
+    `THREAT_MODEL.md` as a Phase-9 concern.
+    """
+    if getattr(logging.Logger.makeRecord, _REDACTOR_INSTALLED_MARKER, False):
+        return
+
+    original = logging.Logger.makeRecord
+
+    def _make_record_redacted(
+        self: logging.Logger,
+        *args: Any,  # noqa: ANN401 — passthrough to Logger.makeRecord signature
+        **kwargs: Any,  # noqa: ANN401 — passthrough to Logger.makeRecord signature
+    ) -> logging.LogRecord:
+        record = original(self, *args, **kwargs)
+        for key in list(record.__dict__.keys()):
+            if key in _SENSITIVE_FIELDS:
+                record.__dict__[key] = REDACTED
+        if isinstance(record.args, dict):
+            record.args = {
+                k: (REDACTED if k in _SENSITIVE_FIELDS else v) for k, v in record.args.items()
+            }
+        return record
+
+    setattr(_make_record_redacted, _REDACTOR_INSTALLED_MARKER, True)
+    logging.Logger.makeRecord = _make_record_redacted  # type: ignore[method-assign]
+
+
 def configure_logging(level: int = logging.INFO) -> None:
     """Configure structlog to emit JSON-serialized records.
 
-    Idempotent — calling more than once just rewires the same processors.
+    Also installs a LogRecord factory wrapper so any `extra={...}` payload
+    passed to `logging.getLogger(...).info(...)` gets the same whitelist
+    redaction the structlog pipeline applies (#220 H-6). Idempotent.
     """
     structlog.reset_defaults()
     structlog.configure(
@@ -93,3 +158,4 @@ def configure_logging(level: int = logging.INFO) -> None:
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=False,
     )
+    _install_stdlib_redactor()

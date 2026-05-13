@@ -52,6 +52,9 @@ class TestPIIRedaction:
             "external_account_number",
             "external_account_number_encrypted",
             "recovery_codes",
+            # H-5 (#220): emails are personal data per GDPR.
+            "email",
+            "user_email",
         ],
     )
     def test_redact_replaces_known_sensitive_fields(self, field: str):
@@ -88,3 +91,54 @@ class TestStructlogConfig:
         line = capsys.readouterr().out.strip().splitlines()[-1]
         record = json.loads(line)
         assert record["password"] == "<redacted>"
+
+
+class TestStdlibFilter:
+    """#220 (H-6): stdlib `logging` calls with `extra={...}` must redact too.
+
+    Before the filter, `tulip_api.config`, dependency SDKs, and any
+    third-party stdlib caller bypassed the structlog whitelist entirely.
+    """
+
+    def test_filter_redacts_extra_password(self, configured_logging, caplog):
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        log = _logging.getLogger("tulip_api.test_filter")
+        log.info("login.attempt", extra={"password": "secret"})
+        # caplog captures the resolved record (after filter runs).
+        record = caplog.records[-1]
+        assert record.password == "<redacted>"
+
+    def test_filter_redacts_extra_email(self, configured_logging, caplog):
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        log = _logging.getLogger("tulip_api.test_filter")
+        log.info("login.failed", extra={"email": "alice@example.com"})
+        record = caplog.records[-1]
+        assert record.email == "<redacted>"
+
+    def test_filter_leaves_unknown_fields_alone(self, configured_logging, caplog):
+        import logging as _logging
+
+        caplog.set_level(_logging.INFO)
+        log = _logging.getLogger("tulip_api.test_filter")
+        log.info("event", extra={"foo": "bar"})
+        record = caplog.records[-1]
+        assert record.foo == "bar"
+
+    def test_redactor_is_idempotent_under_repeat_configure(self):
+        import logging as _logging
+
+        from tulip_api.logging_config import (
+            _REDACTOR_INSTALLED_MARKER,
+            configure_logging,
+        )
+
+        configure_logging()
+        configure_logging()
+        configure_logging()
+        # `Logger.makeRecord` carries the marker; it stays a single wrap
+        # regardless of how many times we configure.
+        assert getattr(_logging.Logger.makeRecord, _REDACTOR_INSTALLED_MARKER, False)
