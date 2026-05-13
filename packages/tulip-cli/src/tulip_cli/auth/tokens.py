@@ -25,9 +25,25 @@ from pathlib import Path
 from typing import Final
 
 import keyring
+import keyring.errors
 
 _KEYRING_SERVICE: Final[str] = "tulip-accounting"
 _ENV_TOKEN_STORE: Final[str] = "TULIP_TOKEN_STORE"  # noqa: S105 — env var name, not a credential
+
+
+class TokenStoreError(RuntimeError):
+    """Raised when the token store backend is unusable (e.g. no keyring service).
+
+    The CLI surfaces this with operator guidance rather than the underlying
+    library traceback. See #227.
+    """
+
+
+_KEYRING_GUIDANCE: Final[str] = (
+    "No usable OS keyring service was found. On Linux install "
+    "`libsecret`/`gnome-keyring`; on macOS / Windows the OS provides one. "
+    "For tests only you can set TULIP_TOKEN_STORE to a file path."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +77,11 @@ class TokenStore:
         return self._file_path is None
 
     def save(self, api_url: str, tokens: TokenSet) -> None:
-        """Persist ``tokens`` for ``api_url``, replacing any existing entry."""
+        """Persist ``tokens`` for ``api_url``, replacing any existing entry.
+
+        Raises ``TokenStoreError`` when the keyring backend is unavailable
+        (e.g. headless Linux without `dbus`/`secret-service`).
+        """
         url = _normalize(api_url)
         payload = json.dumps(asdict(tokens))
         if self._file_path is not None:
@@ -69,15 +89,24 @@ class TokenStore:
             data[url] = payload
             self._write_file(data)
         else:
-            keyring.set_password(_KEYRING_SERVICE, url, payload)
+            try:
+                keyring.set_password(_KEYRING_SERVICE, url, payload)
+            except keyring.errors.NoKeyringError as exc:
+                raise TokenStoreError(_KEYRING_GUIDANCE) from exc
 
     def load(self, api_url: str) -> TokenSet | None:
-        """Return tokens for ``api_url`` if any are stored, else ``None``."""
+        """Return tokens for ``api_url`` if any are stored, else ``None``.
+
+        Raises ``TokenStoreError`` when the keyring backend is unavailable.
+        """
         url = _normalize(api_url)
         if self._file_path is not None:
             payload = self._read_file().get(url)
         else:
-            payload = keyring.get_password(_KEYRING_SERVICE, url)
+            try:
+                payload = keyring.get_password(_KEYRING_SERVICE, url)
+            except keyring.errors.NoKeyringError as exc:
+                raise TokenStoreError(_KEYRING_GUIDANCE) from exc
         if not payload:
             return None
         try:
@@ -92,7 +121,10 @@ class TokenStore:
             return None
 
     def clear(self, api_url: str) -> None:
-        """Remove any stored tokens for ``api_url``. Idempotent — no error if absent."""
+        """Remove any stored tokens for ``api_url``. Idempotent — no error if absent.
+
+        Raises ``TokenStoreError`` when the keyring backend is unavailable.
+        """
         url = _normalize(api_url)
         if self._file_path is not None:
             data = self._read_file()
@@ -103,6 +135,8 @@ class TokenStore:
                 keyring.delete_password(_KEYRING_SERVICE, url)
             except keyring.errors.PasswordDeleteError:
                 pass
+            except keyring.errors.NoKeyringError as exc:
+                raise TokenStoreError(_KEYRING_GUIDANCE) from exc
 
     def _read_file(self) -> dict[str, str]:
         if self._file_path is None or not self._file_path.is_file():
