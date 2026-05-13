@@ -25,7 +25,7 @@ from tulip_api.auth.mfa import (
     generate_totp_secret,
     verify_totp_code,
 )
-from tulip_api.auth.passwords import hash_password, verify_password
+from tulip_api.auth.passwords import hash_password, needs_rehash, verify_password
 from tulip_api.auth.recovery_codes import (
     generate_recovery_codes,
     hash_recovery_code,
@@ -222,6 +222,13 @@ def login(
     if user is None:
         log.info("login.failed", email=body.email)
         raise InvalidCredentialsError()
+
+    # Argon2 parameter upgrades: re-hash on next successful password verify.
+    # Must commit here — /login/mfa + /login/recover don't see the plaintext.
+    if needs_rehash(user.password_hash):
+        user.password_hash = hash_password(body.password)
+        session.commit()
+        log.info("user.password_rehashed", user_id=str(user.id))
 
     if user.totp_enrolled_at is not None:
         token = create_mfa_challenge_token(
