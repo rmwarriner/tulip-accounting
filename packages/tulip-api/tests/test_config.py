@@ -37,9 +37,13 @@ class TestMasterKey:
         with patch("tulip_api.config.log") as mock_log:
             s = Settings()
         assert len(s.master_key) == 32
-        mock_log.warning.assert_called_once()
-        msg = mock_log.warning.call_args.args[0].lower()
-        assert "ephemeral" in msg and "master" in msg
+        # The master-key warning fires; JWT may also warn if env-unset.
+        master_warnings = [
+            call
+            for call in mock_log.warning.call_args_list
+            if "master" in call.args[0].lower() and "ephemeral" in call.args[0].lower()
+        ]
+        assert len(master_warnings) == 1
 
     def test_ephemeral_keys_differ_per_construction(self, monkeypatch: pytest.MonkeyPatch):
         # Each construction generates a fresh key — that's what makes it
@@ -129,7 +133,9 @@ class TestMasterKeyFile:
         with patch("tulip_api.config.log") as mock_log:
             s = Settings()
         assert len(s.master_key) == 32
-        mock_log.warning.assert_called_once()
+        # At least one warning fires for the master key. JWT may also warn
+        # if its env var is unset; we don't pin the count.
+        assert mock_log.warning.called
 
 
 class TestMasterKeySource:
@@ -170,3 +176,75 @@ class TestMasterKeySource:
         # Mirrors the resolution order: env wins over file for both
         # the bytes and the source label.
         assert Settings().master_key_source == "env"
+
+
+class TestJwtSecretSource:
+    """#223 M-3: JWT secret source tracking + ephemeral-fallback warning."""
+
+    def test_env_source_when_set(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TULIP_JWT_SECRET", "configured-jwt-secret-value")
+        s = Settings()
+        assert s.jwt_secret_source == "env"
+        assert s.jwt_secret == "configured-jwt-secret-value"
+
+    def test_ephemeral_source_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("TULIP_JWT_SECRET", raising=False)
+        with patch("tulip_api.config.log") as mock_log:
+            s = Settings()
+        assert s.jwt_secret_source == "ephemeral"
+        # Mirrors the master-key fallback: log.warning fires.
+        mock_log.warning.assert_called()
+        # The first call should mention JWT_SECRET in the message.
+        first_warning = mock_log.warning.call_args_list[0].args[0].lower()
+        assert "tulip_jwt_secret" in first_warning
+
+
+class TestDeploymentModeProdRefusal:
+    """#223 M-2 + M-3: TULIP_ENV=prod refuses ephemeral secrets."""
+
+    def test_prod_refuses_ephemeral_master_key(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("TULIP_MASTER_KEY", raising=False)
+        monkeypatch.delenv("TULIP_KEY_FILE", raising=False)
+        monkeypatch.setenv("TULIP_JWT_SECRET", "real")
+        monkeypatch.setenv("TULIP_ENV", "prod")
+        with pytest.raises(RuntimeError, match="ephemeral master key"):
+            Settings()
+
+    def test_prod_refuses_ephemeral_jwt_secret(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TULIP_MASTER_KEY", base64.b64encode(b"\x08" * 32).decode("ascii"))
+        monkeypatch.delenv("TULIP_JWT_SECRET", raising=False)
+        monkeypatch.setenv("TULIP_ENV", "prod")
+        with pytest.raises(RuntimeError, match="ephemeral JWT secret"):
+            Settings()
+
+    def test_prod_with_both_secrets_set_boots(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("TULIP_MASTER_KEY", base64.b64encode(b"\x09" * 32).decode("ascii"))
+        monkeypatch.setenv("TULIP_JWT_SECRET", "real")
+        monkeypatch.setenv("TULIP_ENV", "prod")
+        s = Settings()  # no raise
+        assert s.deployment_mode == "prod"
+
+    def test_dev_mode_allows_ephemeral(self, monkeypatch: pytest.MonkeyPatch):
+        """Dev mode (default) tolerates ephemeral secrets — tests + local dev."""
+        monkeypatch.delenv("TULIP_MASTER_KEY", raising=False)
+        monkeypatch.delenv("TULIP_KEY_FILE", raising=False)
+        monkeypatch.delenv("TULIP_JWT_SECRET", raising=False)
+        monkeypatch.delenv("TULIP_ENV", raising=False)  # defaults to "dev"
+        with patch("tulip_api.config.log"):  # silence the warnings
+            s = Settings()
+        assert s.deployment_mode == "dev"
+
+    def test_unknown_env_value_defaults_to_dev(self, monkeypatch: pytest.MonkeyPatch):
+        """Unrecognised TULIP_ENV values default to dev, not prod (fail-open).
+
+        This is intentional: a typo'd `TULIP_ENV=produciton` shouldn't lock
+        operators out of their own dev environment. The doctor CLI surfaces
+        deployment_mode so any drift is visible.
+        """
+        monkeypatch.setenv("TULIP_ENV", "production-typo")
+        monkeypatch.delenv("TULIP_MASTER_KEY", raising=False)
+        monkeypatch.delenv("TULIP_KEY_FILE", raising=False)
+        monkeypatch.delenv("TULIP_JWT_SECRET", raising=False)
+        with patch("tulip_api.config.log"):
+            s = Settings()
+        assert s.deployment_mode == "dev"

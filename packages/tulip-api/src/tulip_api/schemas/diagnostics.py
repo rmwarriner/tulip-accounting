@@ -43,6 +43,19 @@ class SystemDiagnosticsRead(BaseModel):
             "failure on the CLI side."
         )
     )
+    jwt_secret_source: Literal["env", "ephemeral"] = Field(
+        description=(
+            "Which env path produced the JWT signing secret. ``ephemeral`` "
+            "means TULIP_JWT_SECRET was unset — every restart invalidates "
+            "all outstanding access tokens. Added in #223."
+        )
+    )
+    deployment_mode: Literal["dev", "prod"] = Field(
+        description=(
+            "Value of ``TULIP_ENV``. ``prod`` refuses to boot with any "
+            "ephemeral secret; ``dev`` warns but allows. Added in #223."
+        )
+    )
     attachment_root_writable: bool = Field(
         description=(
             "True iff the configured ``attachment_root`` accepted a probe "

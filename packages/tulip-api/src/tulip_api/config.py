@@ -16,10 +16,44 @@ log = logging.getLogger("tulip_api.config")
 #: Where the master key came from. Surfaced in ``GET /v1/system/diagnostics``
 #: so the doctor CLI can flag ephemeral fallback as a hard failure (#135).
 MasterKeySource = Literal["env", "file", "ephemeral"]
+#: Where the JWT secret came from. Parallels ``MasterKeySource`` (#223).
+JwtSecretSource = Literal["env", "ephemeral"]
+#: Deployment mode. ``prod`` refuses to boot with any ephemeral secret;
+#: ``dev`` warns but allows. Default ``dev`` so existing test + local
+#: workflows are unchanged (#223).
+DeploymentMode = Literal["dev", "prod"]
 
 
 def _default_jwt_secret() -> str:
-    return os.environ.get("TULIP_JWT_SECRET") or secrets.token_urlsafe(48)
+    raw = os.environ.get("TULIP_JWT_SECRET")
+    if raw is not None:
+        return raw
+    # Mirror the master-key warning shape — silent fallback was the #223
+    # M-3 finding: operators forgot to set the env var and lost every
+    # outstanding access token on the next restart with no signal.
+    log.warning(
+        "TULIP_JWT_SECRET not set; generating an ephemeral 48-byte secret. "
+        "Every restart invalidates all outstanding access tokens.",
+    )
+    return secrets.token_urlsafe(48)
+
+
+def _default_jwt_secret_source() -> JwtSecretSource:
+    """Pure inspection of which env path produced the JWT secret."""
+    if os.environ.get("TULIP_JWT_SECRET") is not None:
+        return "env"
+    return "ephemeral"
+
+
+def _default_deployment_mode() -> DeploymentMode:
+    """Read ``TULIP_ENV`` (``dev`` | ``prod``). Default ``dev``.
+
+    Used by :class:`Settings` to gate on ephemeral-secret refusal.
+    """
+    raw = os.environ.get("TULIP_ENV", "dev").strip().lower()
+    if raw in ("prod", "production"):
+        return "prod"
+    return "dev"
 
 
 def _default_db_url() -> str:
@@ -121,13 +155,36 @@ def _default_master_key_source() -> MasterKeySource:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """Read-only runtime settings."""
+    """Read-only runtime settings.
+
+    Boots silently in ``dev`` mode (the default) even when secrets fall
+    back to ephemeral values. In ``prod`` mode (``TULIP_ENV=prod``) the
+    constructor refuses to materialise a Settings instance if either the
+    master key or the JWT secret is ephemeral — see #223 (M-2 + M-3).
+    """
 
     database_url: str = field(default_factory=_default_db_url)
     jwt_secret: str = field(default_factory=_default_jwt_secret)
+    jwt_secret_source: JwtSecretSource = field(default_factory=_default_jwt_secret_source)
     master_key: bytes = field(default_factory=_default_master_key)
     master_key_source: MasterKeySource = field(default_factory=_default_master_key_source)
     attachment_root: Path = field(default_factory=_default_attachment_root)
+    deployment_mode: DeploymentMode = field(default_factory=_default_deployment_mode)
+
+    def __post_init__(self) -> None:
+        """Refuse boot in prod mode when any secret is ephemeral (#223)."""
+        if self.deployment_mode != "prod":
+            return
+        if self.master_key_source == "ephemeral":
+            raise RuntimeError(
+                "TULIP_ENV=prod: refusing to boot with an ephemeral master key. "
+                "Set TULIP_MASTER_KEY or TULIP_KEY_FILE before starting the API.",
+            )
+        if self.jwt_secret_source == "ephemeral":  # noqa: S105 — enum-value compare, not a credential
+            raise RuntimeError(
+                "TULIP_ENV=prod: refusing to boot with an ephemeral JWT secret. "
+                "Set TULIP_JWT_SECRET before starting the API.",
+            )
 
 
 _SINGLETON: Settings | None = None
