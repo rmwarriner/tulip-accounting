@@ -398,13 +398,37 @@ def apply_import(
             ),
         ),
     ] = False,
+    posted: Annotated[
+        bool,
+        typer.Option(
+            "--posted",
+            help=(
+                "Land every promoted line as POSTED instead of PENDING "
+                "(skips the review step). Each line lands committed; "
+                "use `tulip transactions edit` to fix categorizations "
+                "later. Useful when every imported line is already "
+                "cleared by the bank (migration workflows from "
+                "Banktivity, Quicken, GnuCash, etc.)."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Apply a parsed batch: every non-excluded line becomes a PENDING ledger transaction."""
+    """Apply a parsed batch: every non-excluded line becomes a ledger transaction.
+
+    By default, new transactions are PENDING (review queue). Pass
+    ``--posted`` to land them as POSTED directly — useful for migrations
+    where every line is already cleared by the source bank/tool.
+    """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     path = f"/v1/imports/{batch_id}/apply"
+    query: list[str] = []
     if no_categorize:
-        path += "?no_categorize=true"
+        query.append("no_categorize=true")
+    if posted:
+        query.append("as_posted=true")
+    if query:
+        path += "?" + "&".join(query)
     try:
         with _client(config, as_json=as_json) as client:
             response = client.post(path, authenticated=True)
@@ -416,9 +440,10 @@ def apply_import(
         sys.stdout.write(response.text + "\n")
         return
     body = response.json()
+    landed_as = "POSTED" if posted else "PENDING"
     typer.echo(
         f"Applied batch {body['batch_id']}: created {body['created_count']} "
-        f"PENDING transactions, skipped {body['skipped_count']} lines."
+        f"{landed_as} transactions, skipped {body['skipped_count']} lines."
     )
 
 

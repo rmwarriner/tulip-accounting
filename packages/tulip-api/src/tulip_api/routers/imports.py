@@ -397,15 +397,30 @@ async def apply_import(
             "migrations from another accounting tool."
         ),
     ),
+    as_posted: bool = Query(
+        default=False,
+        description=(
+            "Issue #210: if true, each promoted line lands as POSTED "
+            "(committed-but-unreconciled) instead of the default PENDING "
+            "(review queue). Useful for migration workflows from other "
+            "accounting tools where every imported line is already "
+            "cleared by the bank. The double-entry balance invariant "
+            "still holds — bank-side + categorizer-side postings sum "
+            "to zero per currency."
+        ),
+    ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchApplyResponse:
-    """Promote every non-excluded line in the batch to a PENDING ledger tx.
+    """Promote every non-excluded line in the batch to a ledger transaction.
 
-    Per ADR-0004 §Q4. Idempotent at the batch level: re-applying an
-    already-applied batch returns ``import.already_applied`` (409). To
-    promote a specific line individually, see
-    ``POST /v1/imports/{batch_id}/lines/{line_id}/promote``.
+    Per ADR-0004 §Q4. The new transactions are PENDING by default; pass
+    ``?as_posted=true`` (issue #210) to land them as POSTED for direct
+    migration workflows.
+
+    Idempotent at the batch level: re-applying an already-applied batch
+    returns ``import.already_applied`` (409). To promote a specific line
+    individually, see ``POST /v1/imports/{batch_id}/lines/{line_id}/promote``.
     """
     batch_repo = ImportBatchRepository(session, claims.household_id)
     batch = batch_repo.get(batch_id)
@@ -420,6 +435,7 @@ async def apply_import(
             categorizer=get_categorizer(),
             actor_user_id=claims.user_id,
             no_categorize=no_categorize,
+            as_posted=as_posted,
         )
     except BatchAlreadyAppliedError as exc:
         raise ImportAlreadyAppliedError(batch_id=str(batch_id)) from exc
@@ -436,6 +452,8 @@ async def apply_import(
             "created_count": result.created_count,
             "skipped_count": result.skipped_count,
             "transaction_ids": [str(t) for t in result.transaction_ids],
+            "no_categorize": no_categorize,
+            "as_posted": as_posted,
         },
         request_id=_request_uuid(request),
     )

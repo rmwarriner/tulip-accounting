@@ -154,14 +154,23 @@ async def promote_statement_line(
     categorizer: Categorizer,
     actor_user_id: UUID | None,
     no_categorize: bool = False,
+    as_posted: bool = False,
 ) -> Transaction:
-    """Promote one statement line into a PENDING ledger Transaction.
+    """Promote one statement line into a ledger Transaction.
 
     ``no_categorize=True`` skips the categorizer entirely and routes the
     other-side posting to the household's ``Imbalance:Unknown`` account
     for the bank account's currency (auto-created on first use). Used
     for bulk migrations from other accounting tools where the user
     wants to assign categories manually after import.
+
+    ``as_posted=True`` lands the new transaction as ``POSTED`` instead
+    of the default ``PENDING`` (issue #210). The bank-side + other-side
+    postings already sum to zero per currency, so the POSTED balance
+    invariant holds. Useful for bulk migrations where every imported
+    line is already cleared by the source bank/tool; the user can fix
+    categorization later via ``tulip transactions edit`` (which
+    transparently void+recreates POSTED transactions).
 
     Raises:
         LineExcludedError: ``line.is_excluded`` is True (caller should
@@ -208,6 +217,7 @@ async def promote_statement_line(
 
     bank_amount = Money(line.amount, line.currency)
     other_amount = Money(-line.amount, line.currency)
+    tx_status = DomainTxStatus.POSTED if as_posted else DomainTxStatus.PENDING
     domain_tx = DomainTransaction(
         id=uuid4(),
         household_id=household_id,
@@ -217,7 +227,7 @@ async def promote_statement_line(
             DomainPosting(id=uuid4(), account_id=bank_account.id, amount=bank_amount),
             DomainPosting(id=uuid4(), account_id=other_account.id, amount=other_amount),
         ),
-        status=DomainTxStatus.PENDING,
+        status=tx_status,
         created_by_user_id=actor_user_id,
     )
     tx = TransactionRepository(session, household_id).save_balanced(
@@ -235,12 +245,18 @@ async def apply_batch(
     categorizer: Categorizer,
     actor_user_id: UUID | None,
     no_categorize: bool = False,
+    as_posted: bool = False,
 ) -> ApplyResult:
     """Promote every applicable line in ``batch``, then mark batch APPLIED.
 
     "Applicable" = not excluded and not already promoted. Excluded and
     already-promoted lines are silently skipped (counted in
     ``skipped_count``).
+
+    ``as_posted=True`` (issue #210) lands every promoted line as
+    ``POSTED`` instead of the default ``PENDING`` — bypassing the
+    review step for migration workflows where the imported lines are
+    already cleared by the source bank/tool.
 
     Idempotency is at the batch level: a batch in ``APPLIED`` state
     cannot be re-applied (raises). The caller can re-promote individual
@@ -274,6 +290,7 @@ async def apply_batch(
             categorizer=categorizer,
             actor_user_id=actor_user_id,
             no_categorize=no_categorize,
+            as_posted=as_posted,
         )
         transaction_ids.append(tx.id)
 
