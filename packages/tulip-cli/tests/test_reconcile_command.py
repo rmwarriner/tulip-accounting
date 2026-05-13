@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import httpx
 import pytest
+
+# Strip ANSI styling so substring assertions on CLI output don't break
+# when Rich line-wraps narrower in CI than in a normal terminal.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 _PASSWORD = "long-enough-password"
 _OFX_FIXTURES = (
@@ -26,6 +31,10 @@ def _run_cli(
     *args: str, api_url: str, extra_env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
+    # Give Rich a wide enough terminal that Typer's usage / error panels
+    # don't truncate mid-word — CI runs at a narrower default and was
+    # silently losing the assertion-target substring.
+    env.setdefault("COLUMNS", "200")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -662,7 +671,8 @@ def test_reconcile_start_invalid_date_returns_2(session_setup: dict[str, str]) -
         api_url=session_setup["api_url"],
     )
     assert result.returncode != 0
-    assert "statement-date" in (result.stdout + result.stderr).lower()
+    combined = _ANSI_RE.sub("", (result.stdout + result.stderr)).lower()
+    assert "statement-date" in combined or "statement_date" in combined
 
 
 @pytest.mark.integration
