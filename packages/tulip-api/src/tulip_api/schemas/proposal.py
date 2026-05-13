@@ -6,16 +6,26 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProposalCreate(BaseModel):
     """Body for ``POST /v1/ai/proposals``.
 
-    Used by both the AI flow (P6.4.b — sets ``ai_invocation_id``) and a
-    human-driven manual-propose path (CLI / direct API call). The kind
-    must be supported by an executor; the payload is kind-specific JSON.
+    User-driven manual-propose path only — AI-originated proposals are
+    written via ``PendingProposalRepository.create`` from inside the
+    capability (e.g. ``/v1/ai/proposals/suggest/budget``), never through
+    this HTTP body.
+
+    ``ai_invocation_id`` is deliberately not accepted here: it's a
+    server-side link from a proposal to the audit row that produced it,
+    and accepting it from the client lets a user spoof
+    ``created_by_kind=ai_agent`` on a proposal of their own making (#218).
+    ``extra="forbid"`` rejects unknown fields loudly so older clients
+    that send ``ai_invocation_id`` get a 422 rather than silent drop.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     kind: str = Field(
         min_length=1,
@@ -25,7 +35,6 @@ class ProposalCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     payload: dict[str, Any]
     rationale: str = ""
-    ai_invocation_id: UUID | None = None
 
 
 class ProposalRead(BaseModel):

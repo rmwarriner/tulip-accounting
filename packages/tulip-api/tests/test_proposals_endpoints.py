@@ -89,11 +89,13 @@ class TestCreateAndList:
         assert body["status"] == "pending"
         assert body["ai_invocation_id"] is None
 
-    def test_create_ai_proposal_sets_creator_kind_ai_agent(
+    def test_create_rejects_ai_invocation_id_field(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
+        """#218: clients cannot spoof `created_by_kind=ai_agent` by supplying
+        `ai_invocation_id` in the create body. The field is now schema-rejected.
+        """
         env_id = _make_envelope(client, auth_h)
-        # Passing ai_invocation_id flips creator_kind to ai_agent.
         r = client.post(
             "/v1/ai/proposals",
             headers=auth_h,
@@ -104,8 +106,19 @@ class TestCreateAndList:
                 "ai_invocation_id": str(uuid4()),
             },
         )
-        assert r.status_code == 201
-        assert r.json()["created_by_kind"] == "ai_agent"
+        # extra="forbid" on ProposalCreate → 422 validation.failed.
+        assert_problem(r, code="validation.failed", status=422)
+
+    def test_create_always_sets_creator_kind_user(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """The HTTP create body is user-only; the AI flow writes via the repo directly."""
+        env_id = _make_envelope(client, auth_h)
+        body = _propose_envelope_budget_update(
+            client, auth_h, envelope_id=env_id, new_amount="200.00"
+        )
+        assert body["created_by_kind"] == "user"
+        assert body["ai_invocation_id"] is None
 
     def test_list_filters_to_pending_by_default(
         self, client: TestClient, auth_h: dict[str, str]
@@ -170,20 +183,33 @@ class TestApprove:
         auth_h: dict[str, str],
         household_id: UUID,
     ) -> None:
-        """The locked rule from ARCHITECTURE.md §6.2 / THREAT_MODEL §5.3."""
+        """The locked rule from ARCHITECTURE.md §6.2 / THREAT_MODEL §5.3.
+
+        Per #218, AI-originated proposals can no longer be seeded via the
+        HTTP create endpoint (clients can't spoof ai_agent). Seed via the
+        repository directly — same path the SuggestBudget endpoint uses
+        in production.
+        """
+        from tulip_api.deps import get_session
+        from tulip_storage.models import ProposalCreatorKind
+        from tulip_storage.repositories import PendingProposalRepository
+
         env_id = _make_envelope(client, auth_h, budget_amount="100.00")
-        # Create AI-flavoured proposal.
-        r = client.post(
-            "/v1/ai/proposals",
-            headers=auth_h,
-            json={
-                "kind": "envelope_budget_update",
-                "title": "AI-suggested",
-                "payload": {"envelope_id": env_id, "new_budget_amount": "175.00"},
-                "ai_invocation_id": str(uuid4()),
-            },
-        )
-        proposal_id = r.json()["id"]
+        overrides = client.app.dependency_overrides
+        session_factory = overrides[get_session]
+        with next(session_factory()) as seed_session:
+            row = PendingProposalRepository(seed_session, household_id).create(
+                kind="envelope_budget_update",
+                title="AI-suggested",
+                payload={"envelope_id": env_id, "new_budget_amount": "175.00"},
+                rationale="",
+                created_by_kind=ProposalCreatorKind.AI_AGENT.value,
+                created_by_user_id=None,
+                ai_invocation_id=uuid4(),
+            )
+            seed_session.commit()
+            proposal_id = str(row.id)
+
         client.post(f"/v1/ai/proposals/{proposal_id}/approve", headers=auth_h).raise_for_status()
 
         # Inspect audit_log via the test session.
