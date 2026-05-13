@@ -294,8 +294,12 @@ jobs:
       # fails on initial commits because it tries to diff <root-commit>^..HEAD
       # (the parent of the root commit doesn't exist). The official Docker
       # image is the upstream-recommended invocation and works on any history.
+      # Pinned to match `.pre-commit-config.yaml`; bump both together (#228).
+      # Older v8.22.1 fails with "dubious ownership" on newer runner images
+      # (workspace owned by runner uid, container runs as root) — current
+      # v8.30+ trusts the workspace by default.
       - name: gitleaks
-        uses: docker://zricethezav/gitleaks:latest
+        uses: docker://zricethezav/gitleaks:v8.30.1
         with:
           args: detect --source=/github/workspace --redact --verbose --no-banner
 
