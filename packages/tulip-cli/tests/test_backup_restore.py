@@ -277,6 +277,97 @@ class TestRoundTrip:
         assert manifest.alembic_head == "aaaa1111"
         assert manifest.tulip_version == "0.1.0"
 
+
+class TestPathTraversalDefence:
+    """#217: malicious attachment members must not escape attachment_root."""
+
+    def _build_malicious_backup(
+        self,
+        tmp_path: Path,
+        seeded_db: Path,
+        attachment_root: Path,
+        master_key: bytes,
+        bad_member_name: str,
+    ) -> Path:
+        """Build a backup tarball with one rogue attachment member name."""
+        # Start with a legitimate backup, then re-pack the tarball injecting
+        # a traversal-shaped attachment member.
+        clean_path = tmp_path / "clean.tar.gz"
+        with clean_path.open("wb") as f:
+            write_backup(
+                db_path=seeded_db,
+                attachment_root=attachment_root,
+                master_key=master_key,
+                tulip_version="0.1.0",
+                out=f,
+            )
+
+        evil_path = tmp_path / "evil.tar.gz"
+        with (
+            tarfile.open(clean_path, "r:gz") as src,
+            tarfile.open(evil_path, "w:gz") as dst,
+        ):
+            for m in src.getmembers():
+                f_in = src.extractfile(m)
+                dst.addfile(m, fileobj=f_in)
+            # Append the rogue file.
+            escape_info = tarfile.TarInfo(name=bad_member_name)
+            escape_info.size = 5
+            import io as _io
+
+            dst.addfile(escape_info, fileobj=_io.BytesIO(b"pwned"))
+        return evil_path
+
+    def test_restore_rejects_dotdot_traversal_in_attachment_member(
+        self, tmp_path: Path, seeded_db: Path, attachment_root: Path
+    ):
+        master_key = b"\x0c" * 32
+        evil = self._build_malicious_backup(
+            tmp_path,
+            seeded_db,
+            attachment_root,
+            master_key,
+            bad_member_name="attachments/../../escape.bin",
+        )
+        # Sentinel file that must NOT be overwritten by the restore.
+        canary = tmp_path / "escape.bin"
+        assert not canary.exists()
+
+        with pytest.raises(RestoreError, match="path traversal"):
+            restore_backup(
+                in_path=evil,
+                db_path=tmp_path / "restored.db",
+                attachment_root=tmp_path / "restored-attachments",
+                master_key=master_key,
+                current_alembic_head="aaaa1111",
+                force=False,
+            )
+        # Confirm nothing wrote outside the attachment root.
+        assert not canary.exists()
+
+    def test_restore_rejects_absolute_path_in_attachment_member(
+        self, tmp_path: Path, seeded_db: Path, attachment_root: Path
+    ):
+        master_key = b"\x0d" * 32
+        evil = self._build_malicious_backup(
+            tmp_path,
+            seeded_db,
+            attachment_root,
+            master_key,
+            # An absolute path inside the attachments/ prefix gives stripped
+            # ='/tmp/...' after lstrip-prefix.
+            bad_member_name="attachments//etc/cron.d/evil",
+        )
+        with pytest.raises(RestoreError, match="path traversal"):
+            restore_backup(
+                in_path=evil,
+                db_path=tmp_path / "restored.db",
+                attachment_root=tmp_path / "restored-attachments",
+                master_key=master_key,
+                current_alembic_head="aaaa1111",
+                force=False,
+            )
+
     def test_format_version_too_new_refused(self, tmp_path: Path):
         # Build a tarball with a manifest whose format_version is FORMAT_VERSION+1.
         backup_path = tmp_path / "future.tar.gz"
