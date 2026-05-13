@@ -227,6 +227,7 @@ async def approve_proposal(
     "/{proposal_id}/reject",
     response_model=ProposalRead,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("proposal.not_found"),
