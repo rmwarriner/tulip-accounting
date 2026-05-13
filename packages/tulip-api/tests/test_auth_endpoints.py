@@ -167,6 +167,78 @@ class TestLogin:
         assert_problem(r, code="auth.invalid_credentials", status=401)
         assert r.headers["www-authenticate"] == "Bearer"
 
+    def test_login_rehashes_password_when_params_changed(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """When argon2 params are tuned, the next successful login re-hashes (issue #224)."""
+        from sqlalchemy import select
+
+        import tulip_api.routers.auth as auth_router
+        from tulip_api.auth.passwords import verify_password
+        from tulip_storage.models import User
+
+        with session_maker() as s:
+            original_hash = (
+                s.execute(select(User).where(User.email == registered["email"]))
+                .scalar_one()
+                .password_hash
+            )
+
+        # Simulate "argon2 params bumped": force needs_rehash to fire.
+        monkeypatch.setattr(auth_router, "needs_rehash", lambda _h: True)
+
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": registered["password"]},
+        )
+        assert r.status_code == 200
+
+        with session_maker() as s:
+            new_hash = (
+                s.execute(select(User).where(User.email == registered["email"]))
+                .scalar_one()
+                .password_hash
+            )
+        assert new_hash != original_hash
+        # The new hash must still verify the same password.
+        assert verify_password(registered["password"], new_hash)
+
+    def test_login_does_not_rehash_when_params_unchanged(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker,
+    ):
+        """Default case: argon2 params match, hash is untouched on login."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import User
+
+        with session_maker() as s:
+            original_hash = (
+                s.execute(select(User).where(User.email == registered["email"]))
+                .scalar_one()
+                .password_hash
+            )
+
+        r = client.post(
+            "/v1/auth/login",
+            json={"email": registered["email"], "password": registered["password"]},
+        )
+        assert r.status_code == 200
+
+        with session_maker() as s:
+            new_hash = (
+                s.execute(select(User).where(User.email == registered["email"]))
+                .scalar_one()
+                .password_hash
+            )
+        assert new_hash == original_hash
+
 
 class TestRefresh:
     def test_rotates_refresh_token(self, client: TestClient, registered: dict[str, str]):
