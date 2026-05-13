@@ -100,6 +100,21 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 log = structlog.get_logger("tulip_api.auth")
 
+# A precomputed argon2 hash used only to make the no-such-email login path
+# pay roughly the same wall-clock as a single-match path (#221). Lazily
+# initialised so import-time stays cheap.
+_TIMING_DEFENSE_DUMMY_HASH: str | None = None
+
+
+def _timing_defense_dummy_hash() -> str:
+    """Return a stable argon2 hash for the timing-defense dummy verify."""
+    global _TIMING_DEFENSE_DUMMY_HASH
+    if _TIMING_DEFENSE_DUMMY_HASH is None:
+        # Hash of a constant string. The plaintext is never sent; this is
+        # consumed only by verify_password() to spend argon2 cost.
+        _TIMING_DEFENSE_DUMMY_HASH = hash_password("tulip-timing-defense-dummy")
+    return _TIMING_DEFENSE_DUMMY_HASH
+
 
 @router.post(
     "/register",
@@ -217,9 +232,24 @@ def login(
     # email and pick the one whose password matches. Collisions across
     # households + matching passwords are extremely unlikely; if it ever
     # happens, we just sign in as the first match.
+    #
+    # #221 timing-oracle defense: iterate ALL candidates without short-
+    # circuit so wall-clock doesn't distinguish "matched first" from
+    # "matched last." When there are zero candidates, run one dummy
+    # argon2 verify so the no-such-email response takes ~argon2 time too.
+    # This still leaks multi-household-count (N candidates ⇒ N verifies),
+    # but eliminates the existence + position oracles. Full defense would
+    # require padding to a fixed verify-count or making emails globally
+    # unique — both deferred decisions.
     candidates = session.execute(select(User).where(User.email == body.email)).scalars().all()
-    user = next((u for u in candidates if verify_password(body.password, u.password_hash)), None)
+    user: User | None = None
+    for candidate in candidates:
+        if verify_password(body.password, candidate.password_hash) and user is None:
+            user = candidate
     if user is None:
+        if not candidates:
+            # Force the no-such-email path to pay ~argon2 cost too.
+            verify_password(body.password, _timing_defense_dummy_hash())
         log.info("login.failed", email=body.email)
         raise InvalidCredentialsError()
 
