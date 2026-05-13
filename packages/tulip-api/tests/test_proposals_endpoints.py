@@ -232,13 +232,29 @@ class TestApprove:
         in production.
         """
         from tulip_api.deps import get_session
-        from tulip_storage.models import ProposalCreatorKind
+        from tulip_storage.models import AIInvocation, ProposalCreatorKind
         from tulip_storage.repositories import PendingProposalRepository
 
         env_id = _make_envelope(client, auth_h, budget_amount="100.00")
         overrides = client.app.dependency_overrides
         session_factory = overrides[get_session]
         with next(session_factory()) as seed_session:
+            # The composite FK (#231 / M-21) requires ai_invocation_id to
+            # reference a real ai_invocations row in the same household,
+            # so seed one alongside the proposal.
+            invocation_id = uuid4()
+            seed_session.add(
+                AIInvocation(
+                    household_id=household_id,
+                    id=invocation_id,
+                    capability="agentic",
+                    policy_resolved="permissive",
+                    profile="default",
+                    outcome="success",
+                    prompt_hash=b"\x00" * 32,
+                )
+            )
+            seed_session.flush()
             row = PendingProposalRepository(seed_session, household_id).create(
                 kind="envelope_budget_update",
                 title="AI-suggested",
@@ -246,7 +262,7 @@ class TestApprove:
                 rationale="",
                 created_by_kind=ProposalCreatorKind.AI_AGENT.value,
                 created_by_user_id=None,
-                ai_invocation_id=uuid4(),
+                ai_invocation_id=invocation_id,
             )
             seed_session.commit()
             proposal_id = str(row.id)

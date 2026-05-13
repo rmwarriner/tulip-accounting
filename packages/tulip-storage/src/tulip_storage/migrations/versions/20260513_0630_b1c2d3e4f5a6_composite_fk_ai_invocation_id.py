@@ -12,7 +12,7 @@ if the underlying invocation is purged; the audit chain weakens but the
 business object survives.
 
 Revision ID: b1c2d3e4f5a6
-Revises: a7d4f1b9e8c2
+Revises: e8b5c2a9d1f4
 Create Date: 2026-05-13 06:30:00.000000+00:00
 """
 
@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "b1c2d3e4f5a6"
-down_revision: str | None = "a7d4f1b9e8c2"
+down_revision: str | None = "e8b5c2a9d1f4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
