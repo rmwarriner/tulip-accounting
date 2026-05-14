@@ -161,19 +161,25 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     undocumented response, or the documented schema doesn't actually
     describe what comes back. Both are real bugs.
     """
-    # Path-collision skip: a static path under /v1/imports/ shadows the
-    # parameterised GET /v1/imports/{batch_id} (and the profiles variant)
-    # for any non-declared method. Schemathesis fuzzes e.g.
-    # GET /v1/imports/multi-account expecting 405 (only POST is documented
-    # there), but `multi-account` is a syntactically valid {batch_id}
-    # value so it routes to get_import_batch and 401s on auth first. The
-    # collision is harmless — batch ids are UUIDs and profile names like
-    # `import` / `multi-account` would be confusing regardless — but
-    # schemathesis can't tell. Skip non-POST methods on the static paths.
-    _STATIC_IMPORT_PATHS = ("/v1/imports/profiles/import", "/v1/imports/multi-account")
-    if str(case.path) in _STATIC_IMPORT_PATHS and case.method.upper() != "POST":
+    # Path-collision skip: a static path segment is syntactically a valid
+    # value for a parameterised sibling, so FastAPI routes an
+    # undocumented-method probe to that sibling instead of returning 405,
+    # and schemathesis can't tell the difference. Examples:
+    #   - GET /v1/imports/multi-account → routes to GET /v1/imports/{batch_id}
+    #     (`multi-account` is a valid {batch_id}) → 401 on auth, not 405.
+    #   - DELETE /v1/ai/proposals/kinds → routes to DELETE
+    #     /v1/ai/proposals/{proposal_id} (#240) → 422 (bad UUID), not 405.
+    # Each collision is harmless. Map every shadowed static path to the one
+    # method it actually documents; skip schemathesis probes of the rest.
+    _SHADOWED_STATIC_PATHS = {
+        "/v1/imports/profiles/import": "POST",
+        "/v1/imports/multi-account": "POST",
+        "/v1/ai/proposals/kinds": "GET",
+    }
+    documented_method = _SHADOWED_STATIC_PATHS.get(str(case.path))
+    if documented_method is not None and case.method.upper() != documented_method:
         pytest.skip(
-            "path-collision: non-POST on a static /v1/imports/* path routes to "
+            "path-collision: an undocumented method on a static path routes to "
             "a parameterised sibling; harmless — see comment."
         )
     case.call_and_validate()

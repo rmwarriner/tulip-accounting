@@ -65,6 +65,23 @@ class ProposalAlreadyDecidedError(TulipProblem):
         )
 
 
+class ProposalNotDeletableError(TulipProblem):
+    """A delete was attempted on a proposal that is not REJECTED."""
+
+    def __init__(self, current_status: str) -> None:
+        """Build the proposal.not_deletable problem (#240)."""
+        super().__init__(
+            code="proposal.not_deletable",
+            title="Proposal not deletable",
+            status=409,
+            detail=(
+                f"Proposal is in status {current_status!r}; only rejected "
+                "proposals can be hard-deleted. Approved proposals stay for "
+                "audit-chain integrity; pending proposals must be rejected first."
+            ),
+        )
+
+
 def _request_uuid(request: Request) -> UUID | None:
     rid = request.headers.get("x-request-id")
     if rid:
@@ -73,6 +90,16 @@ def _request_uuid(request: Request) -> UUID | None:
         except ValueError:
             return None
     return None
+
+
+def _ai_invocation_id_str(proposal: PendingProposal) -> str | None:
+    """Stringify a proposal's ai_invocation_id for audit-row metadata (#240).
+
+    Carried on every ``proposal.*`` audit row so the chain back to the
+    originating ``ai_invocations`` row is queryable; ``None`` for
+    user-originated proposals.
+    """
+    return str(proposal.ai_invocation_id) if proposal.ai_invocation_id else None
 
 
 def _to_read(row: PendingProposal) -> ProposalRead:
@@ -122,6 +149,7 @@ def create_proposal(
         entity_id=row.id,
         after={"kind": row.kind, "title": row.title},
         request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(row)},
     )
     session.commit()
     log.info(
@@ -217,6 +245,7 @@ async def approve_proposal(
         before={"status": ProposalStatus.PENDING.value},
         after={"status": ProposalStatus.APPROVED.value, "decision_note": note},
         request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(proposal)},
     )
     session.commit()
     log.info("proposal.approved", proposal_id=str(proposal_id), kind=proposal.kind)
@@ -270,10 +299,59 @@ def reject_proposal(
         before={"status": before_status},
         after={"status": ProposalStatus.REJECTED.value, "decision_note": note},
         request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(proposal)},
     )
     session.commit()
     log.info("proposal.rejected", proposal_id=str(proposal_id), kind=proposal.kind)
     return _to_read(updated)
+
+
+@router.delete(
+    "/{proposal_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("proposal.not_found"),
+        409: problem_response("proposal.not_deletable"),
+    },
+)
+def delete_proposal(
+    proposal_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Hard-delete a REJECTED proposal (admin-only, #240).
+
+    Only rejected proposals can be removed — an AI hallucination baked
+    into a rejected proposal's payload / rationale / title should be
+    erasable. Approved proposals stay (audit-chain integrity); pending
+    proposals must be rejected first. The deletion itself is audited.
+    """
+    repo = PendingProposalRepository(session, claims.household_id)
+    proposal = repo.get(proposal_id)
+    if proposal is None:
+        raise ProposalNotFoundError()
+    if proposal.status != ProposalStatus.REJECTED.value:
+        raise ProposalNotDeletableError(proposal.status)
+
+    before = {"status": proposal.status, "kind": proposal.kind, "title": proposal.title}
+    ai_invocation_id = _ai_invocation_id_str(proposal)
+    repo.delete(proposal_id)
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.delete",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before=before,
+        after=None,
+        request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": ai_invocation_id},
+    )
+    session.commit()
+    log.info("proposal.deleted", proposal_id=str(proposal_id), kind=before["kind"])
 
 
 @router.get(

@@ -77,6 +77,54 @@ def _propose_envelope_budget_update(
     return dict(r.json())
 
 
+def _seed_ai_proposal(
+    client: TestClient,
+    household_id: UUID,
+    *,
+    envelope_id: str,
+    new_amount: str = "175.00",
+) -> tuple[str, str]:
+    """Seed an AI-created proposal + its ai_invocations row via the repo.
+
+    The HTTP create endpoint is user-only (#218); AI proposals are
+    written by the suggest endpoint, which needs a live adapter. For
+    audit-chain tests we seed the same rows that path produces. The
+    composite FK (#231) requires ai_invocation_id to reference a real
+    ai_invocations row in the same household. Returns
+    ``(proposal_id, ai_invocation_id)``.
+    """
+    from tulip_api.deps import get_session
+    from tulip_storage.models import AIInvocation, ProposalCreatorKind
+    from tulip_storage.repositories import PendingProposalRepository
+
+    session_factory = client.app.dependency_overrides[get_session]
+    with next(session_factory()) as s:
+        invocation_id = uuid4()
+        s.add(
+            AIInvocation(
+                household_id=household_id,
+                id=invocation_id,
+                capability="agentic",
+                policy_resolved="permissive",
+                profile="default",
+                outcome="success",
+                prompt_hash=b"\x00" * 32,
+            )
+        )
+        s.flush()
+        row = PendingProposalRepository(s, household_id).create(
+            kind="envelope_budget_update",
+            title="AI-suggested",
+            payload={"envelope_id": envelope_id, "new_budget_amount": new_amount},
+            rationale="",
+            created_by_kind=ProposalCreatorKind.AI_AGENT.value,
+            created_by_user_id=None,
+            ai_invocation_id=invocation_id,
+        )
+        s.commit()
+        return str(row.id), str(invocation_id)
+
+
 class TestCreateAndList:
     def test_create_user_proposal_sets_creator_kind_user(
         self, client: TestClient, auth_h: dict[str, str]
@@ -223,62 +271,25 @@ class TestApprove:
         client: TestClient,
         auth_h: dict[str, str],
         household_id: UUID,
+        session_maker,
     ) -> None:
         """The locked rule from ARCHITECTURE.md §6.2 / THREAT_MODEL §5.3.
 
-        Per #218, AI-originated proposals can no longer be seeded via the
-        HTTP create endpoint (clients can't spoof ai_agent). Seed via the
-        repository directly — same path the SuggestBudget endpoint uses
-        in production.
+        The executor's audit row carries actor_kind=ai_agent and links
+        back to both the originating proposal and — per #240 — its
+        ai_invocation_id, for chain integrity.
         """
-        from tulip_api.deps import get_session
-        from tulip_storage.models import AIInvocation, ProposalCreatorKind
-        from tulip_storage.repositories import PendingProposalRepository
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
 
         env_id = _make_envelope(client, auth_h, budget_amount="100.00")
-        overrides = client.app.dependency_overrides
-        session_factory = overrides[get_session]
-        with next(session_factory()) as seed_session:
-            # The composite FK (#231 / M-21) requires ai_invocation_id to
-            # reference a real ai_invocations row in the same household,
-            # so seed one alongside the proposal.
-            invocation_id = uuid4()
-            seed_session.add(
-                AIInvocation(
-                    household_id=household_id,
-                    id=invocation_id,
-                    capability="agentic",
-                    policy_resolved="permissive",
-                    profile="default",
-                    outcome="success",
-                    prompt_hash=b"\x00" * 32,
-                )
-            )
-            seed_session.flush()
-            row = PendingProposalRepository(seed_session, household_id).create(
-                kind="envelope_budget_update",
-                title="AI-suggested",
-                payload={"envelope_id": env_id, "new_budget_amount": "175.00"},
-                rationale="",
-                created_by_kind=ProposalCreatorKind.AI_AGENT.value,
-                created_by_user_id=None,
-                ai_invocation_id=invocation_id,
-            )
-            seed_session.commit()
-            proposal_id = str(row.id)
+        proposal_id, invocation_id = _seed_ai_proposal(client, household_id, envelope_id=env_id)
 
         client.post(f"/v1/ai/proposals/{proposal_id}/approve", headers=auth_h).raise_for_status()
 
-        # Inspect audit_log via the test session.
-        from tulip_api.deps import get_session
-        from tulip_storage.models import AuditLog
-
-        overrides = client.app.dependency_overrides
-        session_factory = overrides[get_session]
-        with next(session_factory()) as session:
-            from sqlalchemy import select
-
-            rows = (
+        with session_maker() as session:
+            rows = list(
                 session.execute(
                     select(AuditLog).where(
                         AuditLog.entity_type == "envelope",
@@ -288,8 +299,30 @@ class TestApprove:
                 .scalars()
                 .all()
             )
-            assert len(rows) == 1
-            assert rows[0].metadata_["proposal_id"] == proposal_id
+        assert len(rows) == 1
+        assert rows[0].metadata_["proposal_id"] == proposal_id
+        assert rows[0].metadata_["ai_invocation_id"] == invocation_id
+
+    def test_approve_audit_row_carries_ai_invocation_id(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        household_id: UUID,
+        session_maker,
+    ) -> None:
+        """#240: the proposal.approve audit row links to the ai_invocation_id."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        env_id = _make_envelope(client, auth_h, budget_amount="100.00")
+        proposal_id, invocation_id = _seed_ai_proposal(client, household_id, envelope_id=env_id)
+        client.post(f"/v1/ai/proposals/{proposal_id}/approve", headers=auth_h).raise_for_status()
+        with session_maker() as s:
+            row = s.execute(
+                select(AuditLog).where(AuditLog.action == "proposal.approve")
+            ).scalar_one()
+        assert row.metadata_["ai_invocation_id"] == invocation_id
 
     def test_approve_user_proposal_writes_actor_kind_user(
         self,
@@ -402,6 +435,94 @@ class TestReject:
         # read so the strings differ in trailing 'Z'; compare the
         # underlying instant by stripping it.
         assert first.json()["decided_at"].rstrip("Z") == second.json()["decided_at"].rstrip("Z")
+
+    def test_reject_audit_row_carries_ai_invocation_id(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        household_id: UUID,
+        session_maker,
+    ) -> None:
+        """#240: the proposal.reject audit row links to the ai_invocation_id."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        env_id = _make_envelope(client, auth_h)
+        proposal_id, invocation_id = _seed_ai_proposal(client, household_id, envelope_id=env_id)
+        client.post(f"/v1/ai/proposals/{proposal_id}/reject", headers=auth_h).raise_for_status()
+        with session_maker() as s:
+            row = s.execute(
+                select(AuditLog).where(AuditLog.action == "proposal.reject")
+            ).scalar_one()
+        assert row.metadata_["ai_invocation_id"] == invocation_id
+
+
+class TestDelete:
+    def test_delete_rejected_proposal_hard_deletes(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        env_id = _make_envelope(client, auth_h)
+        proposal = _propose_envelope_budget_update(
+            client, auth_h, envelope_id=env_id, new_amount="200.00"
+        )
+        client.post(f"/v1/ai/proposals/{proposal['id']}/reject", headers=auth_h).raise_for_status()
+        r = client.delete(f"/v1/ai/proposals/{proposal['id']}", headers=auth_h)
+        assert r.status_code == 204, r.text
+        # Gone — even an unfiltered list doesn't show it.
+        body = client.get("/v1/ai/proposals?status=", headers=auth_h).json()
+        assert proposal["id"] not in [p["id"] for p in body]
+
+    def test_delete_writes_audit_row_with_ai_invocation_id(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        household_id: UUID,
+        session_maker,
+    ) -> None:
+        """#240: proposal.delete lands an audit row carrying the ai_invocation_id."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        env_id = _make_envelope(client, auth_h)
+        proposal_id, invocation_id = _seed_ai_proposal(client, household_id, envelope_id=env_id)
+        client.post(f"/v1/ai/proposals/{proposal_id}/reject", headers=auth_h).raise_for_status()
+        client.delete(f"/v1/ai/proposals/{proposal_id}", headers=auth_h).raise_for_status()
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "proposal.delete"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].entity_type == "proposal"
+        assert rows[0].metadata_["ai_invocation_id"] == invocation_id
+
+    def test_delete_approved_returns_409(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        env_id = _make_envelope(client, auth_h, budget_amount="100.00")
+        proposal = _propose_envelope_budget_update(
+            client, auth_h, envelope_id=env_id, new_amount="150.00"
+        )
+        client.post(f"/v1/ai/proposals/{proposal['id']}/approve", headers=auth_h).raise_for_status()
+        r = client.delete(f"/v1/ai/proposals/{proposal['id']}", headers=auth_h)
+        assert_problem(r, code="proposal.not_deletable", status=409)
+
+    def test_delete_pending_returns_409(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        env_id = _make_envelope(client, auth_h)
+        proposal = _propose_envelope_budget_update(
+            client, auth_h, envelope_id=env_id, new_amount="200.00"
+        )
+        r = client.delete(f"/v1/ai/proposals/{proposal['id']}", headers=auth_h)
+        assert_problem(r, code="proposal.not_deletable", status=409)
+
+    def test_delete_unknown_returns_404(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.delete(f"/v1/ai/proposals/{uuid4()}", headers=auth_h)
+        assert_problem(r, code="proposal.not_found", status=404)
+
+    def test_delete_requires_auth(self, client: TestClient) -> None:
+        r = client.delete(f"/v1/ai/proposals/{uuid4()}")
+        assert r.status_code == 401
 
 
 class TestAuth:

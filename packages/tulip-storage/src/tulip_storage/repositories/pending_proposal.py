@@ -59,6 +59,20 @@ class PendingProposalRepository:
             )
         ).scalar_one_or_none()
 
+    def delete(self, proposal_id: UUID) -> bool:
+        """Hard-delete one proposal. Returns ``True`` if a row was removed.
+
+        Caller is responsible for any status precondition (the API only
+        permits deleting REJECTED proposals — approved ones stay for
+        audit-chain integrity, #240).
+        """
+        row = self.get(proposal_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.flush()
+        return True
+
     def list_by_status(self, status: str | None = None) -> list[PendingProposal]:
         """List proposals, newest first. ``status=None`` returns everything."""
         query = (
