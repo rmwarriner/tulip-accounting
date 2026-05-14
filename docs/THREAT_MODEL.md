@@ -1,6 +1,6 @@
 # Tulip Accounting — Threat Model Checkpoint
 
-**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening) ✅ shipped as [`docs/audits/2026-05-12-deep-security-audit.md`](audits/2026-05-12-deep-security-audit.md), plus a full-system deep privacy audit ✅ shipped as [`docs/audits/2026-05-13-deep-privacy-audit.md`](audits/2026-05-13-deep-privacy-audit.md); pre-cloud re-audit at Phase 9.
+**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening) ✅ shipped as [`docs/audits/2026-05-12-deep-security-audit.md`](audits/2026-05-12-deep-security-audit.md), plus a full-system deep privacy audit ✅ shipped as [`docs/audits/2026-05-13-deep-privacy-audit.md`](audits/2026-05-13-deep-privacy-audit.md); pre-cloud re-audit at Phase 10. (Phase 9 is the terminal UI — [ADR-0007](adrs/0007-terminal-ui.md); the pre-cloud phase renumbered 9→10 when it was inserted.)
 
 **Last updated:** 2026-05-14 · `main` @ Phase 8 in progress — deep security + deep privacy audits shipped; security + privacy Wave-1 hardening follow-ups landed
 
@@ -25,7 +25,7 @@ Today's deployment is single-tenant, single-machine, no network exposure beyond 
 
 **What is not a trust boundary today** (will become one at the listed phase):
 
-- Network attacker — N/A in single-tenant local deploy. Becomes in-scope at **Phase 9** (cloud + multi-tenant).
+- Network attacker — N/A in single-tenant local deploy. Becomes in-scope at **Phase 10** (cloud + multi-tenant).
 - Cross-household actor — composite FKs make cross-tenant FK references impossible, but a SQLAlchemy query event listener that filters reads with an `admin_scope()` escape hatch is **deferred from Phase 1**. Today, tenant isolation rests on (a) composite FKs at the schema level and (b) repositories that always require a `household_id` in the constructor. See [§4](#4-known-deferred-mitigations).
 - Browser-based attacker — no web UI ships in v1. Reports + journal export are Phase 7+; until then, no DOM, no XSS surface.
 - AI provider — no `tulip-ai` package wired yet. **Phase 6** is the inflection point; see [§5](#5-constraints-for-phase-46-work).
@@ -54,12 +54,12 @@ Single-tenant local deployment scopes the actor list down hard:
 - **Local attacker with process memory access** (e.g. via a debugger or `/proc/$pid/mem` on Linux). Has the master key, the JWT secret, and any decrypted TOTP secrets currently being verified. This is "you've already lost" territory; the only mitigation is OS-level (no untrusted users on the same machine).
 - **Misbehaving CLI client** — well-formed authenticated requests with malformed payloads. Covered by Pydantic at the schema boundary, schemathesis fuzzing in CI, and the architecture test that bans raw `HTTPException` (so error responses can't leak internals).
 - **Stolen refresh token** — 30-day window. The CLI keeps refresh tokens in the OS keyring by default; an attacker with keyring access has 30 days of mint-new-access-tokens until either the token expires or the user runs `tulip auth logout` (which calls `/v1/auth/logout` to revoke the refresh token at the API).
-- **Online credential / MFA brute-force** — a local attacker who knows a valid email guessing the password, TOTP code, or recovery code (post-Phase-9, also a network attacker). The Phase 8 security audit flagged this as the one place the localhost assumption is thin — a multi-user household on a shared machine is a v1 use case. Wave-1 follow-ups bound it: per-IP `slowapi` quotas on `/v1/auth/*`, the single-use MFA-challenge `jti`, the 80-bit recovery-code entropy floor, a constant-time login path (closes the user-enumeration timing oracle), and failed-login audit rows for forensics.
+- **Online credential / MFA brute-force** — a local attacker who knows a valid email guessing the password, TOTP code, or recovery code (post-Phase-10, also a network attacker). The Phase 8 security audit flagged this as the one place the localhost assumption is thin — a multi-user household on a shared machine is a v1 use case. Wave-1 follow-ups bound it: per-IP `slowapi` quotas on `/v1/auth/*`, the single-use MFA-challenge `jti`, the 80-bit recovery-code entropy floor, a constant-time login path (closes the user-enumeration timing oracle), and failed-login audit rows for forensics.
 
 ### Out of scope today (becomes in-scope at the listed phase)
 
-- **Network attacker** — single-tenant local. **Phase 9.**
-- **Cross-household attacker** — single-tenant local. **Phase 9** (cloud), but the design already has composite FKs to make this safe-by-construction.
+- **Network attacker** — single-tenant local. **Phase 10.**
+- **Cross-household attacker** — single-tenant local. **Phase 10** (cloud), but the design already has composite FKs to make this safe-by-construction.
 - **Compromised AI provider / prompt injection / model exfiltration** — Phase 6 shipped 2026-05-11. Now **in scope**: see §5.3 for the realised constraints (no-logging default, server-side redaction, no-silent-fallback, `actor_kind=ai_agent` audit chain, pre-call cost + rate gates).
 - **Compromised import source** — Phase 5 shipped 2026-05-07. Now **in scope**: see [§5.2](#52--phase-5-importers--reconciliation) for the constraints that landed (size cap, parser hardening, encrypted attachment storage).
 - **Stolen attachment / external-document exposure** — Phase 5 wired the encrypted attachment store. Now **in scope**; field-level AES-256-GCM via the master key per ARCHITECTURE.md §7.4 Layer 3.
@@ -77,7 +77,7 @@ These were considered and intentionally deferred. Documented here so future audi
 | **WebAuthn / passkeys** as an MFA option | Not implemented. TOTP + recovery codes only. | TOTP is fully wired (`P2.x.1`). Adding WebAuthn later doesn't break TOTP. | ARCHITECTURE.md §12 (deferred). |
 | **OS-level audit log immutability** | App-level append-only writer, no DB-level enforcement. | Single `AuditLogWriter` chokepoint; no other code path mutates `audit_log`. An architecture test could enforce this — currently it does not. | ARCHITECTURE.md §1.3. |
 | **OpenTelemetry** | Hooks installed, off by default. | Structured JSON logs (structlog) carry the same context. | ARCHITECTURE.md §1.3 / §7.2. |
-| **KMS integration for the master key** | `TULIP_MASTER_KEY` env var (or ephemeral fallback with warning). | Standard process-env practice. Phase 9 lifts this to KMS. | ARCHITECTURE.md §7.4. |
+| **KMS integration for the master key** | `TULIP_MASTER_KEY` env var (or ephemeral fallback with warning). | Standard process-env practice. Phase 10 lifts this to KMS. | ARCHITECTURE.md §7.4. |
 | **Pluggable token-store backends** (1Password CLI, `pass`) | Keyring + JSON file backends only. | Real users get keyring; tests get JSON. | #28. |
 
 If you find a "missing" security control during a future audit, **check this table first** — if it's listed here, the audit's job is to *re-evaluate the deferral*, not to surprise-flag the absence.
@@ -139,13 +139,13 @@ Phase 6 implementation (P6.1–P6.5.c). The *authoritative* contract is
 
 These are real concerns, but not for this checkpoint:
 
-- **Penetration testing** — the Phase 8 deep security audit was static / document-only and explicitly *not* a pen test (see its §10). A dynamic pen-test engagement is still deferred — Phase 9 / pre-cloud.
+- **Penetration testing** — the Phase 8 deep security audit was static / document-only and explicitly *not* a pen test (see its §10). A dynamic pen-test engagement is still deferred — Phase 10 / pre-cloud.
 - **Cryptographic review** of `encrypt_field` (key derivation, nonce reuse risk, AEAD usage details) — ✅ covered by the Phase 8 deep security audit (crypto stream): primitives confirmed correctly chosen and used; AEAD AAD binding is a tracked Medium follow-up, not a v1 blocker.
-- **Multi-tenant cloud threat model** — Phase 9.
+- **Multi-tenant cloud threat model** — Phase 10.
 - **Privacy audit of AI flows** — ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md) (P6.0, 2026-05-11), implemented through P6.1–P6.5.c; the full-system [deep privacy audit](audits/2026-05-13-deep-privacy-audit.md) (2026-05-13) re-verified the shipped state and broadened the review to the whole surface. See §5.3 above for the realised constraints.
 - **Backup/restore threat model** — the backup/restore pipeline now exists (`tulip-cli/backup.py`) and was reviewed by the Phase 8 deep security audit (H-1: path traversal on restore). A standalone backup/restore threat-model section is still deferred.
 - **Supply chain / SBOM** — the Phase 8 deep security audit reviewed the `pyproject.toml` / `uv.lock` dependency graph and ran `pip-audit` (clean); dependency-pinning gaps are tracked as Low findings. A formal SBOM artifact is still deferred.
-- **Side-channel / timing attacks** — broadly out of v1 scope; relevant to multi-tenant cloud (Phase 9). One exception is already addressed: the login user-enumeration timing oracle the security audit flagged — Phase 8 Wave-1 landed a constant-time login path.
+- **Side-channel / timing attacks** — broadly out of v1 scope; relevant to multi-tenant cloud (Phase 10). One exception is already addressed: the login user-enumeration timing oracle the security audit flagged — Phase 8 Wave-1 landed a constant-time login path.
 
 ---
 
