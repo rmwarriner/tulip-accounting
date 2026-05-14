@@ -48,6 +48,24 @@ A non-split record (no ``S``/``$`` lines) still emits exactly one
 ``ParsedStatementLine``, preserving the existing two-posting promotion
 shape.
 
+Section skipping (#198)
+-----------------------
+
+Real desktop-app exports (Banktivity, GnuCash, Moneydance, Quicken)
+wrap the transactions in a preamble: ``!Option:*`` / ``!Clear:*``
+directives, ``!Account`` declaration blocks, and non-transaction
+``!Type:`` sections (``!Type:Cat`` category lists, ``!Type:Security``
+security lists, ``!Type:Prices``, ``!Type:Class``, ``!Type:Memorized``).
+The parser walks the section state machine and only parses records
+inside transaction-bearing ``!Type:`` sections (``Bank``, ``CCard``,
+``Cash``, ``Oth A``, ``Oth L``, ``Invst`` — plus any unknown label, on
+the principle that silently dropping a bank's transactions is worse
+than a parse error). An ``!Account`` block's record is skipped wholesale
+— #195 grows that into real multi-account routing.
+
+A header-less QIF (``D``/``T``/``^`` records with no ``!`` directives at
+all) still parses — the historical single-account shape.
+
 Errors raise :class:`QifParseError` with the failing line number for
 debuggability — banks ship malformed QIF often and operators need to
 locate the bad row.
@@ -68,6 +86,19 @@ _RECORD_TERMINATOR = "^"
 
 #: Header line introduces the account type. Conventional but optional.
 _HEADER_RE = re.compile(r"^!Type:(.+)$", re.IGNORECASE)
+
+#: ``!Type:`` labels that introduce *non*-transaction sections — category
+#: lists, security lists, price history, memorized transactions. Their
+#: records have an entirely different field shape; parsing them as
+#: transactions is what made multi-section Banktivity / Quicken exports
+#: fail (#198). Every record inside these sections is skipped.
+#:
+#: The complementary transaction-bearing labels (``Bank``, ``CCard``,
+#: ``Cash``, ``Oth A``, ``Oth L``, ``Invst``) aren't enumerated: anything
+#: *not* in this set is parsed, including unrecognised labels — silently
+#: dropping a bank's transactions because it used an unfamiliar type
+#: string is a worse failure than a parse error.
+_NON_TXN_TYPES = frozenset({"cat", "class", "security", "prices", "memorized"})
 
 #: ISO date — try this first; unambiguous.
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -331,25 +362,79 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
     saw_anything = False
     saw_qif_marker = False  # ^ separator OR !Type: header OR known D/T field
 
+    # Section state (#198). ``parsing`` gates whether the current record
+    # stream is transaction-bearing. It defaults True so a header-less
+    # QIF (just ``D/T/^`` records) still parses — the historical shape.
+    # Once an ``!Account`` block or a non-transaction ``!Type:`` section
+    # is seen, ``parsing`` only goes back True on a transaction-bearing
+    # ``!Type:`` header. ``in_account_block`` marks the throwaway record
+    # that follows an ``!Account`` directive — #195 will grow this into
+    # real per-account routing; #198 just skips it cleanly.
+    parsing = True
+    in_account_block = False
+
     for source_line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.rstrip("\r")
         if not line.strip():
             continue
         saw_anything = True
 
-        # Header line — applies to all subsequent records.
+        # Directive line — ``!Type:``, ``!Account``, ``!Option:``, etc.
         if line.startswith("!"):
             saw_qif_marker = True
+            # A directive ends whatever record was mid-accumulation. In
+            # valid QIF a ``^`` always precedes the directive; this is the
+            # defensive path for hand-edited / truncated files.
+            if rec is not None and rec.has_any_field() and parsing and not in_account_block:
+                finalized = _finalize_record(
+                    rec,
+                    start_line_number=record_no + 1,
+                    currency=currency,
+                    account_type=account_type,
+                )
+                out.extend(finalized)
+                record_no += len(finalized)
+            rec = None
+
             m = _HEADER_RE.match(line)
             if m:
-                account_type = m.group(1).strip()
+                label = m.group(1).strip()
+                normalized = label.lower()
+                in_account_block = False
+                if normalized in _NON_TXN_TYPES:
+                    # Category / security / price / memorized section —
+                    # skip every record inside it.
+                    parsing = False
+                    account_type = None
+                else:
+                    # Transaction-bearing (or unknown) type — parse it.
+                    parsing = True
+                    account_type = label
                 continue
-            # Unknown bang directive — skip with a raw record marker.
+            if line.strip().lower() == "!account":
+                # The next record (until ``^``) declares an account, not a
+                # transaction. Skip it. #195 will route by account name.
+                in_account_block = True
+                parsing = False
+                continue
+            # Any other directive (``!Option:*``, ``!Clear:*``, …) — skip
+            # the line, leave section state untouched.
             continue
 
         # Record terminator.
         if line == _RECORD_TERMINATOR:
             saw_qif_marker = True
+            if in_account_block:
+                # End of the ``!Account`` declaration block — its fields
+                # were skipped, so there's nothing to finalize. ``parsing``
+                # stays False until the next ``!Type:`` header.
+                in_account_block = False
+                rec = None
+                continue
+            if not parsing:
+                # Inside a non-transaction section — drop the record.
+                rec = None
+                continue
             if rec is None or not rec.has_any_field():
                 # Stray ^ between records; ignore silently.
                 rec = None
@@ -366,6 +451,10 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
             continue
 
         # Field line: first character is the field code; rest is the value.
+        if in_account_block or not parsing:
+            # Inside an ``!Account`` declaration block or a non-transaction
+            # ``!Type:`` section — skip the field entirely.
+            continue
         if rec is None:
             rec = _RecordBuilder(line_number=source_line_number)
         code = line[0]
@@ -432,8 +521,11 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
             # fields directly.
             rec.raw[code] = value
 
-    # Trailing record without `^` (rare but legal in some emitters): finalize.
-    if rec is not None and rec.has_any_field():
+    # Trailing record without `^` (rare but legal in some emitters):
+    # finalize — but only if it's a transaction record. A file that ends
+    # mid-``!Account`` block or inside a non-transaction section leaves a
+    # ``rec`` that must be discarded, not parsed (#198).
+    if rec is not None and rec.has_any_field() and parsing and not in_account_block:
         finalized = _finalize_record(
             rec,
             start_line_number=record_no + 1,

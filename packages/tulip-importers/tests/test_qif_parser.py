@@ -171,6 +171,74 @@ class TestParseSplits:
             assert "L" not in line.raw
 
 
+class TestParseSectionSkipping:
+    """Per #198: skip the preamble desktop apps wrap transactions in.
+
+    Banktivity / Quicken / GnuCash exports open with ``!Option`` /
+    ``!Clear`` directives, an ``!Account`` declaration block, a full
+    ``!Type:Cat`` category list, then the transaction-bearing
+    ``!Type:Bank`` section, then a ``!Type:Security`` list. Only the
+    ``!Type:Bank`` records are transactions; everything else must be
+    skipped without erroring.
+    """
+
+    def test_banktivity_preamble_lands_only_bank_transactions(self):
+        lines = parse(_read("banktivity_preamble.qif"), currency="USD")
+        # The fixture has exactly two !Type:Bank records; the !Account
+        # block, the 3-row !Type:Cat list, and the 2-row !Type:Security
+        # list all produce zero statement lines.
+        assert len(lines) == 2
+        gas, payroll = lines
+        assert gas.posted_date == date(2026, 1, 2)
+        assert gas.amount.amount == Decimal("-58.99")
+        assert "CenterPoint Energy" in gas.description
+        assert payroll.posted_date == date(2026, 1, 5)
+        assert payroll.amount.amount == Decimal("1500.00")
+        # The Bank type header still flows onto the parsed rows.
+        assert gas.raw.get("TYPE") == "Bank"
+
+    def test_cat_section_records_are_not_transactions(self):
+        # A bare !Type:Cat section with category records and nothing else
+        # parses to zero lines — not a "missing date/amount" error.
+        cat_only = b"!Type:Cat\nNGroceries\nE\n^\nNSalary\nI\n^\n"
+        assert parse(cat_only, currency="USD") == []
+
+    def test_security_section_records_are_not_transactions(self):
+        sec_only = b"!Type:Security\nNAcme Corp\nSACME\nTStock\n^\n"
+        assert parse(sec_only, currency="USD") == []
+
+    def test_account_block_is_skipped(self):
+        # An !Account declaration block followed by a real !Type:Bank
+        # section: the block is skipped, the transaction lands.
+        qif = b"!Account\nNChecking\nTBank\nB100.00\n^\n!Type:Bank\nD1/2/26\nT-10.00\nPStore\n^\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert lines[0].amount.amount == Decimal("-10.00")
+
+    def test_option_directives_are_skipped(self):
+        qif = b"!Option:AutoSwitch\n!Type:Bank\nD1/2/26\nT5.00\nPX\n^\n!Clear:AutoSwitch\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert lines[0].amount.amount == Decimal("5.00")
+
+    def test_non_txn_section_after_bank_section_stops_parsing(self):
+        # Records under !Type:Security that follow a !Type:Bank section
+        # must not be mis-read as transactions.
+        qif = b"!Type:Bank\nD1/2/26\nT5.00\nPX\n^\n!Type:Security\nNAcme\nSACME\n^\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert lines[0].amount.amount == Decimal("5.00")
+
+    def test_unknown_type_is_still_parsed(self):
+        # An unrecognised !Type: label is parsed, not skipped — silently
+        # dropping a bank's transactions is the worse failure mode.
+        qif = b"!Type:SomethingNew\nD1/2/26\nT9.99\nPX\n^\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert lines[0].amount.amount == Decimal("9.99")
+        assert lines[0].raw.get("TYPE") == "SomethingNew"
+
+
 class TestParseErrors:
     def test_empty_bytes_raises(self):
         with pytest.raises(QifParseError):
