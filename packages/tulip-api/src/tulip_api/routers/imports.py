@@ -295,7 +295,7 @@ async def upload_import(
     # so the admin trail is honest about the duplicate.
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
     existing_attachment = attachment_repo.find_by_hash(content_hash)
-    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch_repo = ImportBatchRepository(session, claims.household_id, master_key=settings.master_key)
     if existing_attachment is not None and not force:
         existing_batch = batch_repo.find_for_attachment(
             account_id=account_id,
@@ -542,7 +542,7 @@ async def upload_multi_account_qif(
         master_key=settings.master_key,
         attachment_root=settings.attachment_root,
     )
-    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch_repo = ImportBatchRepository(session, claims.household_id, master_key=settings.master_key)
     content_hash = hashlib.sha256(raw_bytes).hexdigest()
     existing_attachment = attachment_repo.find_by_hash(content_hash)
     if existing_attachment is not None:

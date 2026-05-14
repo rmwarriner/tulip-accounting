@@ -26,6 +26,7 @@ from tulip_storage.repositories import (
     AttachmentRepository,
     CsvProfileRepository,
     ImportBatchRepository,
+    MasterKeyRequiredError,
     ReconciliationMatchRepository,
     ReconciliationRepository,
     StatementLineRepository,
@@ -211,6 +212,74 @@ class TestImportBatchAndStatementLine:
         assert loaded.account_id == account.id
         assert loaded.source_format is SourceFormat.OFX
         assert loaded.status.value == "parsed"
+
+    def test_create_encrypts_summary_json_at_rest(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment,
+        master_key: bytes,
+    ):
+        """summary_json is AES-256-GCM encrypted — no plaintext in the column (#238)."""
+        repo = ImportBatchRepository(session, household.id, master_key=master_key)
+        summary = {"line_count": 3, "bank_id": "021000021", "account_id": "1234567890"}
+        batch = repo.create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="may.ofx",
+            source_file_attachment_id=attachment.id,
+            summary_json=summary,
+        )
+        session.commit()
+
+        # The stored column is opaque bytes — no source identifier survives
+        # in plaintext, unlike the pre-#238 plaintext JSON column.
+        loaded = repo.get(batch.id)
+        assert loaded is not None
+        assert isinstance(loaded.summary_json_encrypted, bytes)
+        assert b"1234567890" not in loaded.summary_json_encrypted
+        assert b"bank_id" not in loaded.summary_json_encrypted
+
+        # Round-trips back to the original dict.
+        assert repo.decrypt_summary_json(loaded) == summary
+
+    def test_create_without_summary_json_leaves_column_null(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment,
+    ):
+        """No summary_json → NULL column, and no master key is required."""
+        repo = ImportBatchRepository(session, household.id)
+        batch = repo.create(
+            account_id=account.id,
+            source_format=SourceFormat.OFX,
+            source_filename="may.ofx",
+            source_file_attachment_id=attachment.id,
+        )
+        session.commit()
+        assert batch.summary_json_encrypted is None
+        assert repo.decrypt_summary_json(batch) is None
+
+    def test_create_with_summary_json_requires_master_key(
+        self,
+        session: Session,
+        household: Household,
+        account: Account,
+        attachment,
+    ):
+        """Encrypting summary_json without a configured master key is an error."""
+        repo = ImportBatchRepository(session, household.id)
+        with pytest.raises(MasterKeyRequiredError):
+            repo.create(
+                account_id=account.id,
+                source_format=SourceFormat.OFX,
+                source_filename="may.ofx",
+                source_file_attachment_id=attachment.id,
+                summary_json={"line_count": 1},
+            )
 
     def test_idempotency_dup_attachment_per_account_rejected(
         self,

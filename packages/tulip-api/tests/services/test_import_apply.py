@@ -107,7 +107,6 @@ def setup(session_maker):
             imported_count=0,
             skipped_count=0,
             error_count=0,
-            summary_json={},
             created_at=datetime.now(UTC),
         )
         s.add(batch)

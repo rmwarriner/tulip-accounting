@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from tulip_storage.encryption import decrypt_field, encrypt_field
 from tulip_storage.models import ImportBatch, ImportBatchStatus, SourceFormat
+from tulip_storage.repositories.transaction import MasterKeyRequiredError
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -17,10 +20,30 @@ if TYPE_CHECKING:
 class ImportBatchRepository:
     """Persists import batches and queries them within one household."""
 
-    def __init__(self, session: Session, household_id: UUID) -> None:
-        """Bind the repository to a session and tenant scope."""
+    def __init__(
+        self,
+        session: Session,
+        household_id: UUID,
+        *,
+        master_key: bytes | None = None,
+    ) -> None:
+        """Bind the repository to a session and tenant scope.
+
+        ``master_key`` is required only to write or read ``summary_json``
+        (it's AES-256-GCM encrypted at rest — #238). The read / list /
+        apply / revert paths all work without one.
+        """
         self._session = session
         self._household_id = household_id
+        self._master_key = master_key
+
+    def _require_master_key(self) -> bytes:
+        if self._master_key is None:
+            raise MasterKeyRequiredError(
+                "ImportBatchRepository requires a master_key to encrypt or "
+                "decrypt summary_json; construct with master_key=..."
+            )
+        return self._master_key
 
     def get(self, batch_id: UUID) -> ImportBatch | None:
         """Return the ImportBatch header by id, or None."""
@@ -106,7 +129,15 @@ class ImportBatchRepository:
         created_by_user_id: UUID | None = None,
         summary_json: dict[str, Any] | None = None,
     ) -> ImportBatch:
-        """Insert a new ImportBatch in PARSED status (default for new uploads)."""
+        """Insert a new ImportBatch in PARSED status (default for new uploads).
+
+        ``summary_json`` is encrypted at rest (#238); passing a non-None
+        value requires the repository to have a ``master_key``.
+        """
+        summary_blob: bytes | None = None
+        if summary_json is not None:
+            key = self._require_master_key()
+            summary_blob = encrypt_field(json.dumps(summary_json).encode("utf-8"), key)
         batch = ImportBatch(
             household_id=self._household_id,
             id=uuid4(),
@@ -115,13 +146,26 @@ class ImportBatchRepository:
             source_filename=source_filename,
             source_file_attachment_id=source_file_attachment_id,
             status=ImportBatchStatus.PARSED,
-            summary_json=summary_json,
+            summary_json_encrypted=summary_blob,
             created_by_user_id=created_by_user_id,
             created_at=datetime.now(tz=UTC),
         )
         self._session.add(batch)
         self._session.flush()
         return batch
+
+    def decrypt_summary_json(self, batch: ImportBatch) -> dict[str, Any] | None:
+        """Return the decrypted ``summary_json`` dict for ``batch``, or None.
+
+        Requires a configured master key when the column is non-NULL.
+        """
+        if batch.summary_json_encrypted is None:
+            return None
+        key = self._require_master_key()
+        decoded: dict[str, Any] = json.loads(
+            decrypt_field(batch.summary_json_encrypted, key).decode("utf-8")
+        )
+        return decoded
 
     def mark_applied(self, batch_id: UUID) -> ImportBatch:
         """Flip an import batch to APPLIED status."""
