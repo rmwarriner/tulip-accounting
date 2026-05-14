@@ -128,11 +128,21 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             # ciphertext files get swept periodically. The runner reads
             # ``scheduled_jobs`` for the actual fire cadence; an installer
             # is expected to seed a daily rrule for ``attachment_gc``.
-            from tulip_storage.runner.handlers import make_attachment_gc_handler
+            from tulip_storage.runner.handlers import (
+                make_ai_retention_handler,
+                make_attachment_gc_handler,
+            )
 
             runner.register_handler(
                 "attachment_gc",
                 make_attachment_gc_handler(session_maker, settings.attachment_root),
+            )
+            # H-16 (#243): TTL garbage-collection of ai_invocations. Like
+            # attachment_gc, the runner reads ``scheduled_jobs`` for the
+            # fire cadence; an installer seeds a daily rrule.
+            runner.register_handler(
+                "ai_retention",
+                make_ai_retention_handler(session_maker),
             )
             app.state.runner = runner
             _register_ai_categorizer(session_maker)

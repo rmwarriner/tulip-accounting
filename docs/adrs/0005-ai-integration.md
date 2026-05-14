@@ -348,6 +348,13 @@ P6.1 is the high-risk slice — it lays down the redactor, the audit writer, the
 3. **`prompt_json` defaulting to NULL** means operators wanting full forensic logs have to opt in. The `prompt_hash` column gives "was the same prompt sent twice" answerable without prompt storage; the trade-off favours privacy by default.
 4. **API keys live in two tables (household + user).** The two-place storage is the smallest expression of "users can override household for their own actions"; a per-key precedence helper resolves at call time. Tests cover the precedence.
 
+### Retention of `ai_invocations` (added #243, deep privacy audit H-16)
+
+`ai_invocations` is append-only at the *writer* — but not unbounded. Two lifecycle controls were added post-audit:
+
+- **Consent-withdrawal scrub.** Flipping `households.ai_policy.log_prompts` from `true` to `false` via `PUT /v1/ai/config` runs a household-scoped `UPDATE` that nulls `prompt_json` + `response_text` on every row — atomically in the same commit as the policy change (GDPR Art. 17(1)(b)). The row, `prompt_hash`, and cost metadata survive for the audit chain; the scrub itself is recorded as an `audit_log` row (`action="ai.prompt_log_scrubbed"`).
+- **TTL garbage collection.** The `ai_retention` scheduled handler deletes non-proposal-linked `ai_invocations` older than `AI_INVOCATION_RETENTION_DAYS` (90). A row is preserved while any `pending_proposals` row references it via `pending_proposals.ai_invocation_id`; once the proposal is gone (e.g. rejected + deleted per #240) the invocation becomes collectable. This also bounds the accumulation of pseudonymous `prompt_hash` rows even for households that never enable `log_prompts`. The policy is surfaced read-only in `GET /v1/ai/config` (`invocation_retention_days`) and `tulip ai config show`.
+
 ## Alternatives considered
 
 ### Q1 — `tulip-ai` lives inside `tulip-api`
