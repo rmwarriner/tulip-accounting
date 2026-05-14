@@ -35,6 +35,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._editor import edit_buffer
 from tulip_cli.commands._ledger import LedgerParseError, parse_ledger_text
@@ -644,20 +645,80 @@ def list_transactions(
     _render_tx_list_table(rows, accounts_by_id)
 
 
+def _format_tx_picker_label(item: dict[str, Any]) -> str:
+    """One-line label for a transaction row in the picker."""
+    tx_id = str(item.get("id") or "")
+    date = str(item.get("date") or "")
+    desc = str(item.get("description") or "")
+    if len(desc) > 48:
+        desc = desc[:45] + "..."
+    status = str(item.get("status") or "")
+    return f"{tx_id[:8] if tx_id else '—'}  {date}  {status:<10}  {desc}"
+
+
+def _pick_tx_id(config: Config, *, as_json: bool) -> str | None:
+    """Fetch recent transactions and prompt the user to pick one.
+
+    Returns the picked UUID string, or ``None`` when suppressed
+    (``--json`` / non-TTY) or the user cancels.
+    """
+    if as_json or not is_interactive():
+        typer.echo(
+            "Missing argument TXID. Run `tulip transactions list` to find "
+            "a transaction, then re-run with its id or prefix.",
+            err=True,
+        )
+        return None
+    try:
+        with _client(config, as_json=as_json) as client:
+            # 20 is the picker cap; ask the API for exactly that.
+            response = client.get(
+                "/v1/transactions",
+                authenticated=True,
+                params={"limit": "20"},
+            )
+    except CliError as err:
+        err.render()
+        return None
+    rows = response.json()
+    return pick(
+        rows,
+        label=_format_tx_picker_label,
+        title="Pick a recent transaction:",
+        empty_message=(
+            "No transactions yet. Use `tulip add` to create one or "
+            "`tulip imports apply` to land an imported batch."
+        ),
+        overflow_hint=(
+            "  …showing 20 most recent; narrow with "
+            "`tulip transactions list --account <id> --from <date>`."
+        ),
+    )
+
+
 @transactions_app.command("show")
 def show_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Transaction UUID or unambiguous hex prefix.",
+            help=(
+                "Transaction UUID or unambiguous hex prefix. Omit to pick "
+                "interactively from recent transactions (TTY only — scripts "
+                "still get the usage error)."
+            ),
             metavar="TXID",
         ),
-    ],
+    ] = None,
 ) -> None:
     """Show one transaction (header + postings) by UUID or prefix."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+
+    if tx_id is None:
+        tx_id = _pick_tx_id(config, as_json=as_json)
+        if tx_id is None:
+            raise typer.Exit(2)
 
     try:
         with _client(config, as_json=as_json) as client:
