@@ -219,6 +219,96 @@ def test_imports_show_unknown_batch_returns_problem(authed_session: str) -> None
 
 
 @pytest.mark.integration
+def test_imports_apply_posted_lands_posted_transactions(authed_session: str) -> None:
+    """Issue #210: `tulip imports apply --posted BATCH_ID` lands each line as POSTED."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert upload.returncode == 0, upload.stderr
+    batch_id = json.loads(upload.stdout)["id"]
+
+    apply_result = _run_cli(
+        "--json",
+        "imports",
+        "apply",
+        batch_id,
+        "--posted",
+        "--no-categorize",
+        api_url=authed_session,
+    )
+    assert apply_result.returncode == 0, apply_result.stderr
+    body = json.loads(apply_result.stdout)
+    assert body["created_count"] == 2
+
+    # Verify each created tx is POSTED.
+    for tx_id in body["transaction_ids"]:
+        show = _run_cli("--json", "transactions", "show", tx_id, api_url=authed_session)
+        assert show.returncode == 0, show.stderr
+        assert json.loads(show.stdout)["status"] == "posted"
+
+
+@pytest.mark.integration
+def test_imports_apply_default_lands_pending_transactions(authed_session: str) -> None:
+    """Issue #210: without ``--posted``, transactions are PENDING (unchanged default)."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    upload = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert upload.returncode == 0, upload.stderr
+    batch_id = json.loads(upload.stdout)["id"]
+
+    apply_result = _run_cli(
+        "--json",
+        "imports",
+        "apply",
+        batch_id,
+        "--no-categorize",
+        api_url=authed_session,
+    )
+    assert apply_result.returncode == 0, apply_result.stderr
+    body = json.loads(apply_result.stdout)
+    for tx_id in body["transaction_ids"]:
+        show = _run_cli("--json", "transactions", "show", tx_id, api_url=authed_session)
+        assert show.returncode == 0, show.stderr
+        assert json.loads(show.stdout)["status"] == "pending"
+
+
+@pytest.mark.integration
 def test_imports_apply_already_applied_returns_409(authed_session: str) -> None:
     """Re-applying renders the typed Problem and exits non-zero."""
     _seed_checking(authed_session)
