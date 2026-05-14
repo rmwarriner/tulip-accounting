@@ -268,6 +268,7 @@ def _render_list_table(items: list[dict[str, Any]]) -> None:
     from rich.table import Table
 
     from tulip_cli._console import make_console
+    from tulip_cli._tables import add_numeric_column
 
     table = Table(show_header=True, show_lines=False)
     table.add_column("id")
@@ -276,7 +277,7 @@ def _render_list_table(items: list[dict[str, Any]]) -> None:
     table.add_column("format")
     table.add_column("account")
     table.add_column("filename")
-    table.add_column("counts")
+    add_numeric_column(table, "counts")
     for item in items:
         batch_id = str(item.get("id") or "")
         account_id = str(item.get("account_id") or "")
@@ -329,6 +330,7 @@ def _render_batch(body: dict[str, Any]) -> None:
     from rich.table import Table
 
     from tulip_cli._console import make_console
+    from tulip_cli._tables import add_numeric_column
 
     console = make_console()
     header_lines = [
@@ -356,9 +358,9 @@ def _render_batch(body: dict[str, Any]) -> None:
         return
 
     table = Table(title=f"\nStatement lines ({len(lines)})", show_header=True)
-    table.add_column("#", justify="right")
+    add_numeric_column(table, "#")
     table.add_column("date")
-    table.add_column("amount", justify="right")
+    add_numeric_column(table, "amount")
     table.add_column("ccy")
     table.add_column("description")
     table.add_column("flag")

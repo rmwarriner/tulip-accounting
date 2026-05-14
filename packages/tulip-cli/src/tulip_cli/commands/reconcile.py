@@ -27,6 +27,7 @@ from rich.table import Table
 
 from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
+from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.config import Config
@@ -95,8 +96,8 @@ def _render_matches(console: Console, matches: list[dict[str, Any]]) -> None:
     table.add_column("match_id")
     table.add_column("line_id")
     table.add_column("tx_id")
-    table.add_column("amount")
-    table.add_column("confidence")
+    add_numeric_column(table, "amount")
+    add_numeric_column(table, "confidence")
     table.add_column("source")
     for m in matches:
         source = "auto" if m.get("matcher_version") else "manual"
@@ -119,7 +120,7 @@ def _render_unmatched_lines(console: Console, lines: list[dict[str, Any]]) -> No
     table = Table()
     table.add_column("line_id")
     table.add_column("date")
-    table.add_column("amount")
+    add_numeric_column(table, "amount")
     table.add_column("description")
     for line in lines:
         table.add_row(
@@ -301,7 +302,7 @@ def list_command(
     table.add_column("account_id")
     table.add_column("period")
     table.add_column("status")
-    table.add_column("ending")
+    add_numeric_column(table, "ending")
     for item in items:
         table.add_row(
             item["id"],
