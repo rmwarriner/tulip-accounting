@@ -474,6 +474,13 @@ def _render_tx_detail(tx: dict[str, Any]) -> None:
     typer.echo(f"description:  {tx.get('description', '')}")
     typer.echo(f"reference:    {tx.get('reference') or '—'}")
     typer.echo(f"status:       {tx.get('status', '')}")
+    notes = tx.get("notes")
+    if notes:
+        # Indent multi-line notes so the "Notes:" header is unambiguous.
+        first, *rest = str(notes).splitlines() or [""]
+        typer.echo(f"Notes:        {first}")
+        for line in rest:
+            typer.echo(f"              {line}")
     typer.echo("postings:")
     table = Table(show_header=True, show_lines=False)
     table.add_column("account_id")
@@ -776,8 +783,9 @@ def edit_transaction(
                 if _looks_empty(edited):
                     typer.echo("No changes saved (empty buffer).")
                     return
+                stripped, notes_value = _extract_notes_block(edited)
                 try:
-                    parsed = parse_ledger_text(edited)
+                    parsed = parse_ledger_text(stripped)
                 except LedgerParseError as exc:
                     buffer = _with_banner(edited, str(exc))
                     continue
@@ -786,11 +794,14 @@ def edit_transaction(
                         client,
                         [ParsedPosting(p.account, p.amount, p.currency) for p in parsed.postings],
                     )
-                    body = {
+                    body: dict[str, Any] = {
                         "date": parsed.date.isoformat(),
                         "description": parsed.description,
                         "postings": resolved_postings,
                     }
+                    if not isinstance(notes_value, _UNSET_TYPE):
+                        # Explicit value (including None to clear).
+                        body["notes"] = notes_value
                     response = client.patch(
                         f"/v1/transactions/{resolved}",
                         json=body,
@@ -818,7 +829,9 @@ def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, 
     """Render an existing transaction back into the hledger-subset format.
 
     Uses account ``code`` when available; falls back to UUID. Inverse of
-    :func:`tulip_cli.commands._ledger.parse_ledger_text`.
+    :func:`tulip_cli.commands._ledger.parse_ledger_text`. Notes (if any)
+    are rendered as a bracketed comment block at the bottom of the
+    buffer; see :func:`_extract_notes_block`.
     """
     lines: list[str] = [_EDITOR_TEMPLATE_HEADER, ""]
     lines.append(f"{tx.get('date', '')} {tx.get('description', '')}")
@@ -829,4 +842,83 @@ def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, 
         amount = p.get("amount", "")
         currency = p.get("currency", "")
         lines.append(f"  {account_ref}  {amount} {currency}")
+    notes = tx.get("notes")
+    lines.append("")
+    lines.extend(_render_notes_block(notes if isinstance(notes, str) else None))
     return "\n".join(lines) + "\n"
+
+
+# Markers that bracket the multi-line notes block in the editor buffer.
+# Anything BETWEEN these two lines is extracted as notes plaintext (each
+# content line is expected to be prefixed by ``# `` so the ledger parser
+# treats the section as a no-op block of comments).
+_NOTES_BLOCK_START = "# ─── notes (delete the lines below to clear, edit to change) ───"
+_NOTES_BLOCK_END = "# ─── end notes ───"
+_NOTES_PREFIX = "# "
+
+
+def _render_notes_block(notes: str | None) -> list[str]:
+    """Render the notes block lines (markers + comment-prefixed content)."""
+    block: list[str] = [_NOTES_BLOCK_START]
+    if notes:
+        for line in notes.splitlines() or [notes]:
+            block.append(f"{_NOTES_PREFIX}{line}")
+    block.append(_NOTES_BLOCK_END)
+    return block
+
+
+def _extract_notes_block(text: str) -> tuple[str, str | None | _UNSET_TYPE]:
+    """Strip the notes block from ``text`` and return ``(stripped, notes)``.
+
+    Returns:
+        stripped: ``text`` with the notes block (markers + content) removed.
+            Safe to feed to :func:`parse_ledger_text`.
+        notes: the extracted plaintext, ``None`` if the block is empty
+            (meaning "clear"), or ``_UNSET`` if no block was present in
+            the buffer (meaning "leave column alone"). The ``_UNSET``
+            sentinel is local — the caller maps it to "omit the ``notes``
+            field from the PATCH body".
+
+    """
+    lines = text.splitlines()
+    try:
+        start = lines.index(_NOTES_BLOCK_START)
+    except ValueError:
+        return text, _UNSET
+    try:
+        end_offset = lines[start + 1 :].index(_NOTES_BLOCK_END)
+    except ValueError:
+        # Opener without closer — treat the rest of the buffer as notes
+        # content, but only the comment-prefixed lines.
+        content_lines = lines[start + 1 :]
+        end = len(lines)
+    else:
+        content_lines = lines[start + 1 : start + 1 + end_offset]
+        end = start + 1 + end_offset + 1  # include the end marker
+
+    note_text_lines: list[str] = []
+    for raw in content_lines:
+        if raw.startswith(_NOTES_PREFIX):
+            note_text_lines.append(raw[len(_NOTES_PREFIX) :])
+        elif raw.strip() == "#":
+            # Bare ``#`` represents an empty line inside notes.
+            note_text_lines.append("")
+        # Non-comment lines inside the block are ignored — keeps the
+        # parser focused on lines the user explicitly marked as notes.
+    notes_value: str | None
+    if note_text_lines:
+        notes_value = "\n".join(note_text_lines).strip("\n")
+        if not notes_value:
+            notes_value = None
+    else:
+        notes_value = None
+
+    stripped_lines = lines[:start] + lines[end:]
+    return "\n".join(stripped_lines), notes_value
+
+
+class _UNSET_TYPE:
+    """Sentinel for "notes block absent from the buffer entirely"."""
+
+
+_UNSET: _UNSET_TYPE = _UNSET_TYPE()

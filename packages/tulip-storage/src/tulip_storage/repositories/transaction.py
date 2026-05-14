@@ -19,6 +19,7 @@ from uuid import UUID
 
 from sqlalchemy import String, cast, delete, func, select, update
 
+from tulip_storage.encryption import decrypt_field, encrypt_field
 from tulip_storage.models import Posting, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
@@ -29,6 +30,28 @@ if TYPE_CHECKING:
     from tulip_core.transactions import Posting as DomainPosting
     from tulip_core.transactions import Transaction as DomainTransaction
     from tulip_core.transactions import TransactionStatus as DomainTxStatus
+
+
+class _Unset:
+    """Sentinel — distinguishes "field omitted from PATCH" from "set to None"."""
+
+    _instance: _Unset | None = None
+
+    def __new__(cls) -> _Unset:
+        """Singleton: ``UNSET is UNSET`` always holds."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: _Unset = _Unset()
+
+
+class MasterKeyRequiredError(RuntimeError):
+    """Raised when a notes write is attempted without a master key configured."""
 
 
 class TransactionAlreadyVoidedError(ValueError):
@@ -70,10 +93,42 @@ class TrialBalanceRow:
 class TransactionRepository:
     """Persists Transactions and queries existing ones, scoped to one household."""
 
-    def __init__(self, session: Session, household_id: UUID) -> None:
-        """Bind the repository to a session and a tenant scope."""
+    def __init__(
+        self,
+        session: Session,
+        household_id: UUID,
+        *,
+        master_key: bytes | None = None,
+    ) -> None:
+        """Bind the repository to a session and a tenant scope.
+
+        ``master_key`` is required only when the caller passes a ``notes``
+        plaintext to ``save_balanced`` / ``update_pending`` (or reads it
+        back via :meth:`decrypt_notes`). Read-only and non-notes write
+        paths work without one — keeping the legions of existing callers
+        (reconciliation, reports, balance queries) untouched.
+        """
         self._session = session
         self._household_id = household_id
+        self._master_key = master_key
+
+    def _require_master_key(self) -> bytes:
+        if self._master_key is None:
+            raise MasterKeyRequiredError(
+                "TransactionRepository requires a master_key to encrypt or "
+                "decrypt transaction notes; construct with master_key=..."
+            )
+        return self._master_key
+
+    def decrypt_notes(self, header: Transaction) -> str | None:
+        """Return the plaintext notes for ``header`` or None when unset.
+
+        Decoded as UTF-8. Requires a configured master key.
+        """
+        if header.notes_encrypted is None:
+            return None
+        key = self._require_master_key()
+        return decrypt_field(header.notes_encrypted, key).decode("utf-8")
 
     def get(self, tx_id: UUID) -> Transaction | None:
         """Return the Transaction header by id, or None."""
@@ -217,6 +272,7 @@ class TransactionRepository:
         domain_tx: DomainTransaction,
         *,
         imported_from_id: UUID | None = None,
+        notes: str | None = None,
     ) -> Transaction:
         """Persist a balanced Domain Transaction.
 
@@ -227,9 +283,20 @@ class TransactionRepository:
         ``imported_from_id`` links the persisted row to the
         ``import_batches`` row that produced it (used by the apply /
         promote flow in P5.4.a).
+
+        ``notes`` is the transaction-level annotation (free text). When
+        provided, it is AES-256-GCM-encrypted with the constructor's
+        master key and stored in ``notes_encrypted``; ``None`` leaves
+        the column unset. Passing a non-None ``notes`` without a
+        configured master key raises :class:`MasterKeyRequiredError`.
         """
         target_status = self._domain_to_storage(domain_tx.status)
-        return self._save(domain_tx, target_status, imported_from_id=imported_from_id)
+        return self._save(
+            domain_tx,
+            target_status,
+            imported_from_id=imported_from_id,
+            notes=notes,
+        )
 
     def _save(
         self,
@@ -237,7 +304,13 @@ class TransactionRepository:
         target_status: TransactionStatus,
         *,
         imported_from_id: UUID | None = None,
+        notes: str | None = None,
     ) -> Transaction:
+        notes_blob: bytes | None = None
+        if notes is not None:
+            key = self._require_master_key()
+            notes_blob = encrypt_field(notes.encode("utf-8"), key)
+
         header = Transaction(
             household_id=self._household_id,
             id=domain_tx.id,
@@ -248,6 +321,7 @@ class TransactionRepository:
             created_by_user_id=domain_tx.created_by_user_id,
             posted_at=datetime.now(tz=UTC) if target_status is TransactionStatus.POSTED else None,
             imported_from_id=imported_from_id,
+            notes_encrypted=notes_blob,
         )
         self._session.add(header)
         self._session.flush()
@@ -374,12 +448,19 @@ class TransactionRepository:
         description: str,
         reference: str | None,
         postings: tuple[DomainPosting, ...],
+        notes: str | None | _Unset = UNSET,
     ) -> Transaction:
         """Update fields and replace postings on a PENDING transaction.
+
+        ``notes`` follows PATCH semantics: ``UNSET`` (the default) leaves
+        the column unchanged; an explicit ``None`` clears it; a string
+        encrypts and stores the new plaintext. A non-UNSET, non-None
+        ``notes`` requires a configured master key.
 
         Raises:
             LookupError: ``tx_id`` does not exist in this household.
             TransactionNotEditableError: transaction is not PENDING.
+            MasterKeyRequiredError: notes is a string but no master_key.
 
         """
         existing = self.get(tx_id)
@@ -390,13 +471,24 @@ class TransactionRepository:
                 f"transaction {tx_id} is {existing.status.value}; "
                 "only PENDING transactions may be edited (use void otherwise)"
             )
+        header_values: dict[str, object] = {
+            "date": date,
+            "description": description,
+            "reference": reference,
+        }
+        if not isinstance(notes, _Unset):
+            if notes is None:
+                header_values["notes_encrypted"] = None
+            else:
+                key = self._require_master_key()
+                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
         self._session.execute(
             update(Transaction)
             .where(
                 Transaction.household_id == self._household_id,
                 Transaction.id == tx_id,
             )
-            .values(date=date, description=description, reference=reference)
+            .values(**header_values)
         )
         # Replace postings wholesale: simpler than diff-merge and the trigger
         # is a no-op on PENDING transactions.

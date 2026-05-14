@@ -32,6 +32,15 @@ class TransactionCreate(BaseModel):
     date: date_type
     description: str = Field(min_length=1, max_length=500)
     reference: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Optional free-text transaction-level annotation. Stored "
+            "encrypted at rest; round-trips on GET. Distinct from the "
+            "headline ``description`` (which is required and short) and "
+            "from posting-level ``memo`` (which belongs on the leg)."
+        ),
+    )
     postings: list[PostingCreate] = Field(min_length=2)
 
 
@@ -53,6 +62,7 @@ class TransactionRead(BaseModel):
     date: date_type
     description: str
     reference: str | None
+    notes: str | None = None
     status: str
     postings: list[PostingRead]
     paired_shadow_tx_id: UUID | None = None
@@ -89,9 +99,21 @@ class TransactionVoidResponse(BaseModel):
 
 
 class TransactionUpdate(BaseModel):
-    """PATCH /v1/transactions/{id} body — PENDING-only, all fields optional."""
+    """PATCH /v1/transactions/{id} body — PENDING-only, all fields optional.
+
+    For ``notes`` specifically, omitting the key keeps the current value;
+    sending ``null`` clears the encrypted-notes column. The router
+    distinguishes the two via Pydantic's ``model_fields_set``.
+    """
 
     date: date_type | None = None
     description: str | None = Field(default=None, min_length=1, max_length=500)
     reference: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Free-text transaction-level annotation. Omit to leave "
+            "unchanged; send ``null`` to clear."
+        ),
+    )
     postings: list[PostingCreate] | None = Field(default=None, min_length=2)
