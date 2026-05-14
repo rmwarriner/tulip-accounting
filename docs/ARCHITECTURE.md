@@ -1,8 +1,8 @@
 # Tulip Accounting — Architectural Specification (v1)
 
-**Status:** Phases 0–7 complete. Internal-beta ready. The full v1 surface is in place: ADR-0005 AI integration end-to-end, all nine reports rendered in HTML/PDF/CSV, hledger-format journal export + import, and the `tulip reports` / `tulip journal` CLI groups.
-**Document version:** 1.2
-**Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh) · 2026-05-12 (Phase 7 close)
+**Status:** Phases 0–7 complete; Phase 8 (operations + hardening) in progress. Internal-beta ready. The full v1 surface is in place: ADR-0005 AI integration end-to-end, all nine reports rendered in HTML/PDF/CSV, hledger-format journal export + import, and the `tulip reports` / `tulip journal` CLI groups. Phase 8 deep security + deep privacy audits have shipped, along with their highest-severity Wave-1 follow-ups and a post-audit CLI/importers usability bundle.
+**Document version:** 1.3
+**Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh) · 2026-05-12 (Phase 7 close) · 2026-05-14 (Phase 8 audits + Wave-1)
 
 ---
 
@@ -135,6 +135,9 @@ Same shape, with:
   - `member`: see and edit shared accounts, manage own private accounts/envelopes/sinking funds.
   - `viewer`: read-only on shared accounts; no visibility into private accounts.
 - **Visibility** (per account / envelope / sinking fund): `shared` (default) or `private` (creator + admins only).
+- **Right to erasure** (GDPR Art. 17 / CCPA §1798.105 — shipped Phase 8 Wave-1):
+  - `DELETE /v1/users/{user_id}` — erases one user; cascades their `sessions` + `mfa_recovery_codes` and redacts their PII from `audit_log` snapshots. Admin-only (or self).
+  - `POST /v1/households/me/erase-request` → `DELETE /v1/households/me` — a two-step, token-gated household erasure (the confirmation token lives in `pending_household_erasures`). The `DELETE` cascades every household-scoped table via `ondelete="CASCADE"` and garbage-collects attachment ciphertext from disk. Admin-only.
 
 ---
 
@@ -324,6 +327,8 @@ periods
   reopened_by_user_id (nullable), reopened_at (nullable)
 ```
 
+**Auxiliary tables** (auth, AI, scheduling, notifications — created by migrations, not detailed in the core-entities view above): `sessions` (refresh-token store, SHA-256), `mfa_recovery_codes` (argon2id), `used_mfa_challenges` (single-use MFA-challenge `jti` burn list — Phase 8 Wave-1), `pending_household_erasures` (two-step GDPR Art. 17 erasure tokens — Phase 8 Wave-1), `pending_proposals` (AI proposals awaiting human approval), `notifications`, and `scheduled_jobs`. Two tenancy notes on these: `pending_proposals.ai_invocation_id` carries a **composite FK** `(household_id, ai_invocation_id) → ai_invocations` (Phase 8 Wave-1 — closes a gap where a proposal could reference another household's invocation); and every household-scoped table declares `ondelete="CASCADE"` from `households.id`, which is what makes the household-erasure endpoint a single `DELETE`.
+
 ### 4.2 Double-Entry Invariants
 
 - For any `transaction`, the sum of `postings.amount` per currency must equal zero. Enforced via:
@@ -380,6 +385,8 @@ Seed loader is generic — additional templates (debt-payoff, side-hustle, full 
 ### 5.1 Double-Entry Accounting
 
 Standard double-entry. The accounting engine module (`tulip.core.accounting`) is the single chokepoint for posting transactions. Any code path that writes a transaction goes through it. Direct INSERTs into `transactions`/`postings` are forbidden by lint rule and architecture-test (see §7.3).
+
+**Posted vs pending balances** (#274): balance queries default to *posted* balances (`status` in `posted`/`reconciled`). `GET /v1/accounts/{id}/balance?include_pending=true` and `GET /v1/reports/trial-balance?include_pending=true` (CLI: `tulip balance --pending`, default `--no-pending`) fold in `pending` transactions; pending-inclusive output is always labelled ("balance (incl. pending)") and pending-affected trial-balance rows carry a `(P)` marker, so it can't be mistaken for the settled ledger.
 
 ### 5.2 Envelope Budgeting
 
@@ -444,23 +451,25 @@ envelope up to `amount` per period. `percentage_of_income` contributes
 
 Both flows supported:
 
-1. **Manual flag.** Users can mark transactions as `cleared` (matched against their own records) and `reconciled` (matched against an actual statement). A reconciliation summary report shows uncleared/unreconciled.
+1. **Manual flag.** Users can mark transactions as `cleared` (matched against their own records) and `reconciled` (matched against an actual statement). A reconciliation summary report shows uncleared/unreconciled. **Paper-statement reconciliation** (#275): a reconciliation need not be backed by an uploaded statement file — `tulip reconcile start` opens one with `source_import_batch_id IS NULL` and `reconciliation_match.line_id` is nullable, so a user comparing transactions against a paper statement in hand can reconcile without an import batch.
 2. **Statement-driven matching.** User imports a statement (OFX or CSV) for an account. The reconciliation matcher compares statement entries against existing transactions and creates a `reconciliation` record. Matching algorithm: amount + date (±3 days configurable) + fuzzy description match. Unmatched statement lines become `pending` transactions awaiting categorization. Unmatched ledger transactions are flagged for review.
 
 ### 5.9 Importers (v1)
 
 | Format | Parser library | Notes |
 |---|---|---|
-| OFX | `ofxparse` (tested baseline) — verify maintenance status at implementation time | Most banks/credit cards |
-| QIF | Custom parser (format is small, public domain) | Older Quicken format |
+| OFX | `ofxtools` (chosen over `ofxparse` for active maintenance + XXE safety) | Most banks/credit cards |
+| QIF | Custom line-oriented parser (format is small, public domain) | Older Quicken format; handles `!Account` multi-account files, `S`-line splits, and `L[Account]` transfers |
 | CSV | Custom parser with column-mapping config | Per-institution mapping profiles savable as YAML |
 
 Each importer:
 - Reads the source file → produces a `proposed_import` (in-memory, with proposed transactions and postings).
-- Runs the auto-categorization AI capability if enabled (or rule-based fallback).
+- Runs the auto-categorization AI capability if enabled (or rule-based fallback). `--no-categorize` skips this for bulk historical migrations (#202).
 - Presents the proposed batch to the user for review.
 - On user `apply`, posts transactions atomically and records an `import_batch`.
 - Original file is stored as an attachment for audit trail.
+
+**Multi-account QIF** (#195a/#195b, #198): Banktivity-style QIF exports carry several accounts in one file (`!Account` section headers) and intra-file transfers (`L[Account]` links). `POST /v1/imports/multi-account` takes the whole file plus an `account_map` JSON form field (QIF account name → Tulip account) in a single POST; the importer pairs the two legs of each transfer into one balanced transaction, and an unmatched leg falls back to a one-sided line with a warning. Non-transaction QIF sections (`!Type:Cat`, `!Type:Class`, etc.) are skipped rather than erroring.
 
 ### 5.10 Journal Format Export/Import (Level 3)
 
@@ -542,10 +551,11 @@ Capability-level `null` inherits the household default. `profile` selects a reda
 
 ### 7.1 Authentication
 
-- **Password hashing:** argon2id (via `argon2-cffi`), with sensible memory/time parameters reviewed annually.
-- **Session model for first-party clients (CLI):** API issues a JWT access token (15 min) + opaque refresh token (30 days, rotating, stored hashed in DB). CLI persists tokens in OS keyring (via `keyring` library) — never plaintext on disk.
+- **Password hashing:** argon2id (via `argon2-cffi`), with OWASP-2024 minimum parameters; PHC-formatted hashes are self-describing, so `needs_rehash` re-tunes old hashes on next successful login. The login path is constant-time with respect to "user exists" (Phase 8 Wave-1 — closes a user-enumeration timing oracle).
+- **Session model for first-party clients (CLI):** API issues a JWT access token (15 min) + opaque refresh token (30 days, rotating). The refresh token is 256-bit `secrets.token_urlsafe` and stored **SHA-256** in `sessions` — full token entropy makes a slow KDF unnecessary, and the deterministic hash lets the revoke-on-logout lookup hit an index. CLI persists tokens in OS keyring (via `keyring` library) — never plaintext on disk.
 - **API tokens for non-interactive clients:** scoped, revocable, optionally with expiry. Stored hashed.
-- **MFA:** TOTP (RFC 6238) via `pyotp`. Recovery codes generated at enrollment, hashed at rest. MFA challenge required at login when enabled. Default tenant policy: required for admins, optional for members.
+- **MFA:** TOTP (RFC 6238) via `pyotp`; TOTP secrets are AES-256-GCM-encrypted at rest. Recovery codes are argon2id-hashed with an 80-bit entropy floor (Phase 8 Wave-1). MFA challenge required at login when enabled: a successful password check issues a short-lived MFA-challenge JWT carrying a single-use `jti`, redeemed at `POST /v1/auth/login/mfa` or `/login/recover`; the `jti` is burned in `used_mfa_challenges` on redemption so a captured challenge token can't be replayed (Phase 8 Wave-1). Default tenant policy: required for admins, optional for members.
+- **Auth rate limiting:** the four most abuse-exposed `/v1/auth/*` endpoints sit behind per-IP `slowapi` quotas — see §7.6.
 
 ### 7.2 Logging & Observability
 
@@ -554,7 +564,7 @@ Capability-level `null` inherits the household default. `profile` selects a reda
 - Each request gets a `request_id` (UUID) attached to the structlog context. The request_id propagates through every log line and into the `audit_log` and `ai_invocations` rows for the duration of the request.
 - Standard fields on every log line: `timestamp`, `level`, `event`, `request_id`, `household_id` (when in tenant scope), `user_id` (when authenticated), `module`.
 - Default sink: stdout (works directly with Docker, journald, syslog, or direct file capture). Configurable to file with rotation (`logging.handlers.RotatingFileHandler`).
-- **PII redaction:** structlog processor redacts known-sensitive fields (account numbers, password fields, TOTP secrets, API keys) before serialization. Redaction is whitelist-based on field names; unknown fields are emitted as-is. A test enforces redaction on every known-sensitive field.
+- **PII redaction:** structlog processor redacts known-sensitive fields (account numbers, password fields, TOTP secrets, API keys, the master key, and — as of Phase 8 Wave-1 — email addresses and IP addresses) before serialization. Redaction is whitelist-based on field names; unknown fields are emitted as-is. A test enforces redaction on every known-sensitive field.
 - **OpenTelemetry hooks:** `opentelemetry-instrumentation-fastapi` and `-sqlalchemy` are installed but disabled by default. Enable via env var; emits to OTLP endpoint. This makes future observability (Tempo, Jaeger, Honeycomb) a config flip.
 - **Log levels:** `DEBUG` for development, `INFO` for production default. `WARNING` for soft-close overrides, AI provider degradation. `ERROR` for failures requiring attention. Standard severity discipline.
 
@@ -623,8 +633,8 @@ The user has explicitly called out comprehensive testing compliant with modern T
 
 - Per-IP at the reverse-proxy layer (in production deployments).
 - Per-user/tenant at the application layer using `slowapi`:
-  - Auth endpoints: aggressive limits to deter brute force.
-  - AI endpoints: per-user (60/hour default) and per-household ($10/month default).
+  - **Auth endpoints (shipped — Phase 8 Wave-1, #219):** a single module-level `slowapi.Limiter` keyed on client IP guards the four most abuse-exposed surfaces — `POST /v1/auth/login` (`10/minute`), `/login/mfa` (`10/minute`), `/login/recover` (`10/minute`), `/refresh` (`30/minute`). Exceedance is an RFC 9457 `auth.rate_limited` (429) with a `Retry-After` header. Storage backend is in-memory (fine for single-process SQLite; switch to Redis when multi-replica). Per-email keying was considered and deferred — `slowapi`'s key function runs before the body is parsed; the per-IP gate alone defeats the bulk credential-stuffing case.
+  - AI endpoints: per-user (60/hour default) and per-household ($10/month default) — enforced server-side in `tulip_ai.cost.enforce_pre_call`.
   - Bulk endpoints (import, export): limits scaled by payload size.
 
 ### 7.7 Notifications
@@ -986,12 +996,16 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **P7.5** — hledger-compatible `POST /v1/journal/import`; account paths resolve by code first then `(type, name)`; imported transactions land in PENDING for review — same convention as the OFX / QIF / CSV importers (PR #188). Phase 7 closes.
 - ✅ **P7.1.b** — CLI surface: `tulip reports <name>` (9 subcommands, `--format json|html|pdf|csv`, `--output PATH`) and `tulip journal {export,import}` over the existing endpoints (PR #190).
 
-### Phase 8 — Operations + hardening
-- Docker compose for home server
-- Backup/restore CLI commands
-- Documentation pass: ARCHITECTURE, DEPLOYMENT, SECURITY, AI
-- **Deep security audit** — full threat model review, dependency / SBOM review, secrets handling, key management, encryption-at-rest verification (SQLCipher landing here if not earlier), tenant-scoping enforcement audit, and a pen-test pass against the self-hosted single-tenant deployment.
-- Performance pass on common queries
+### Phase 8 — Operations + hardening 🔄 in progress
+- ✅ **Deep security audit** — shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md). Multi-agent static review across seven streams (auth/session, authz/tenancy, crypto, input-validation, secrets/logging/deps, audit-log/ops, AI/backup); `pip-audit` clean. **0 Critical · 8 High · 25 Medium · 24 Low.** Document-only; findings tracked as follow-up issues. Explicitly *not* a pen test — that stays deferred to Phase 9.
+- ✅ **Deep privacy audit** — shipped 2026-05-13 as [docs/audits/2026-05-13-deep-privacy-audit.md](audits/2026-05-13-deep-privacy-audit.md). Full-system GDPR / CCPA framing — personal-data inventory, data flows, retention/deletion, user-rights infrastructure, multi-user-within-household boundaries. **1 Critical · 17 High · 28 Medium · 22 Low.**
+- ✅ **Security Wave-1 follow-ups** — the highest-severity security findings: `slowapi` rate limiting on the four `/v1/auth/*` abuse surfaces (#219), single-use MFA-challenge JWTs via the `used_mfa_challenges` table (#219), 80-bit recovery-code entropy floor (#219), constant-time login path closing the user-enumeration timing oracle, structlog email/IP redaction on by default, `AICategorizer` session-deadlock fix (#199, #200), and the proposal `actor_kind` spoofing fix.
+- ✅ **Privacy Wave-1 follow-ups** — the Critical + High privacy findings: `local_only` AI profile pins to Ollama regardless of `fallback_provider` (#233); GDPR Art. 17 right-to-erasure for users (`DELETE /v1/users/{user_id}`, #235) and households (`POST /v1/households/me/erase-request` → `DELETE /v1/households/me`, #235) with attachment-ciphertext GC and audit-log PII redaction (#234).
+- ✅ **Post-audit CLI + importers usability bundle** — surfaced during user testing, batched as friction-fixers: account resolution by unique name or hierarchical colon-path (#197) plus an interactive selectable-list picker when a UUID-required command runs without one (#273), `GET /v1/imports` + `tulip imports list` (#272), `tulip imports show` exposes `BATCH_ID` (#203), `--pending` / `include_pending` folds PENDING transactions into balances with clear labelling (#274), multi-account QIF import via `--account-map` (#195a) with cross-account transfer pairing (#195b) and non-transaction-section skipping (#198), QIF split-posting fidelity (#270), `tulip imports apply --posted` (#210) and `--no-categorize` (#202) for bulk migrations, Rich `Console` honouring `COLUMNS` for stable non-TTY rendering (#285), right-aligned numeric columns for financial legibility (#289), and a paper-statement (no-OFX) reconciliation flow (#275).
+- 🔄 **Documentation pass** — ARCHITECTURE, THREAT_MODEL, PHASE_STATUS, README, QUICKSTART brought current through Phase 8 (this pass). DEPLOYMENT, SECURITY, AI docs still pending.
+- Docker compose for home server *(pending)*
+- Backup/restore CLI commands *(pending — restore-path traversal hardening tracked from security audit H-1)*
+- Performance pass on common queries *(pending)*
 
 ### Phase 9 — Pre-cloud preparation (optional, before multi-tenant rollout)
 - Postgres backend implementation against the existing storage abstraction
@@ -1005,8 +1019,9 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 | Audit | When | Why then |
 |---|---|---|
 | **Lightweight threat-model checkpoint** | Between Phase 3 and Phase 4 — ✅ shipped 2026-05-01 | Captures trust boundaries, data classifications, deferred mitigations, and the constraints Phase 4–6 work must not violate. See [docs/THREAT_MODEL.md](THREAT_MODEL.md). |
-| **Privacy audit** | Before Phase 6 implementation begins — ✅ shipped 2026-05-11 as [ADR-0005](adrs/0005-ai-integration.md) | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
-| **Deep security audit** | Phase 8 (operations + hardening) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
+| **Privacy audit (AI)** | Before Phase 6 implementation begins — ✅ shipped 2026-05-11 as [ADR-0005](adrs/0005-ai-integration.md) | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
+| **Deep security audit** | Phase 8 (operations + hardening) — ✅ shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
+| **Deep privacy audit** | Phase 8, alongside the security audit — ✅ shipped 2026-05-13 as [docs/audits/2026-05-13-deep-privacy-audit.md](audits/2026-05-13-deep-privacy-audit.md) | Verifies the shipped state of the ADR-0005 AI privacy posture and broadens to a full-system GDPR / CCPA review before any real-user rollout. |
 | **Pre-cloud security re-audit** | Phase 9, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
 
 ---

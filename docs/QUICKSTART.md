@@ -159,19 +159,30 @@ uv run tulip imports show "$BATCH_ID"
 
 You should see six lines: two payroll credits, four debits.
 
+`tulip imports list` shows every batch you've uploaded, newest first —
+handy later when you've forgotten a `$BATCH_ID`; the printed 8-char
+prefix works anywhere the full UUID does.
+
 Now promote them to PENDING transactions in the ledger:
 
 ```bash
 uv run tulip imports apply "$BATCH_ID"
 ```
 
-Verify the balance:
+Verify the balance. `tulip balance` takes an account code, name, or
+UUID as a positional argument (omit it for a full trial balance):
 
 ```bash
-uv run tulip balance --account 1010
+uv run tulip balance 1010 --pending
 ```
 
-Should show `3611.88 USD` (matches the OFX `LEDGERBAL`).
+Should show `3611.88 USD` (matches the OFX `LEDGERBAL`). The
+`--pending` flag matters here: by default `tulip balance` counts only
+POSTED and RECONCILED transactions, and the lines you just applied are
+still PENDING — so the plain `tulip balance 1010` reads `0.00` until
+you reconcile in the next step. Pending-inclusive output is always
+labelled "(incl. pending)" so you can't mistake it for the settled
+ledger.
 
 ---
 
@@ -220,6 +231,14 @@ sum(matched ledger postings)`) and stamps each matched transaction
 with `reconciled_at`. If you ever see a `reconciliation.unbalanced`
 error here, look at `tulip reconcile show` first — there's a 4-section
 diff that tells you which lines aren't accounted for.
+
+> **No statement file?** If you're working from a paper statement
+> rather than an import batch, use `tulip reconcile start --account
+> 1010 --statement-date 2026-05-31 --closing-balance 3611.88` instead
+> of `reconcile create`. It opens a reconciliation with no source
+> batch, and `tulip reconcile walk` / `tulip reconcile interactive`
+> let you tick ledger transactions off one at a time against the paper
+> in hand.
 
 ---
 
