@@ -14,9 +14,9 @@ import sys
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._pools import _resolve_sinking_fund
 from tulip_cli.config import Config
@@ -56,7 +56,7 @@ def _render_table(
             sf.get("contribution_strategy") or "",
             balances.get(sf.get("id", ""), "—"),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 def _fetch_balances(client: TulipClient, pool_ids: list[str]) -> dict[str, str]:

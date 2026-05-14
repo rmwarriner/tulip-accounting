@@ -8,9 +8,9 @@ from typing import Annotated, Any
 
 import httpx
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
@@ -59,7 +59,7 @@ def _render_profile_table(rows: list[dict[str, Any]]) -> None:
             repr(row.get("delimiter", "")),
             str(row.get("id", ""))[:8],
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @csv_profiles_app.command("add")

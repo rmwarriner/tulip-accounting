@@ -32,9 +32,9 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._editor import edit_buffer
@@ -515,7 +515,7 @@ def _render_tx_list_table(
             row.get("status") or "",
             summary,
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 def _render_tx_detail(
@@ -550,7 +550,7 @@ def _render_tx_detail(
             currency,
             str(p.get("memo") or ""),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @transactions_app.command("list")

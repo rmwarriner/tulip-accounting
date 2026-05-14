@@ -265,8 +265,9 @@ def list_imports(
 
 def _render_list_table(items: list[dict[str, Any]]) -> None:
     """Render a list of ``ImportBatchListItem`` dicts as a Rich table."""
-    from rich.console import Console
     from rich.table import Table
+
+    from tulip_cli._console import make_console
 
     table = Table(show_header=True, show_lines=False)
     table.add_column("id")
@@ -293,7 +294,7 @@ def _render_list_table(items: list[dict[str, Any]]) -> None:
             str(item.get("source_filename") or ""),
             f"{item.get('imported_count', 0)}/{item.get('skipped_count', 0)}",
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @imports_app.command("show")
@@ -325,10 +326,11 @@ def show_import(
 
 def _render_batch(body: dict[str, Any]) -> None:
     """Render an ``ImportBatchRead`` body to stdout."""
-    from rich.console import Console
     from rich.table import Table
 
-    console = Console()
+    from tulip_cli._console import make_console
+
+    console = make_console()
     header_lines = [
         f"Batch:    {body.get('id', '')}",
         f"Source:   {body.get('source_filename', '')} ({body.get('source_format', '?').upper()})",

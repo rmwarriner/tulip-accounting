@@ -24,8 +24,9 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import httpx
-from rich.console import Console
 from rich.text import Text
+
+from tulip_cli._console import make_console
 
 EXIT_OK: Final[int] = 0
 EXIT_USER: Final[int] = 1
@@ -180,7 +181,7 @@ class CliError(Exception):
         if self.as_json:
             sys.stdout.write(json.dumps(self.problem) + "\n")
             return
-        console = Console(stderr=True, highlight=False)
+        console = make_console(stderr=True, highlight=False)
         title = Text(str(self.problem.get("title", "Error")), style="bold red")
         console.print(title)
         detail = self.problem.get("detail")

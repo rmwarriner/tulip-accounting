@@ -20,10 +20,10 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import typer
-from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import EXIT_USER, CliError
@@ -259,7 +259,7 @@ def _render_table(accounts: list[dict[str, Any]]) -> None:
             a.get("currency") or "",
             a.get("visibility") or "",
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 def _render_tree(accounts: list[dict[str, Any]]) -> None:
@@ -303,7 +303,7 @@ def _render_tree(accounts: list[dict[str, Any]]) -> None:
     for a in orphans:
         node = root.add(_label(a) + " [yellow](parent not visible)[/yellow]")
         _attach(node, a)
-    Console().print(root)
+    make_console().print(root)
 
 
 def _has_nesting(accounts: list[dict[str, Any]]) -> bool:

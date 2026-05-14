@@ -18,9 +18,9 @@ import sys
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._pools import _resolve_envelope, _summarize_refill_rule
 from tulip_cli.config import Config
@@ -62,7 +62,7 @@ def _render_table(
             balances.get(env.get("id", ""), "—"),
             _summarize_refill_rule(env.get("refill_rule")),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 def _fetch_balances(client: TulipClient, pool_ids: list[str]) -> dict[str, str]:
