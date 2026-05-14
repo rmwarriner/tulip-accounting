@@ -12,6 +12,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from _cli_asserts import assert_cli_usage_error
+
 _PASSWORD = "long-enough-password"
 
 _OFX_FIXTURES = (
@@ -591,20 +593,14 @@ def test_import_qif_account_and_account_map_are_mutually_exclusive(
         str(account_map),
         api_url=authed_session,
     )
-    assert result.returncode != 0
-    # Typer's BadParameter panel truncates mid-word in CI — assert on the
-    # width-stable usage banner rather than the message body (#285).
-    combined = (result.stdout + result.stderr).lower()
-    assert "usage" in combined or "not both" in combined
+    assert_cli_usage_error(result)
 
 
 @pytest.mark.integration
 def test_import_qif_requires_account_or_account_map(authed_session: str) -> None:
     fixture = _OFX_FIXTURES.parent / "qif" / "minimal.qif"
     result = _run_cli("import", "qif", str(fixture), api_url=authed_session)
-    assert result.returncode != 0
-    combined = (result.stdout + result.stderr).lower()
-    assert "usage" in combined or "account" in combined
+    assert_cli_usage_error(result)
 
 
 @pytest.mark.integration
@@ -620,12 +616,7 @@ def test_import_qif_account_map_invalid_json_errors(authed_session: str, tmp_pat
         str(bad_map),
         api_url=authed_session,
     )
-    assert result.returncode != 0
-    # Typer renders BadParameter in a Rich panel that CI truncates
-    # mid-word (the #285 lesson); assert on the width-stable signals —
-    # a non-zero exit plus the usage banner — rather than the message body.
-    combined = (result.stdout + result.stderr).lower()
-    assert "usage" in combined or "account-map" in combined
+    assert_cli_usage_error(result)
 
 
 @pytest.mark.integration
@@ -886,9 +877,4 @@ def test_imports_list_status_filter(authed_session: str) -> None:
 def test_imports_list_invalid_status_rejected(authed_session: str) -> None:
     """`tulip imports list --status bogus` exits with a usage error."""
     result = _run_cli("imports", "list", "--status", "bogus", api_url=authed_session)
-    assert result.returncode != 0
-    # CI's narrower Typer/Rich rendering sometimes truncates the panel
-    # before our --status substring — match any of the unambiguous
-    # error signals instead.
-    combined = (result.stdout + result.stderr).lower()
-    assert any(needle in combined for needle in ("status", "bogus", "usage"))
+    assert_cli_usage_error(result)

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -17,9 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-# Strip ANSI styling so substring assertions on CLI output don't break
-# when Rich line-wraps narrower in CI than in a normal terminal.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+from _cli_asserts import assert_cli_usage_error
 
 _PASSWORD = "long-enough-password"
 _OFX_FIXTURES = (
@@ -200,8 +197,7 @@ def test_reconcile_create_invalid_period_returns_2(session_setup: dict[str, str]
         "1457.83",
         api_url=session_setup["api_url"],
     )
-    assert result.returncode != 0
-    assert "period" in (result.stdout + result.stderr).lower()
+    assert_cli_usage_error(result, contains="period")
 
 
 @pytest.mark.integration
@@ -670,9 +666,7 @@ def test_reconcile_start_invalid_date_returns_2(session_setup: dict[str, str]) -
         "1457.83",
         api_url=session_setup["api_url"],
     )
-    assert result.returncode != 0
-    combined = _ANSI_RE.sub("", (result.stdout + result.stderr)).lower()
-    assert "statement-date" in combined or "statement_date" in combined
+    assert_cli_usage_error(result)
 
 
 @pytest.mark.integration
