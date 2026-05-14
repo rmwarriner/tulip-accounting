@@ -5,6 +5,13 @@ from tulip_importers.qif.parser import (
     QifParseError,
     parse,
     split_accounts,
+    transfer_target,
 )
 
-__all__ = ["QifAccountChunk", "QifParseError", "parse", "split_accounts"]
+__all__ = [
+    "QifAccountChunk",
+    "QifParseError",
+    "parse",
+    "split_accounts",
+    "transfer_target",
+]

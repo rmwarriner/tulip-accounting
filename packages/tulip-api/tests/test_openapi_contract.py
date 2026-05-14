@@ -161,17 +161,19 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     undocumented response, or the documented schema doesn't actually
     describe what comes back. Both are real bugs.
     """
-    # Path-collision skip (P5.2.c): POST /v1/imports/profiles/import is a
-    # static path; the sibling PATCH/DELETE/GET on /v1/imports/profiles/{id_or_name}
-    # also matches "import" as a path-param value. Schemathesis fuzzes
-    # PATCH /v1/imports/profiles/import expecting 405 (since the spec
-    # only documents POST), but it routes to update_profile(id_or_name="import")
-    # and returns 401 (auth) or 404 (no such profile). The collision is
-    # harmless — `import` would be a confusing profile name regardless —
-    # but schemathesis flags it. Skip non-POST methods on the static path.
-    if str(case.path) == "/v1/imports/profiles/import" and case.method.upper() != "POST":
+    # Path-collision skip: a static path under /v1/imports/ shadows the
+    # parameterised GET /v1/imports/{batch_id} (and the profiles variant)
+    # for any non-declared method. Schemathesis fuzzes e.g.
+    # GET /v1/imports/multi-account expecting 405 (only POST is documented
+    # there), but `multi-account` is a syntactically valid {batch_id}
+    # value so it routes to get_import_batch and 401s on auth first. The
+    # collision is harmless — batch ids are UUIDs and profile names like
+    # `import` / `multi-account` would be confusing regardless — but
+    # schemathesis can't tell. Skip non-POST methods on the static paths.
+    _STATIC_IMPORT_PATHS = ("/v1/imports/profiles/import", "/v1/imports/multi-account")
+    if str(case.path) in _STATIC_IMPORT_PATHS and case.method.upper() != "POST":
         pytest.skip(
-            "path-collision: PATCH/DELETE on /import routes to /{id_or_name}; "
-            "harmless — see comment."
+            "path-collision: non-POST on a static /v1/imports/* path routes to "
+            "a parameterised sibling; harmless — see comment."
         )
     case.call_and_validate()

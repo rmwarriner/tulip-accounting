@@ -21,9 +21,10 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
@@ -35,6 +36,7 @@ from tulip_api.errors import (
     AccountUnknownError,
     CsvProfileNotFoundError,
     ForbiddenError,
+    ImportAccountMapInvalidError,
     ImportAlreadyAppliedError,
     ImportBatchNotFoundError,
     ImportCategorizeUnknownAccountError,
@@ -44,6 +46,7 @@ from tulip_api.errors import (
     ImportMultiAccountQifError,
     ImportOfxParseFailedError,
     ImportQifAccountNotFoundError,
+    ImportQifAccountUnmappedError,
     ImportQifParseFailedError,
     ImportUnsupportedFormatError,
     RequestPayloadTooLargeError,
@@ -59,6 +62,7 @@ from tulip_api.schemas.import_batch import (
     ImportBatchListResponse,
     ImportBatchRead,
     ImportBatchSummary,
+    MultiAccountImportSummary,
     StatementLinePromoteResponse,
     StatementLineRead,
 )
@@ -70,7 +74,11 @@ from tulip_api.services.import_apply import (
     apply_batch,
     promote_statement_line,
 )
+from tulip_api.services.qif_multi_account import pair_transfers
 from tulip_core.reconciliation.categorizer import get_categorizer
+from tulip_core.transactions import Posting as DomainPosting
+from tulip_core.transactions import Transaction as DomainTransaction
+from tulip_core.transactions import TransactionStatus as DomainTxStatus
 from tulip_importers.csv import CsvParseError, CsvProfile
 from tulip_importers.csv import parse as csv_parse
 from tulip_importers.ofx import OfxParseError
@@ -86,12 +94,15 @@ from tulip_storage.repositories import (
     CsvProfileRepository,
     ImportBatchRepository,
     StatementLineRepository,
+    TransactionRepository,
 )
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from tulip_api.auth.tokens import Claims
+    from tulip_core.reconciliation import ParsedStatementLine
+    from tulip_storage.models import Account, ImportBatch, StatementLine
 
 
 router = APIRouter(prefix="/v1/imports", tags=["imports"])
@@ -406,6 +417,264 @@ async def upload_import(
         skipped_count=batch.skipped_count,
         error_count=batch.error_count,
         created_at=batch.created_at,
+    )
+
+
+def _parse_account_map(account_map: str) -> dict[str, UUID]:
+    """Parse + validate the ``account_map`` form field (#195b).
+
+    Expects a JSON object mapping each QIF !Account name to a tulip
+    account UUID string — the CLI resolves codes/names to UUIDs before
+    sending, so the server only has to validate the shape.
+    """
+    try:
+        raw_map = json.loads(account_map)
+    except json.JSONDecodeError as exc:
+        raise ImportAccountMapInvalidError(reason=str(exc)) from exc
+    if not isinstance(raw_map, dict) or not raw_map:
+        raise ImportAccountMapInvalidError(reason="expected a non-empty JSON object")
+    name_to_uuid: dict[str, UUID] = {}
+    for qif_name, value in raw_map.items():
+        try:
+            name_to_uuid[str(qif_name)] = UUID(str(value))
+        except ValueError as exc:
+            raise ImportAccountMapInvalidError(
+                reason=f"{qif_name!r} maps to {value!r}, which is not a UUID"
+            ) from exc
+    return name_to_uuid
+
+
+@router.post(
+    "/multi-account",
+    response_model=MultiAccountImportSummary,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "account.unknown",
+            "import.qif_parse_failed",
+            "import.qif_account_unmapped",
+            "import.account_map_invalid",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        409: problem_response("import.duplicate_file"),
+        413: problem_response("request.payload_too_large"),
+    },
+)
+async def upload_multi_account_qif(
+    request: Request,
+    file: UploadFile = File(  # noqa: B008
+        ..., description="A multi-account QIF file (2+ !Account blocks)."
+    ),
+    account_map: str = Form(
+        ...,
+        description=(
+            "JSON object mapping each QIF !Account name to a tulip account "
+            "UUID. The CLI resolves codes / names / paths to UUIDs before "
+            "sending, so the server only validates the shape."
+        ),
+    ),
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MultiAccountImportSummary:
+    """Ingest a multi-account QIF — one batch per account, transfers paired (#195b).
+
+    The file is split by !Account block; each account's transactions land
+    in their own import batch. Cross-account transfers (reciprocal
+    ``L[Account]`` legs) are landed directly as one balanced PENDING
+    transaction, with both source statement lines marked promoted to it.
+    Transfer legs that can't be paired fall back to ordinary one-sided
+    statement lines and are reported in ``warnings``.
+    """
+    raw_bytes = await file.read()
+    if len(raw_bytes) > MAX_OFX_BYTES:
+        raise RequestPayloadTooLargeError(max_bytes=MAX_OFX_BYTES)
+    if not raw_bytes:
+        raise ImportQifParseFailedError(reason="uploaded file is empty")
+
+    name_to_uuid = _parse_account_map(account_map)
+
+    chunks = qif_split_accounts(raw_bytes)
+    if not chunks:
+        raise ImportQifParseFailedError(
+            reason=(
+                "this QIF has no !Account blocks — use POST /v1/imports with "
+                "account_id for a single-account file"
+            )
+        )
+
+    # Every account the file declares must be covered by the map.
+    unmapped = sorted({c.account_name for c in chunks if c.account_name not in name_to_uuid})
+    if unmapped:
+        raise ImportQifAccountUnmappedError(unmapped=unmapped)
+
+    # Resolve + validate every mapped account up front.
+    accounts_repo = AccountRepository(session, claims.household_id)
+    account_by_name: dict[str, Account] = {}
+    for chunk in chunks:
+        acct = accounts_repo.get(name_to_uuid[chunk.account_name])
+        if acct is None:
+            raise AccountUnknownError(account_id=str(name_to_uuid[chunk.account_name]))
+        account_by_name[chunk.account_name] = acct
+
+    # Parse each chunk against its account's currency.
+    parsed_by_account: dict[str, list[ParsedStatementLine]] = {}
+    for chunk in chunks:
+        try:
+            parsed_by_account[chunk.account_name] = qif_parse(
+                chunk.qif_text.encode("utf-8"),
+                currency=account_by_name[chunk.account_name].currency,
+            )
+        except QifParseError as exc:
+            raise ImportQifParseFailedError(
+                reason=f"account {chunk.account_name!r}: {exc}"
+            ) from exc
+
+    # Match reciprocal cross-account transfer legs.
+    pairs, warnings = pair_transfers(parsed_by_account, name_to_uuid)
+
+    # Attachment + per-account dedup. The attachment covers the whole file;
+    # re-importing it is a duplicate for every account it touches.
+    settings = get_settings()
+    attachment_repo = AttachmentRepository(
+        session,
+        claims.household_id,
+        master_key=settings.master_key,
+        attachment_root=settings.attachment_root,
+    )
+    batch_repo = ImportBatchRepository(session, claims.household_id)
+    content_hash = hashlib.sha256(raw_bytes).hexdigest()
+    existing_attachment = attachment_repo.find_by_hash(content_hash)
+    if existing_attachment is not None:
+        for chunk in chunks:
+            dup = batch_repo.find_for_attachment(
+                account_id=name_to_uuid[chunk.account_name],
+                attachment_id=existing_attachment.id,
+            )
+            if dup is not None:
+                raise ImportDuplicateFileError(
+                    content_hash=content_hash, existing_batch_id=str(dup.id)
+                )
+        attachment = existing_attachment
+    else:
+        attachment = attachment_repo.create(
+            filename=file.filename or "upload.qif",
+            content_type=file.content_type or "application/qif",
+            raw_bytes=raw_bytes,
+            uploaded_by_user_id=claims.user_id,
+        )
+
+    # One batch per account; bulk-insert every parsed line (transfer legs
+    # included — they're marked promoted below, not omitted).
+    line_repo = StatementLineRepository(session, claims.household_id)
+    batches: dict[str, ImportBatch] = {}
+    line_index: dict[tuple[str, int], StatementLine] = {}
+    for chunk in chunks:
+        parsed = parsed_by_account[chunk.account_name]
+        batch = batch_repo.create(
+            account_id=name_to_uuid[chunk.account_name],
+            source_format=SourceFormat.QIF,
+            source_filename=file.filename or "upload.qif",
+            source_file_attachment_id=attachment.id,
+            created_by_user_id=claims.user_id,
+            summary_json={"line_count": len(parsed)},
+        )
+        batches[chunk.account_name] = batch
+        inserted = line_repo.bulk_insert(
+            batch.id,
+            [
+                {
+                    "line_number": p.line_number,
+                    "posted_date": p.posted_date,
+                    "amount": p.amount.amount,
+                    "currency": p.amount.currency,
+                    "description": p.description,
+                    "counterparty": p.counterparty,
+                    "reference": p.reference,
+                    "fitid": p.fitid,
+                    "raw_json": str(dict(p.raw)),
+                }
+                for p in parsed
+            ],
+        )
+        for sl in inserted:
+            line_index[(chunk.account_name, sl.line_number)] = sl
+        batch.imported_count = len(parsed)
+        AuditLogWriter(session, claims.household_id).write(
+            action="import_create",
+            actor_kind="user",
+            actor_user_id=claims.user_id,
+            entity_type="import_batch",
+            entity_id=batch.id,
+            after={
+                "account_id": str(name_to_uuid[chunk.account_name]),
+                "source_format": "qif",
+                "source_filename": file.filename or "upload.qif",
+                "line_count": len(parsed),
+                "qif_account": chunk.account_name,
+            },
+            request_id=_request_uuid(request),
+        )
+
+    # Land each matched transfer pair as one balanced PENDING transaction;
+    # mark both source statement lines promoted to it so a later `apply`
+    # skips them.
+    tx_repo = TransactionRepository(session, claims.household_id)
+    for pair in pairs:
+        from_line = pair.from_line
+        to_line = pair.to_line
+        domain_tx = DomainTransaction(
+            id=uuid4(),
+            household_id=claims.household_id,
+            date=from_line.posted_date,
+            description=from_line.description,
+            postings=(
+                DomainPosting(
+                    id=uuid4(),
+                    account_id=name_to_uuid[pair.from_account],
+                    amount=from_line.amount,
+                ),
+                DomainPosting(
+                    id=uuid4(),
+                    account_id=name_to_uuid[pair.to_account],
+                    amount=to_line.amount,
+                ),
+            ),
+            status=DomainTxStatus.PENDING,
+            created_by_user_id=claims.user_id,
+        )
+        tx = tx_repo.save_balanced(domain_tx, imported_from_id=batches[pair.from_account].id)
+        from_sl = line_index[(pair.from_account, from_line.line_number)]
+        to_sl = line_index[(pair.to_account, to_line.line_number)]
+        line_repo.mark_promoted(from_sl.id, tx.id)
+        line_repo.mark_promoted(to_sl.id, tx.id)
+
+    session.commit()
+    log.info(
+        "import.multi_account.created",
+        batch_count=len(chunks),
+        transfer_count=len(pairs),
+        warning_count=len(warnings),
+    )
+
+    return MultiAccountImportSummary(
+        batches=[
+            ImportBatchSummary(
+                id=batches[chunk.account_name].id,
+                account_id=name_to_uuid[chunk.account_name],
+                source_format="qif",
+                source_filename=batches[chunk.account_name].source_filename,
+                status=batches[chunk.account_name].status.value,
+                statement_line_count=batches[chunk.account_name].imported_count,
+                imported_count=batches[chunk.account_name].imported_count,
+                skipped_count=batches[chunk.account_name].skipped_count,
+                error_count=batches[chunk.account_name].error_count,
+                created_at=batches[chunk.account_name].created_at,
+            )
+            for chunk in chunks
+        ],
+        transfer_count=len(pairs),
+        warnings=warnings,
     )
 
 

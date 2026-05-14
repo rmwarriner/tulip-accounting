@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tulip_core.reconciliation import ParsedStatementLine
-from tulip_importers.qif import QifParseError, parse, split_accounts
+from tulip_importers.qif import QifParseError, parse, split_accounts, transfer_target
 
 FIXTURES = Path(__file__).parent / "fixtures" / "qif"
 
@@ -285,6 +285,26 @@ class TestSplitAccounts:
         checking = parse(chunks[0].qif_text.encode("utf-8"), currency="USD")
         # Only the two real !Type:Bank transactions, no category/security rows.
         assert len(checking) == 2
+
+
+class TestTransferTarget:
+    """Per #195b: a QIF transfer marks its other side as L[Account Name]."""
+
+    def test_bracketed_category_is_a_transfer_target(self):
+        assert transfer_target({"L": "[Checking]"}) == "Checking"
+
+    def test_account_name_with_spaces(self):
+        assert transfer_target({"L": "[Credit Card]"}) == "Credit Card"
+
+    def test_brackets_and_padding_are_stripped(self):
+        assert transfer_target({"L": "  [ Savings ] "}) == "Savings"
+
+    def test_plain_category_is_not_a_transfer(self):
+        assert transfer_target({"L": "Expenses:Groceries"}) is None
+
+    def test_missing_l_field_is_not_a_transfer(self):
+        assert transfer_target({}) is None
+        assert transfer_target({"P": "Some Payee"}) is None
 
 
 class TestParseErrors:

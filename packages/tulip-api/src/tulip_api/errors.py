@@ -1111,6 +1111,40 @@ class ImportQifAccountNotFoundError(TulipProblem):
         )
 
 
+class ImportQifAccountUnmappedError(TulipProblem):
+    """A multi-account QIF declares accounts the account_map doesn't cover (#195b)."""
+
+    def __init__(self, *, unmapped: list[str]) -> None:
+        """Build the import.qif_account_unmapped problem (400)."""
+        super().__init__(
+            code="import.qif_account_unmapped",
+            title="Account map is missing QIF accounts",
+            status=400,
+            detail=(
+                f"The QIF declares {len(unmapped)} account(s) the --account-map "
+                f"doesn't cover: {', '.join(unmapped)}. Add them to the map so "
+                "every account routes to a tulip account."
+            ),
+            extensions={"unmapped": unmapped},
+        )
+
+
+class ImportAccountMapInvalidError(TulipProblem):
+    """The ``account_map`` form field isn't a JSON object of name→account-id (#195b)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the import.account_map_invalid problem (400)."""
+        super().__init__(
+            code="import.account_map_invalid",
+            title="Invalid account map",
+            status=400,
+            detail=(
+                f"The account_map form field must be a JSON object mapping each "
+                f"QIF account name to a tulip account UUID: {reason}"
+            ),
+        )
+
+
 class ImportCsvParseFailedError(TulipProblem):
     """The uploaded bytes could not be parsed as CSV per the supplied profile (P5.2.c)."""
 
