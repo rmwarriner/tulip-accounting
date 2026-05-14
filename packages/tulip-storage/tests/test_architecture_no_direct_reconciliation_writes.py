@@ -84,6 +84,11 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # before the cascade delete to know which blobs to unlink from
         # disk afterward. Same read-only justification.
         "tulip-api/src/tulip_api/routers/households.py",
+        # GDPR Art. 15 data-export endpoint (#241) reads Attachment
+        # metadata uploaded by the subject for the export envelope. The
+        # select is household-scoped; it never writes — same read-only
+        # justification as households.py.
+        "tulip-api/src/tulip_api/routers/users.py",
     }
 )
 
