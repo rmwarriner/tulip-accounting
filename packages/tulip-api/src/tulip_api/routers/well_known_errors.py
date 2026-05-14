@@ -87,6 +87,8 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "qif_account": "Checking",
         "available": ["Savings", "Credit Card"],
     },
+    "ImportQifAccountUnmappedError": {"unmapped": ["Savings", "Credit Card"]},
+    "ImportAccountMapInvalidError": {"reason": "expected a JSON object, got a list"},
     "ImportCsvParseFailedError": {"reason": "row 7: date '13/45/2026' doesn't match ..."},
     "ImportUnsupportedFormatError": {
         "format_name": "csv",

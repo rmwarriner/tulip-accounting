@@ -74,6 +74,7 @@ locate the bad row.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
@@ -83,6 +84,11 @@ from tulip_core.reconciliation import ParsedStatementLine
 
 #: Each transaction record ends with this single-character line.
 _RECORD_TERMINATOR = "^"
+
+#: A QIF transfer marks its other side as ``L[Account Name]`` — a
+#: bracketed account name in the category field. A plain category
+#: (``LExpenses:Food``) doesn't match.
+_TRANSFER_TARGET_RE = re.compile(r"^\[(?P<name>.+)\]$")
 
 #: Header line introduces the account type. Conventional but optional.
 _HEADER_RE = re.compile(r"^!Type:(.+)$", re.IGNORECASE)
@@ -547,6 +553,22 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
         )
 
     return out
+
+
+def transfer_target(raw: Mapping[str, str]) -> str | None:
+    """Return the destination account name if ``raw`` is a QIF transfer leg.
+
+    QIF encodes a cross-account transfer's other side as ``L[Account
+    Name]`` — a bracketed account name in the category field. A plain
+    category (``LExpenses:Groceries``) or a missing ``L`` field returns
+    None. The bracket form is the unambiguous transfer marker; #195b
+    pairs the two legs of a transfer into one balanced transaction.
+    """
+    value = raw.get("L")
+    if value is None:
+        return None
+    match = _TRANSFER_TARGET_RE.match(value.strip())
+    return match.group("name").strip() if match else None
 
 
 @dataclass(frozen=True, slots=True)

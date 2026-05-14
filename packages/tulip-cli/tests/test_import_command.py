@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -510,6 +511,67 @@ def test_import_qif_multi_account_with_map_lands_per_account(
     # Checking has two records in the fixture; Savings + Credit Card one each.
     assert "Imported 2 statement lines" in result.stdout
     assert result.stdout.count("Imported 1 statement line") == 2
+
+
+@pytest.mark.integration
+def test_import_qif_multi_account_pairs_transfers(authed_session: str, tmp_path: Path) -> None:
+    # #195b: a reciprocal L[Account] pair lands as one balanced PENDING tx.
+    _seed_account(authed_session, name="Checking", code="1110")
+    _seed_account(authed_session, name="Savings", code="1200")
+    account_map = tmp_path / "account-map.json"
+    account_map.write_text(json.dumps({"Checking": "1110", "Savings": "1200"}))
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account_transfer.qif"
+
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account-map",
+        str(account_map),
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[Checking]" in result.stdout
+    assert "[Savings]" in result.stdout
+    # The Checking -> Savings transfer is paired into one balanced tx.
+    assert "Paired 1 cross-account transfer" in result.stdout
+
+    # That balanced PENDING transaction is queryable and nets to zero.
+    txns = _run_cli("--json", "transactions", "list", api_url=authed_session)
+    assert txns.returncode == 0, txns.stderr
+    rows = json.loads(txns.stdout)
+    transfer = next(r for r in rows if "Transfer to savings" in r["description"])
+    # JSON carries full storage precision — compare as Decimals.
+    amounts = sorted(Decimal(str(p["amount"])) for p in transfer["postings"])
+    assert amounts == [Decimal("-200.00"), Decimal("200.00")]
+
+
+@pytest.mark.integration
+def test_import_qif_multi_account_unpaired_transfer_warns(
+    authed_session: str, tmp_path: Path
+) -> None:
+    # multi_account.qif's Savings leg has no reciprocal — it lands as a
+    # plain line and the CLI surfaces the warning.
+    _seed_account(authed_session, name="Checking", code="1110")
+    _seed_account(authed_session, name="Savings", code="1200")
+    _seed_account(authed_session, name="Credit Card", code="2100", type_="liability")
+    account_map = tmp_path / "account-map.json"
+    account_map.write_text(
+        json.dumps({"Checking": "1110", "Savings": "1200", "Credit Card": "2100"})
+    )
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account-map",
+        str(account_map),
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "warning" in (result.stdout + result.stderr).lower()
+    assert "reciprocal" in (result.stdout + result.stderr).lower()
 
 
 @pytest.mark.integration

@@ -386,6 +386,167 @@ class TestUploadQif:
         assert body["format"] == "journal"
 
 
+class TestUploadMultiAccountQif:
+    """POST /v1/imports/multi-account — split, per-account batches, transfer pairing (#195b)."""
+
+    @staticmethod
+    def _acct(client: TestClient, auth_h: dict[str, str], name: str, code: str) -> str:
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": name, "type": "asset", "currency": "USD", "code": code},
+        )
+        assert r.status_code == 201, r.text
+        return str(r.json()["id"])
+
+    def test_transfer_pair_lands_as_one_balanced_transaction(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        session_maker,
+    ):
+        import json
+        from decimal import Decimal
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import Posting, StatementLine, Transaction
+
+        checking = self._acct(client, auth_h, "Checking", "1110")
+        savings = self._acct(client, auth_h, "Savings", "1200")
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account_transfer.qif").read_bytes()
+
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={"account_map": json.dumps({"Checking": checking, "Savings": savings})},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert len(body["batches"]) == 2
+        assert body["transfer_count"] == 1
+        assert body["warnings"] == []
+
+        with session_maker() as s:
+            # Exactly one PENDING transaction — the paired transfer — with a
+            # posting on each account that nets to zero.
+            txns = list(s.execute(select(Transaction)).scalars())
+            assert len(txns) == 1
+            postings = list(
+                s.execute(select(Posting).where(Posting.transaction_id == txns[0].id)).scalars()
+            )
+            assert len(postings) == 2
+            amounts = sorted(p.amount for p in postings)
+            assert amounts == [Decimal("-200.00"), Decimal("200.00")]
+            assert {str(p.account_id) for p in postings} == {checking, savings}
+            # Both transfer-leg statement lines are marked promoted to it.
+            promoted = list(
+                s.execute(
+                    select(StatementLine).where(StatementLine.promoted_transaction_id == txns[0].id)
+                ).scalars()
+            )
+            assert len(promoted) == 2
+
+    def test_unpaired_transfer_leg_falls_back_with_warning(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        # multi_account.qif's Savings leg targets Checking but Checking has
+        # no reciprocal — it lands as a plain line + a warning.
+        import json
+
+        checking = self._acct(client, auth_h, "Checking", "1110")
+        savings = self._acct(client, auth_h, "Savings", "1200")
+        credit = self._acct(client, auth_h, "Credit Card", "2100")
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account.qif").read_bytes()
+
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={
+                "account_map": json.dumps(
+                    {"Checking": checking, "Savings": savings, "Credit Card": credit}
+                )
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["transfer_count"] == 0
+        assert len(body["warnings"]) == 1
+        assert "no matching reciprocal" in body["warnings"][0]
+
+    def test_unmapped_account_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        import json
+
+        checking = self._acct(client, auth_h, "Checking", "1110")
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account_transfer.qif").read_bytes()
+        # Map omits "Savings".
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={"account_map": json.dumps({"Checking": checking})},
+        )
+        body = assert_problem(r, code="import.qif_account_unmapped", status=400)
+        assert body["unmapped"] == ["Savings"]
+
+    def test_invalid_account_map_json_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account_transfer.qif").read_bytes()
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={"account_map": "{not valid json"},
+        )
+        assert_problem(r, code="import.account_map_invalid", status=400)
+
+    def test_single_account_qif_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        import json
+
+        # minimal.qif has no !Account blocks — the wrong endpoint for it.
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "minimal.qif").read_bytes()
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("single.qif", body_bytes, "application/qif")},
+            data={"account_map": json.dumps({"Whatever": str(__import__("uuid").uuid4())})},
+        )
+        assert_problem(r, code="import.qif_parse_failed", status=400)
+
+    def test_unknown_tulip_account_uuid_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+    ):
+        import json
+        from uuid import uuid4
+
+        checking = self._acct(client, auth_h, "Checking", "1110")
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account_transfer.qif").read_bytes()
+        r = client.post(
+            "/v1/imports/multi-account",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={"account_map": json.dumps({"Checking": checking, "Savings": str(uuid4())})},
+        )
+        assert_problem(r, code="account.unknown", status=400)
+
+
 class TestUploadCsv:
     @pytest.fixture
     def chase_profile_id(self, client: TestClient, auth_h: dict[str, str]) -> str:

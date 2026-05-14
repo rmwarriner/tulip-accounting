@@ -556,30 +556,39 @@ def _render_starter_map(account_names: list[str]) -> None:
     typer.echo(json.dumps(starter, indent=2), err=True)
 
 
-def _post_qif_chunk(
+def _post_qif_single(
     client: TulipClient,
     file_path: Path,
     raw_bytes: bytes,
     *,
     account_id: str,
-    qif_account: str | None = None,
 ) -> dict[str, Any]:
-    """POST a QIF upload to /v1/imports; return the batch summary dict.
-
-    ``qif_account`` selects one ``!Account`` block from a multi-account
-    QIF — the server splits the file and ingests just that account's
-    transactions against ``account_id``.
-    """
-    data: dict[str, str] = {"account_id": account_id, "source_format": "qif"}
-    if qif_account is not None:
-        data["qif_account"] = qif_account
+    """POST a single-account QIF to /v1/imports; return the batch summary dict."""
     response = client.post_multipart(
         "/v1/imports",
         files={"file": (file_path.name, raw_bytes, "application/qif")},
-        data=data,
+        data={"account_id": account_id, "source_format": "qif"},
         authenticated=True,
     )
     return dict(response.json())
+
+
+def _render_multi_account_summary(body: dict[str, Any], uuid_to_name: dict[str, str]) -> None:
+    """Render a ``MultiAccountImportSummary``: per-account batches + transfers."""
+    for batch in body.get("batches", []):
+        account_id = str(batch.get("account_id", ""))
+        name = uuid_to_name.get(account_id, account_id)
+        typer.echo(f"[{name}] ", nl=False)
+        _render_summary(batch)
+    transfer_count = body.get("transfer_count", 0)
+    if transfer_count:
+        plural = "" if transfer_count == 1 else "s"
+        typer.echo(
+            f"Paired {transfer_count} cross-account transfer{plural} "
+            "into balanced PENDING transactions."
+        )
+    for warning in body.get("warnings", []):
+        typer.echo(f"  warning: {warning}", err=True)
 
 
 @imports_app.command("qif")
@@ -649,7 +658,7 @@ def import_qif(
         try:
             with _client(config, as_json=as_json) as client:
                 account_record = _resolve_account(client, account)
-                summary = _post_qif_chunk(
+                summary = _post_qif_single(
                     client, file_path, raw_bytes, account_id=str(account_record["id"])
                 )
         except CliError as err:
@@ -665,32 +674,29 @@ def import_qif(
         return
 
     # Multi-account path: resolve every map entry up front (a bad code
-    # fails before any batch lands), then POST one chunk per account.
+    # fails before any batch lands), then POST the whole file + the
+    # resolved map in one request. The server splits it by !Account,
+    # creates a batch per account, and pairs cross-account transfers.
     assert account_map is not None  # noqa: S101 — guarded by the checks above
     name_to_identifier = _load_account_map(account_map)
-    summaries: list[dict[str, Any]] = []
     try:
         with _client(config, as_json=as_json) as client:
-            resolved: dict[str, str] = {}
-            for qif_name, identifier in name_to_identifier.items():
-                resolved[qif_name] = str(_resolve_account(client, identifier)["id"])
-            for qif_name, account_id in resolved.items():
-                summaries.append(
-                    _post_qif_chunk(
-                        client,
-                        file_path,
-                        raw_bytes,
-                        account_id=account_id,
-                        qif_account=qif_name,
-                    )
-                )
+            resolved: dict[str, str] = {
+                qif_name: str(_resolve_account(client, identifier)["id"])
+                for qif_name, identifier in name_to_identifier.items()
+            }
+            response = client.post_multipart(
+                "/v1/imports/multi-account",
+                files={"file": (file_path.name, raw_bytes, "application/qif")},
+                data={"account_map": json.dumps(resolved)},
+                authenticated=True,
+            )
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
+    body = dict(response.json())
     if as_json:
-        sys.stdout.write(json.dumps(summaries) + "\n")
+        sys.stdout.write(json.dumps(body) + "\n")
         return
-    for qif_name, summary in zip(resolved, summaries, strict=True):
-        typer.echo(f"[{qif_name}] ", nl=False)
-        _render_summary(summary)
+    _render_multi_account_summary(body, {v: k for k, v in resolved.items()})

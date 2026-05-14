@@ -47,6 +47,34 @@ class ImportBatchSummary(BaseModel):
     created_at: datetime
 
 
+class MultiAccountImportSummary(BaseModel):
+    """Response for ``POST /v1/imports/multi-account`` (#195b).
+
+    One :class:`ImportBatchSummary` per QIF ``!Account`` block, plus the
+    count of cross-account transfers landed directly as balanced PENDING
+    transactions and any non-fatal warnings (e.g. a transfer leg whose
+    partner couldn't be resolved, landed one-sided instead).
+    """
+
+    batches: list[ImportBatchSummary]
+    transfer_count: int = Field(
+        description=(
+            "Cross-account transfer pairs landed as balanced PENDING "
+            "transactions. The two source statement lines of each pair are "
+            "marked promoted to that transaction, so a later `apply` skips "
+            "them."
+        )
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Non-fatal issues — a transfer leg whose reciprocal or target "
+            "account couldn't be resolved is landed as an ordinary "
+            "one-sided statement line and noted here."
+        ),
+    )
+
+
 class ImportBatchRead(BaseModel):
     """Response for ``GET /v1/imports/{id}`` — summary + full line list."""
 
