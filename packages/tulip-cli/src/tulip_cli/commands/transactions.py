@@ -36,6 +36,7 @@ from rich.table import Table
 
 from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
+from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._editor import edit_buffer
 from tulip_cli.commands._ledger import LedgerParseError, parse_ledger_text
@@ -539,7 +540,7 @@ def _render_tx_detail(
     typer.echo("postings:")
     table = Table(show_header=True, show_lines=False)
     table.add_column("account")
-    table.add_column("amount", justify="right")
+    add_numeric_column(table, "amount")
     table.add_column("currency")
     table.add_column("memo")
     for p in tx.get("postings") or []:

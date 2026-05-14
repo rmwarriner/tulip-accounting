@@ -17,6 +17,7 @@ import typer
 from rich.table import Table
 
 from tulip_cli._console import make_console
+from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.config import Config
@@ -68,7 +69,7 @@ def _render_trial_balance(body: dict[str, Any]) -> None:
     table.add_column("name")
     table.add_column("type")
     table.add_column("currency")
-    table.add_column(balance_header, justify="right")
+    add_numeric_column(table, balance_header)
     for r in rows:
         currency = r.get("currency") or ""
         name = r.get("name") or ""
