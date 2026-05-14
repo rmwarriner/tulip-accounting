@@ -1,12 +1,14 @@
 # Tulip Accounting — Threat Model Checkpoint
 
-**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening); pre-cloud re-audit at Phase 9.
+**Status:** lightweight checkpoint, not a deep audit. **Deep audits** are scheduled per the [§10 audit cadence in ARCHITECTURE.md](ARCHITECTURE.md): privacy audit before Phase 6 (AI) ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md); deep security audit at Phase 8 (operations + hardening) ✅ shipped as [`docs/audits/2026-05-12-deep-security-audit.md`](audits/2026-05-12-deep-security-audit.md), plus a full-system deep privacy audit ✅ shipped as [`docs/audits/2026-05-13-deep-privacy-audit.md`](audits/2026-05-13-deep-privacy-audit.md); pre-cloud re-audit at Phase 9.
 
-**Last updated:** 2026-05-12 · `main` @ Phase 7 complete (reports + hledger journal export/import shipped)
+**Last updated:** 2026-05-14 · `main` @ Phase 8 in progress — deep security + deep privacy audits shipped; security + privacy Wave-1 hardening follow-ups landed
 
-This document captures what the system protects, what it doesn't, and the constraints Phase 4–7 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI / reports add surface area, not after. Tracked as #56.
+This document captures what the system protects, what it doesn't, and the constraints Phase 4–8 work must not violate. It exists because the cheap moment to lock in trust boundaries is *before* envelopes / importers / AI / reports add surface area, not after. Tracked as #56.
 
 **Phase 7 surface check:** the new `/v1/reports/*` endpoints and `/v1/journal/{export,import}` reuse the existing tenant-scoped session + JWT chokepoint — they introduce no new trust boundary, no new external network dependency at runtime (weasyprint is a build-time system lib for PDF), and no new credential store. The `custom-query` report is gated by the same SQL-safety pass that backs the AI NL-query capability (ADR-0005); writes, joins outside the AI-view allowlist, and non-allowlisted table reads are all rejected with `report.unsafe_query`. Journal import lands transactions as PENDING through `TransactionRepository.save_balanced`, the same chokepoint the OFX / QIF / CSV importers use.
+
+**Phase 8 status:** the deep security and deep privacy audits ran against `main` at Phase 7 complete (see the two audit docs linked above). Both are document-only — **0 Critical / 8 High** security findings, **1 Critical / 17 High** privacy findings. A first wave of hardening follow-ups has since landed: `slowapi` rate limiting on `/v1/auth/*`, single-use MFA-challenge JWTs (`used_mfa_challenges`), an 80-bit recovery-code entropy floor, a constant-time login path, structlog email/IP redaction on by default, and GDPR Art. 17 right-to-erasure endpoints for users and households. §4 and §6 below reflect the post-Wave-1 state; the audit docs remain the authoritative finding-by-finding record and track the still-open items.
 
 ---
 
@@ -17,8 +19,8 @@ Today's deployment is single-tenant, single-machine, no network exposure beyond 
 1. **CLI process ↔ API process.** Both run as the same user on the same machine. The CLI authenticates with bearer JWTs; refresh tokens live in the OS keyring (or a JSON file when `TULIP_TOKEN_STORE` is set, used only by tests + CI). The API serves on `127.0.0.1:8000` by default; it is not bound to a public interface in any documented setup.
 2. **API process ↔ SQLite database.** The DB file is a normal file on disk, owned by the API process's user. Layer 1 SQLCipher full-DB encryption is **deferred** (see [§4](#4-known-deferred-mitigations)); today the database is unencrypted at the filesystem layer.
 3. **API process ↔ master key.** `TULIP_MASTER_KEY` (base64-encoded 32 bytes) is read from the environment at startup. If unset, an ephemeral key is generated and a warning is emitted. The key lives in process memory for the lifetime of the process and is on the structlog redaction whitelist (`tulip_api.logging_config:32-46`) so it can't accidentally appear in logs.
-4. **API process ↔ user credentials.** Passwords are hashed with argon2id (`tulip_api.auth.passwords`) using OWASP-2024 minimum parameters; PHC-formatted hashes are self-describing, so re-tuning later is a no-op for old hashes (`needs_rehash` fires on next successful login per #224). JWT access tokens are 15-minute; refresh tokens are 30-day, opaque (256-bit `secrets.token_urlsafe`) and stored as **SHA-256** in `sessions` — full token entropy makes a slow KDF unnecessary, and the deterministic hash lets the revoke-on-logout lookup hit an index rather than scanning rows (see `tulip_api.auth.tokens:97-99`). MFA TOTP secrets (`users.totp_secret_encrypted`) are AES-256-GCM-encrypted with the master key at rest. Recovery codes are argon2id-hashed.
-5. **API process ↔ HTTP clients.** Every error is RFC 9457 Problem Details, never raw exception text or tracebacks (enforced by an architecture test, `test_architecture_no_http_exception.py`). The catch-all 500 handler logs the full exception with traceback under structlog context but emits a generic `server.internal_error` body. Pydantic schemas validate every input boundary; schemathesis fuzzes every documented operation in CI.
+4. **API process ↔ user credentials.** Passwords are hashed with argon2id (`tulip_api.auth.passwords`) using OWASP-2024 minimum parameters; PHC-formatted hashes are self-describing, so re-tuning later is a no-op for old hashes (`needs_rehash` fires on next successful login per #224). JWT access tokens are 15-minute; refresh tokens are 30-day, opaque (256-bit `secrets.token_urlsafe`) and stored as **SHA-256** in `sessions` — full token entropy makes a slow KDF unnecessary, and the deterministic hash lets the revoke-on-logout lookup hit an index rather than scanning rows (see `tulip_api.auth.tokens:97-99`). MFA TOTP secrets (`users.totp_secret_encrypted`) are AES-256-GCM-encrypted with the master key at rest. Recovery codes are argon2id-hashed with an 80-bit entropy floor (Phase 8 Wave-1). The MFA-login flow issues a short-lived MFA-challenge JWT carrying a single-use `jti`; the `used_mfa_challenges` table burns the `jti` on redemption, so a captured challenge token can't be replayed (Phase 8 Wave-1).
+5. **API process ↔ HTTP clients.** Every error is RFC 9457 Problem Details, never raw exception text or tracebacks (enforced by an architecture test, `test_architecture_no_http_exception.py`). The catch-all 500 handler logs the full exception with traceback under structlog context but emits a generic `server.internal_error` body. Pydantic schemas validate every input boundary; schemathesis fuzzes every documented operation in CI. The four most abuse-exposed `/v1/auth/*` endpoints (`login`, `login/mfa`, `login/recover`, `refresh`) sit behind per-IP `slowapi` quotas; exceedance is an RFC 9457 `auth.rate_limited` (429) with a `Retry-After` header (Phase 8 Wave-1).
 6. **CLI process ↔ user terminal / editor.** `tulip add --edit` spawns `$VISUAL` / `$EDITOR` / `vi` via `shlex.split`, so shell metacharacters in `$EDITOR` aren't injected. Buffer contents are user-typed transactions, not credentials.
 
 **What is not a trust boundary today** (will become one at the listed phase):
@@ -52,6 +54,7 @@ Single-tenant local deployment scopes the actor list down hard:
 - **Local attacker with process memory access** (e.g. via a debugger or `/proc/$pid/mem` on Linux). Has the master key, the JWT secret, and any decrypted TOTP secrets currently being verified. This is "you've already lost" territory; the only mitigation is OS-level (no untrusted users on the same machine).
 - **Misbehaving CLI client** — well-formed authenticated requests with malformed payloads. Covered by Pydantic at the schema boundary, schemathesis fuzzing in CI, and the architecture test that bans raw `HTTPException` (so error responses can't leak internals).
 - **Stolen refresh token** — 30-day window. The CLI keeps refresh tokens in the OS keyring by default; an attacker with keyring access has 30 days of mint-new-access-tokens until either the token expires or the user runs `tulip auth logout` (which calls `/v1/auth/logout` to revoke the refresh token at the API).
+- **Online credential / MFA brute-force** — a local attacker who knows a valid email guessing the password, TOTP code, or recovery code (post-Phase-9, also a network attacker). The Phase 8 security audit flagged this as the one place the localhost assumption is thin — a multi-user household on a shared machine is a v1 use case. Wave-1 follow-ups bound it: per-IP `slowapi` quotas on `/v1/auth/*`, the single-use MFA-challenge `jti`, the 80-bit recovery-code entropy floor, a constant-time login path (closes the user-enumeration timing oracle), and failed-login audit rows for forensics.
 
 ### Out of scope today (becomes in-scope at the listed phase)
 
@@ -70,7 +73,7 @@ These were considered and intentionally deferred. Documented here so future audi
 | **SQLCipher full-DB encryption** (Layer 1) | Not wired. DB file is plaintext on disk. | Filesystem permissions; the deployment story (Phase 8) is single-machine home server with locked-down user. | ARCHITECTURE.md §1.3 / §7.4. Lands behind a separate engine factory; not blocking. |
 | **Per-field DEK wrapping** | `encrypt_field` uses the master key directly. One key compromise = all fields. | Single field encrypted today (TOTP secrets); blast radius is bounded. The `encrypt_field` API is stable across the future change. | ARCHITECTURE.md §7.4 (deferred from Phase 1). |
 | **SQLAlchemy tenant-scoping query event listener** with `admin_scope()` escape hatch | Not implemented. | Composite FKs make cross-tenant *FK references* impossible at the schema level. Repositories require `household_id` at construction. Both of these are tested. | ARCHITECTURE.md §3.3 + §1.3. |
-| **Rate limiting** (`slowapi`) | Installed as a dependency, not wired. | Single-tenant local deploy; no public surface. Auth endpoints have no aggressive-bruteforce mitigation yet. | ARCHITECTURE.md §7.6. |
+| ~~**Rate limiting** (`slowapi`)~~ | **Shipped — Phase 8 Wave-1.** Per-IP quotas on the four `/v1/auth/*` abuse surfaces; `auth.rate_limited` (429). | — | Re-promoted from deferral by the deep security audit (H-4). |
 | **WebAuthn / passkeys** as an MFA option | Not implemented. TOTP + recovery codes only. | TOTP is fully wired (`P2.x.1`). Adding WebAuthn later doesn't break TOTP. | ARCHITECTURE.md §12 (deferred). |
 | **OS-level audit log immutability** | App-level append-only writer, no DB-level enforcement. | Single `AuditLogWriter` chokepoint; no other code path mutates `audit_log`. An architecture test could enforce this — currently it does not. | ARCHITECTURE.md §1.3. |
 | **OpenTelemetry** | Hooks installed, off by default. | Structured JSON logs (structlog) carry the same context. | ARCHITECTURE.md §1.3 / §7.2. |
@@ -136,18 +139,20 @@ Phase 6 implementation (P6.1–P6.5.c). The *authoritative* contract is
 
 These are real concerns, but not for this checkpoint:
 
-- **Penetration testing** — Phase 8.
-- **Cryptographic review** of `encrypt_field` (key derivation, nonce reuse risk, AEAD usage details) — Phase 8.
+- **Penetration testing** — the Phase 8 deep security audit was static / document-only and explicitly *not* a pen test (see its §10). A dynamic pen-test engagement is still deferred — Phase 9 / pre-cloud.
+- **Cryptographic review** of `encrypt_field` (key derivation, nonce reuse risk, AEAD usage details) — ✅ covered by the Phase 8 deep security audit (crypto stream): primitives confirmed correctly chosen and used; AEAD AAD binding is a tracked Medium follow-up, not a v1 blocker.
 - **Multi-tenant cloud threat model** — Phase 9.
-- **Privacy audit of AI flows** — ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md) (P6.0, 2026-05-11), implemented through P6.1–P6.5.c. See §5.3 above for the realised constraints.
-- **Backup/restore threat model** — backup pipeline doesn't exist yet (Phase 8).
-- **Supply chain / SBOM** — Phase 8 audit covers this.
-- **Side-channel / timing attacks** — out of v1 scope; relevant only to multi-tenant cloud (Phase 9).
+- **Privacy audit of AI flows** — ✅ shipped as [ADR-0005](adrs/0005-ai-integration.md) (P6.0, 2026-05-11), implemented through P6.1–P6.5.c; the full-system [deep privacy audit](audits/2026-05-13-deep-privacy-audit.md) (2026-05-13) re-verified the shipped state and broadened the review to the whole surface. See §5.3 above for the realised constraints.
+- **Backup/restore threat model** — the backup/restore pipeline now exists (`tulip-cli/backup.py`) and was reviewed by the Phase 8 deep security audit (H-1: path traversal on restore). A standalone backup/restore threat-model section is still deferred.
+- **Supply chain / SBOM** — the Phase 8 deep security audit reviewed the `pyproject.toml` / `uv.lock` dependency graph and ran `pip-audit` (clean); dependency-pinning gaps are tracked as Low findings. A formal SBOM artifact is still deferred.
+- **Side-channel / timing attacks** — broadly out of v1 scope; relevant to multi-tenant cloud (Phase 9). One exception is already addressed: the login user-enumeration timing oracle the security audit flagged — Phase 8 Wave-1 landed a constant-time login path.
 
 ---
 
 ## References
 
+- [Deep Security Audit — 2026-05-12](audits/2026-05-12-deep-security-audit.md) — Phase 8 deep security audit (0 Critical / 8 High); authoritative finding-by-finding record.
+- [Deep Privacy Audit — 2026-05-13](audits/2026-05-13-deep-privacy-audit.md) — Phase 8 full-system privacy audit (1 Critical / 17 High); GDPR / CCPA framing.
 - [ARCHITECTURE.md §3.3 Tenancy Model](ARCHITECTURE.md)
 - [ARCHITECTURE.md §7.4 Encryption at Rest](ARCHITECTURE.md)
 - [ARCHITECTURE.md §10 Audit Cadence](ARCHITECTURE.md)

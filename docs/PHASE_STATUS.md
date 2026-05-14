@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-11 · `main` @ **Phase 6 complete** (P6.0–P6.5.c shipped)
+**Last updated:** 2026-05-14 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landed, plus a CLI/importers usability bundle
 
 ---
 
@@ -24,9 +24,13 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **Phase 6 (AI integration):** ✅ shipped — P6.0–P6.5.c complete (ADR + categorize + NL query + daily-insights/anomaly + envelope AI forecast + sinking-fund AI forecast + agentic proposals + AI-driven suggestions + cost-cap/rate-limit chokepoint + `tulip ai config` editor + `log_prompts` toggle + status polish). Capability inventory: `AICategorizer`, `AINLQueryCapability`, `AIForecastCapability` (envelopes + sinking funds), `AIProposalCapability`, the proposal executor registry, the shared `enforce_pre_call` gate, and the `GET|PUT /v1/ai/config` admin surface. The daily-insights handler now forecasts both envelopes and sinking funds via a single `ForecastRequest` dataclass; production wiring of the forecaster into the runner is the only remaining no-op slot, intentionally deferred to a deploy-time toggle. Phase 6 closes.
 
-**Tests:** 1478 passing · **CI:** green on `main`
+- **Phase 7 (reports + journal export/import):** ✅ **complete** — P7.1–P7.5 shipped (9 reports in HTML, PDF via weasyprint, CSV output, hledger journal export + import) plus P7.1.b (`tulip reports` + `tulip journal` CLI, #189/#190). Phase 7 closes.
 
-**Phase 7 (reports + journal export/import):** ✅ shipped — P7.1–P7.5 complete; P7.1.b (CLI subcommands) in PR.
+- **Phase 8 (deep security audit + hardening):** ✅ **audit + Wave-1 complete** — the [deep security audit](audits/2026-05-12-deep-security-audit.md) (0 Critical / 8 High / 25 Medium / 24 Low) and the [deep privacy audit](audits/2026-05-13-deep-privacy-audit.md) (1 Critical / 17 High / …) are both merged document-only. **Security Wave-1** (15 issues, #217–#231) is fully landed: MFA defense-in-depth (80-bit recovery codes + single-use challenge `jti` + `slowapi` rate limiting on `/v1/auth/*`, #219), login timing-oracle defense (#221), `actor_kind` spoof fix (#218), gitleaks pin (#228), keyring-unavailable typed error (#227), `?force=true` admin-only (#230), `needs_rehash` wired into login (#224), structlog email/IP redaction (#220), backup-restore path-traversal defence (#217), prod ephemeral-key boot refusal (#223), composite FK on `ai_invocation_id` (#231), audit-coverage gaps (#222), report/journal visibility filter (#229). **Privacy Wave-1** Critical + first three High landed: `local_only` AI profile can no longer route to cloud (#233), AI error-path `response_text` gated on `log_prompts` (#234), household + user right-to-erasure infrastructure — `DELETE /v1/users/{id}`, two-step `DELETE /v1/households/me`, `AttachmentRepository.delete()` + GC handler (#235). Remaining privacy Wave-1 issues (#236–#243) are queued.
+
+- **CLI + importers usability bundle (post-audit):** ✅ shipped — transaction id-prefix display + prefix resolution (#207/#211), interactive reconciliation wizard (#205), `tulip imports show`/`list` (#203/#272), QIF split-posting fidelity (#270) + non-transaction-section skipping (#198) + multi-account import with transfer pairing (#195a/#195b), paper-statement reconciliation (#275), `tulip imports apply --posted` (#210), currency-natural amount precision (#213), account names in `transactions list`/`show` (#214), transaction-level notes (#271), account resolution by name / hierarchical path (#197), interactive UUID picker (#273), `--pending` balance toggle (#274), Rich `Console` honouring `COLUMNS` (#285), right-aligned numeric columns (#289), `/reject` OpenAPI 400 (#194).
+
+**Tests:** 1828 passing · **CI:** green on `main`
 
 ---
 
@@ -560,6 +564,92 @@ Closes Phase 5. Imperative CLI subcommand group with 10 commands wrapping the /v
 
 ---
 
+## Phase 8 — Operations + hardening — 🔄 in progress (audit + Wave-1 done)
+
+Per [ARCHITECTURE.md §10](ARCHITECTURE.md), Phase 8 is the deep
+security audit + hardening pass. The audits are done and the first
+remediation wave is fully landed; the slice-per-PR rhythm continued
+through it (one issue → one branch → one PR).
+
+### Audits — ✅ *(2026-05-12 / 2026-05-13)*
+
+Two document-only audits merged:
+
+- [`docs/audits/2026-05-12-deep-security-audit.md`](audits/2026-05-12-deep-security-audit.md)
+  — 0 Critical / 8 High / 25 Medium / 24 Low / 41 Info, plus a §11
+  Wave-1/2/3 remediation roadmap. Filed 15 Wave-1 follow-up issues
+  (#217–#231).
+- [`docs/audits/2026-05-13-deep-privacy-audit.md`](audits/2026-05-13-deep-privacy-audit.md)
+  — 1 Critical / 17 High / 28 Medium / 22 Low / 38 Info. Filed 17
+  Wave-1 follow-up issues (#233–#249).
+
+### Security Wave-1 — ✅ *(15 issues, #217–#231)*
+
+Every Wave-1 security follow-up shipped, one PR per issue:
+
+- **#219 — MFA defense-in-depth.** Recovery codes bumped 8→16 base32
+  chars (40→80 bits, `XXXX-XXXX-XXXX-XXXX`); MFA-challenge JWT carries a
+  single-use `jti` persisted in a new `used_mfa_challenges` table;
+  `slowapi` rate-limiting wired on `/v1/auth/login`, `/login/mfa`,
+  `/login/recover`, `/refresh`; audit rows for `login_failed` /
+  `mfa.code_rejected` / `mfa.recovery_rejected`.
+- **#221** login timing-oracle defense (dummy verify + no short-circuit);
+  **#218** drop `ai_invocation_id` from `ProposalCreate` (actor-kind
+  spoof); **#228** gitleaks Docker pin; **#227** typed error when the
+  keyring backend is unavailable; **#230** `?force=true` import-dedup
+  override is admin-only; **#224** `needs_rehash()` wired into login;
+  **#220** email/IP added to the structlog redaction whitelist + a
+  stdlib `LogRecord` redactor; **#217** backup-restore rejects
+  attachment-member path traversal; **#223** boot refuses ephemeral
+  master-key / JWT-secret under `TULIP_ENV=prod`; **#231** composite FK
+  on `pending_proposals.ai_invocation_id` + `notifications.ai_invocation_id`;
+  **#222** audit-log rows for logout / refresh / proposal / refill-schedule;
+  **#229** role-visibility filter threaded through the reports + journal
+  export.
+
+### Privacy Wave-1 — 🔄 Critical + first three High landed (#233–#235)
+
+- **#233 (C-1)** — `resolve_policy` no longer lets a `local_only` AI
+  profile resolve to a cloud provider via `fallback_provider`; pinned to
+  a `_LOCAL_PROVIDERS` allowlist (ADR-0005 §Q4 lock).
+- **#234 (H-1)** — AI error-path `response_text` is gated on
+  `policy.log_prompts`, matching the success path; the structured
+  `outcome` enum is the load-bearing field.
+- **#235 (H-2+H-3)** — right-to-erasure infrastructure:
+  `DELETE /v1/users/{user_id}` (admin-only, last-admin guard, audit-PII
+  redaction), two-step `DELETE /v1/households/me` (token-confirmed),
+  `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
+  scheduler handler. New `pending_household_erasures` table.
+
+Remaining privacy Wave-1 (#236–#243: soft-delete-verb honesty,
+`import_batches.summary_json` PII, per-user AI policy, proposal-lifecycle
+audit, Art. 15 export, rectification, AI-invocation retention) is queued.
+
+### Post-audit CLI + importers usability bundle — ✅
+
+A batch of usability issues surfaced while testing, run as a
+dependency-ordered queue of one-PR-per-issue slices:
+
+- **Transactions / accounts:** id-prefix column + prefix resolution
+  (#207/#211), account names in `list`/`show` (#214), transaction-level
+  notes wired through repo/API/CLI (#271), account resolution by unique
+  name or hierarchical colon-path (#197), currency-natural amount
+  precision (#213), right-aligned numeric columns (#289).
+- **Imports:** `tulip imports show` (#203) + `tulip imports list` (#272),
+  QIF split-posting fidelity (#270), QIF non-transaction-section
+  skipping (#198), multi-account QIF import via `--account-map` with
+  cross-account transfer pairing (#195a/#195b), `tulip imports apply
+  --posted` (#210).
+- **Reconciliation:** interactive auto-match wizard (#205),
+  paper-statement (no-OFX) reconciliation flow (#275).
+- **CLI ergonomics:** interactive UUID picker when a required id is
+  omitted (#273), `tulip balance --pending` toggle (#274), Rich
+  `Console` honouring `COLUMNS` for stable non-TTY rendering (#285).
+- **API contract:** documented 400 on `/v1/ai/proposals/{id}/reject`
+  (#194).
+
+---
+
 ## Phase 7 — Reports + journal export/import — ✅ shipped
 
 Per ARCHITECTURE.md §8 + §10. v1 ships 9 reports in HTML+PDF+CSV, plus
@@ -567,7 +657,7 @@ hledger-compatible journal export + basic journal import. "Workstream
 slicing": P7.1 HTML, P7.2 PDF, P7.3 CSV, P7.4 journal export, P7.5
 journal import. P7.1.b adds the CLI surface over both.
 
-### P7.1.b — `tulip reports` + `tulip journal` CLI — 🔄 *(in PR; closes #189)*
+### P7.1.b — `tulip reports` + `tulip journal` CLI — ✅ *(2026-05-13; closes #189)*
 
 Closes the deferred CLI surface from P7.1. Both report and journal
 endpoints were API-only after Phase 7 closed; this slice wires them
@@ -1325,4 +1415,4 @@ Supporting changes:
 
 ## Reference: full phase roadmap
 
-See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 5 through 9 (importers, AI, reports, ops, pre-cloud) are not in flight.
+See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 0–7 are complete; Phase 8 (operations + hardening) is in progress — the deep security + privacy audits and security/privacy Wave-1 are done, Phase 9 (pre-cloud re-audit) is not yet in flight.
