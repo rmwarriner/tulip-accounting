@@ -43,6 +43,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "PeriodClosedError": {"reason": "Period 2025-12-31 is closed."},
     "ProposalAlreadyDecidedError": {"current_status": "approved"},
+    "ProposalNotDeletableError": {"current_status": "pending"},
     "ProposalPayloadInvalidError": {
         "reason": (
             "envelope_budget_update payload must include envelope_id (UUID) "
