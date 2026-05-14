@@ -7,6 +7,10 @@
 <dl class="meta">
   <dt>Household:</dt><dd>{{ data.household_name }}</dd>
   <dt>As of:</dt><dd>{{ data.as_of | isodate }}</dd>
+  {% if data.pending_included %}
+  <dt>Pending:</dt>
+  <dd>Includes {{ data.pending_count }} pending transaction{{ "" if data.pending_count == 1 else "s" }}</dd>
+  {% endif %}
 </dl>
 {% endblock %}
 
@@ -26,7 +30,7 @@
     {% for row in data.rows %}
     <tr>
       <td>{{ row.code or "" }}</td>
-      <td>{{ row.name }}</td>
+      <td>{{ row.name }}{% if row.has_pending %} <span class="pending-marker" title="includes pending transactions">(P)</span>{% endif %}</td>
       <td>{{ row.type }}</td>
       <td class="num{% if row.balance is negative %} negative{% endif %}">
         {{ row.balance | money }}

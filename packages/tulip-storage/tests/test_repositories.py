@@ -546,6 +546,75 @@ class TestTransactionRepository:
         assert early[food.id] == Decimal("5.00")
         assert late[food.id] == Decimal("12.00")
 
+    def _seed_posted_and_pending(
+        self, session: Session, household: Household
+    ) -> tuple[AccountModel, AccountModel]:
+        """Seed one POSTED (10.00) and one PENDING (99.00) grocery run."""
+        cash, food = self._seed_accounts(session, household)
+        PeriodRepository(session, household.id).create(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            status=PeriodStatus.OPEN,
+        )
+        session.commit()
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 1),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("10.00"),
+            status=DomainTxStatus.POSTED,
+        )
+        self._post_tx(
+            session,
+            household,
+            tx_date=date(2026, 6, 2),
+            debit_account=food,
+            credit_account=cash,
+            amount=Decimal("99.00"),
+            status=DomainTxStatus.PENDING,
+        )
+        return cash, food
+
+    def test_balance_for_account_include_pending_folds_in_pending(
+        self, session: Session, household: Household
+    ):
+        # #274: include_pending widens the sum to PENDING transactions.
+        _cash, food = self._seed_posted_and_pending(session, household)
+        repo = TransactionRepository(session, household.id)
+        assert repo.balance_for_account(food.id, currency="USD") == Decimal("10.00")
+        assert repo.balance_for_account(food.id, currency="USD", include_pending=True) == Decimal(
+            "109.00"
+        )
+
+    def test_count_pending_for_account(self, session: Session, household: Household):
+        _cash, food = self._seed_posted_and_pending(session, household)
+        repo = TransactionRepository(session, household.id)
+        assert repo.count_pending_for_account(food.id, currency="USD") == 1
+
+    def test_trial_balance_include_pending_folds_in_and_flags_rows(
+        self, session: Session, household: Household
+    ):
+        # #274: include_pending sums PENDING in and marks affected rows.
+        _cash, food = self._seed_posted_and_pending(session, household)
+        repo = TransactionRepository(session, household.id)
+
+        posted_only = {r.account_id: r for r in repo.trial_balance()}
+        assert posted_only[food.id].balance == Decimal("10.00")
+        assert posted_only[food.id].has_pending is False
+
+        with_pending = {r.account_id: r for r in repo.trial_balance(include_pending=True)}
+        assert with_pending[food.id].balance == Decimal("109.00")
+        assert with_pending[food.id].has_pending is True
+
+    def test_count_pending_transactions(self, session: Session, household: Household):
+        self._seed_posted_and_pending(session, household)
+        repo = TransactionRepository(session, household.id)
+        assert repo.count_pending_transactions() == 1
+        # as_of before the pending tx → zero.
+        assert repo.count_pending_transactions(as_of=date(2026, 6, 1)) == 0
+
     def test_list_headers_orders_by_date_desc(self, session: Session, household: Household):
         cash, food = self._seed_accounts(session, household)
         PeriodRepository(session, household.id).create(

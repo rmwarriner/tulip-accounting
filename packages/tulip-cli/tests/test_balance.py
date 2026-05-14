@@ -221,6 +221,124 @@ def test_balance_respects_as_of(authed_session: tuple[str, str]) -> None:
     assert "12.00" in later.stdout
 
 
+def _seed_pending_tx(tmp_path: Path, *, debit_id: str, credit_id: str, amount: str) -> None:
+    """Insert a PENDING transaction straight into the spawned API's DB.
+
+    ``POST /v1/transactions`` always promotes to POSTED, so #274's
+    --pending path needs a PENDING row planted via the repo. The live
+    API's SQLite file lives at ``tmp_path / 'tulip.db'`` (see the
+    ``live_api`` conftest fixture); a brief direct connection while
+    uvicorn is idle is safe under SQLite's single-writer lock.
+    """
+    from datetime import date as _date
+    from decimal import Decimal
+    from uuid import UUID, uuid4
+
+    from sqlalchemy import create_engine, event, select
+    from sqlalchemy.orm import sessionmaker
+
+    from tulip_core.money import Money
+    from tulip_core.transactions import Posting as DomainPosting
+    from tulip_core.transactions import Transaction as DomainTransaction
+    from tulip_core.transactions import TransactionStatus as DomainTxStatus
+    from tulip_storage.models import Household
+    from tulip_storage.repositories import TransactionRepository
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'tulip.db'}", future=True)
+
+    @event.listens_for(engine, "connect")
+    def _fk(dbapi_conn, _record):  # type: ignore[no-untyped-def]
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    try:
+        with sessionmaker(engine)() as s:
+            household_id = s.execute(select(Household.id)).scalar_one()
+            tx = DomainTransaction(
+                id=uuid4(),
+                household_id=household_id,
+                date=_date.today(),
+                description=f"pending {amount}",
+                postings=(
+                    DomainPosting(
+                        id=uuid4(),
+                        account_id=UUID(debit_id),
+                        amount=Money(Decimal(amount), "USD"),
+                    ),
+                    DomainPosting(
+                        id=uuid4(),
+                        account_id=UUID(credit_id),
+                        amount=Money(Decimal(f"-{amount}"), "USD"),
+                    ),
+                ),
+                status=DomainTxStatus.PENDING,
+            )
+            TransactionRepository(s, household_id).save_balanced(tx)
+            s.commit()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_balance_pending_flag_folds_in_and_labels_output(
+    live_api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#274: --pending widens the balance and the output says so."""
+    monkeypatch.setenv("TULIP_TOKEN_STORE", str(tmp_path / "tokens.json"))
+    httpx.post(
+        f"{live_api}/v1/auth/register",
+        json={
+            "email": "alice@example.com",
+            "password": _PASSWORD,
+            "display_name": "Alice",
+            "household_name": "Alice's Household",
+        },
+        timeout=10,
+    ).raise_for_status()
+    login = httpx.post(
+        f"{live_api}/v1/auth/login",
+        json={"email": "alice@example.com", "password": _PASSWORD},
+        timeout=10,
+    )
+    login.raise_for_status()
+    access = str(login.json()["access_token"])
+    cli_login = _run_cli(
+        "auth",
+        "login",
+        "--email",
+        "alice@example.com",
+        "--password-stdin",
+        api_url=live_api,
+        stdin=f"{_PASSWORD}\n",
+    )
+    assert cli_login.returncode == 0, cli_login.stderr
+
+    cash = _create_account(live_api, access, code="assets:cash", name="Cash")
+    food = _create_account(live_api, access, code="expenses:food", name="Food", type_="expense")
+    _post_tx(live_api, access, debit_id=str(food["id"]), credit_id=str(cash["id"]), amount="10.00")
+    _seed_pending_tx(tmp_path, debit_id=str(food["id"]), credit_id=str(cash["id"]), amount="99.00")
+
+    # Default: posted-only, plain "balance" label.
+    default = _run_cli("balance", "expenses:food", api_url=live_api)
+    assert default.returncode == 0, default.stderr
+    assert "10.00" in default.stdout
+    assert "incl. pending" not in default.stdout
+
+    # --pending: widened balance, clearly labelled.
+    pending = _run_cli("balance", "expenses:food", "--pending", api_url=live_api)
+    assert pending.returncode == 0, pending.stderr
+    assert "109.00" in pending.stdout
+    assert "incl. pending" in pending.stdout
+    assert "1 pending transaction" in pending.stdout
+
+    # Trial-balance view also honours --pending and flags the row.
+    trial = _run_cli("balance", "--pending", api_url=live_api)
+    assert trial.returncode == 0, trial.stderr
+    assert "109.00" in trial.stdout
+    assert "(P)" in trial.stdout
+
+
 @pytest.mark.integration
 def test_balance_unknown_code_yields_user_error(authed_session: tuple[str, str]) -> None:
     api_url, _ = authed_session

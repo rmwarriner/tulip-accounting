@@ -9,10 +9,10 @@ the zero-sum invariant.
 P7.1 adds ``?format=html`` to render via ``tulip_reports``; default
 remains JSON for backward compatibility.
 
-Pending transactions are excluded (they're workflow state, not ledger
-state). Role-based filtering matches ``GET /v1/accounts`` — admins see
-private accounts, members and viewers only see shared accounts and
-their own.
+Pending transactions are excluded by default (they're workflow state,
+not ledger state); ``?include_pending=true`` (#274) folds them in.
+Role-based filtering matches ``GET /v1/accounts`` — admins see private
+accounts, members and viewers only see shared accounts and their own.
 """
 
 from __future__ import annotations
@@ -84,12 +84,23 @@ def trial_balance(
             "rendered HTML document for screen review or printing."
         ),
     ),
+    include_pending: bool = Query(
+        default=False,
+        description=(
+            "When true, fold PENDING transactions into the report — the "
+            "'what if all pending is real' view. Default false keeps the "
+            "posted-only ledger semantics. The response then carries "
+            "pending_included=true, pending_count, and has_pending on each "
+            "row that drew a PENDING posting."
+        ),
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Return per-account, per-currency balances for the household ledger.
 
-    Pending transactions are excluded. Visibility filtering matches the
+    By default only POSTED + RECONCILED contribute; ``include_pending=true``
+    (#274) folds PENDING transactions in. Visibility filtering matches the
     accounts list — accounts the caller can't see don't appear here.
     """
     effective_as_of = as_of or date_type.today()
@@ -97,7 +108,10 @@ def trial_balance(
     account_repo = AccountRepository(session, claims.household_id)
 
     accounts_by_id = {a.id: a for a in account_repo.list_active()}
-    raw = tx_repo.trial_balance(as_of=effective_as_of)
+    raw = tx_repo.trial_balance(as_of=effective_as_of, include_pending=include_pending)
+    pending_count = (
+        tx_repo.count_pending_transactions(as_of=effective_as_of) if include_pending else 0
+    )
 
     rows: list[TrialBalanceRow] = []
     debits_by_currency: dict[str, Decimal] = {}
@@ -115,6 +129,7 @@ def trial_balance(
                 type=a.type.value,
                 currency=r.currency,
                 balance=balance,
+                has_pending=r.has_pending,
             )
         )
         if balance > 0:
@@ -138,7 +153,13 @@ def trial_balance(
         for c in currencies
     ]
 
-    json_body = TrialBalanceRead(as_of=effective_as_of, rows=rows, totals_by_currency=totals)
+    json_body = TrialBalanceRead(
+        as_of=effective_as_of,
+        rows=rows,
+        totals_by_currency=totals,
+        pending_included=include_pending,
+        pending_count=pending_count,
+    )
     if format in ("html", "pdf", "csv"):
         from tulip_reports.reports import trial_balance as report_module
 
@@ -147,6 +168,7 @@ def trial_balance(
             household_id=claims.household_id,
             as_of=effective_as_of,
             visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
+            include_pending=include_pending,
         )
         return _report_response(
             data,
