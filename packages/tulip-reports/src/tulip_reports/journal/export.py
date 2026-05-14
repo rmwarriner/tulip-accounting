@@ -58,11 +58,19 @@ def _account_path(account_code: str | None, account_name: str, account_type: str
 def _format_amount(amount: Decimal, currency: str) -> str:
     """Format ``amount`` as hledger's canonical ``<value> <currency>`` form.
 
-    Banker's rounding to two decimal places — same as the rest of the
-    Tulip CSV / HTML / PDF output. Hledger accepts arbitrary precision
-    but two decimals matches what users see in the UI.
+    Banker's rounding to the currency's natural minor-unit precision —
+    USD/EUR → 2, JPY → 0, BHD → 3 — via :meth:`Money.quantize_to_currency`
+    so the journal export matches the rest of the Tulip rendering surfaces
+    (issue #213). Hledger accepts arbitrary precision but the currency-
+    natural representation matches what users see in the UI. Unknown
+    currencies fall back to two decimals.
     """
-    quantized = amount.quantize(Decimal("0.01"))
+    from tulip_core.money import Money
+
+    try:
+        quantized = Money(amount, currency).quantize_to_currency().amount
+    except (ArithmeticError, ValueError):
+        quantized = amount.quantize(Decimal("0.01"))
     return f"{quantized} {currency}"
 
 

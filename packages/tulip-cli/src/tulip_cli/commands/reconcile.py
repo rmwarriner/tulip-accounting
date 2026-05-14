@@ -937,10 +937,17 @@ def _run_wizard_loop(
         tx = txs_by_id.get(match["ledger_transaction_id"], {})
         confidence = str(match.get("confidence") or "?").upper()
         console.print(f"\n[bold][{idx}/{total}] {confidence} confidence[/bold]")
+        from tulip_cli._money_format import format_amount
+
+        line_currency = str(line.get("currency", ""))
+        line_amount_raw = line.get("amount")
+        line_amount = (
+            format_amount(line_amount_raw, line_currency) if line_amount_raw is not None else "?"
+        )
         console.print(
             f"  statement: {line.get('posted_date', '?')}  "
             f"{(line.get('description') or '')[:50]}  "
-            f"{line.get('amount', '?')} {line.get('currency', '')}"
+            f"{line_amount} {line_currency}"
         )
         console.print(
             f"  ledger tx: {str(tx.get('id', ''))[:8]}  {tx.get('date', '?')}  "

@@ -102,14 +102,16 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
 
 
 def _render_transaction(body: dict[str, Any]) -> None:
+    from tulip_cli._money_format import format_amount
+
     typer.echo(f"Created transaction {body.get('id', '')}")
     typer.echo(f"  date:        {body.get('date', '')}")
     typer.echo(f"  description: {body.get('description', '')}")
     typer.echo(f"  status:      {body.get('status', '')}")
     typer.echo("  postings:")
     for p in body.get("postings", []):
-        amount = p.get("amount", "")
         currency = p.get("currency", "")
+        amount = format_amount(p.get("amount"), currency)
         account = p.get("account_id", "")
         typer.echo(f"    {account}: {amount} {currency}")
 
@@ -439,6 +441,8 @@ def _resolve_tx_id(client: TulipClient, identifier: str, *, as_json: bool) -> UU
 
 
 def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
+    from tulip_cli._money_format import format_amount
+
     table = Table(show_header=True, show_lines=False)
     table.add_column("id")
     table.add_column("date")
@@ -450,8 +454,8 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
         postings = row.get("postings") or []
         summary_parts = []
         for p in postings:
-            amount = p.get("amount", "")
             currency = p.get("currency", "")
+            amount = format_amount(p.get("amount"), currency)
             account = p.get("account_id", "")
             short = str(account)[:8] if account else "—"
             summary_parts.append(f"{short} {amount} {currency}")
@@ -469,6 +473,8 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
 
 
 def _render_tx_detail(tx: dict[str, Any]) -> None:
+    from tulip_cli._money_format import format_amount
+
     typer.echo(f"id:           {tx.get('id', '')}")
     typer.echo(f"date:         {tx.get('date', '')}")
     typer.echo(f"description:  {tx.get('description', '')}")
@@ -481,10 +487,11 @@ def _render_tx_detail(tx: dict[str, Any]) -> None:
     table.add_column("currency")
     table.add_column("memo")
     for p in tx.get("postings") or []:
+        currency = str(p.get("currency", ""))
         table.add_row(
             str(p.get("account_id", "")),
-            str(p.get("amount", "")),
-            str(p.get("currency", "")),
+            format_amount(p.get("amount"), currency),
+            currency,
             str(p.get("memo") or ""),
         )
     Console().print(table)
