@@ -12,6 +12,7 @@ test in ``tulip-cli/tests/test_architecture.py`` enforces this).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,7 +24,7 @@ from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.commands.csv_profiles import csv_profiles_app
 from tulip_cli.config import Config
-from tulip_cli.errors import CliError
+from tulip_cli.errors import EXIT_USER, CliError
 from tulip_cli.http import TulipClient
 
 imports_app = typer.Typer(
@@ -516,6 +517,71 @@ def apply_import(
     )
 
 
+def _load_account_map(path: Path) -> dict[str, str]:
+    """Load + validate a JSON account-map file: ``{qif name: account id/code}``.
+
+    The map routes each ``!Account`` block in a multi-account QIF to a
+    tulip account. Values are resolved with the same UUID/code/name/path
+    resolver as ``--account`` (#197). JSON only for now — a YAML reader
+    would mean a new CLI dependency.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"--account-map {path} is not readable JSON: {exc}") from exc
+    if not isinstance(raw, dict) or not raw:
+        raise typer.BadParameter(
+            f"--account-map {path} must be a non-empty JSON object "
+            '({"QIF account name": "tulip account code or UUID"}).'
+        )
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
+            raise typer.BadParameter(
+                f"--account-map {path}: every entry must map a QIF account "
+                "name (string) to a non-empty account code / UUID (string)."
+            )
+        out[key] = value.strip()
+    return out
+
+
+def _render_starter_map(account_names: list[str]) -> None:
+    """Print the copy-pasteable starter --account-map for a multi-account QIF."""
+    typer.echo(
+        f"Multi-account QIF — {len(account_names)} accounts found. "
+        "Create a JSON account map and re-run with --account-map:\n",
+        err=True,
+    )
+    starter = {name: "<tulip account code or UUID>" for name in account_names}
+    typer.echo(json.dumps(starter, indent=2), err=True)
+
+
+def _post_qif_chunk(
+    client: TulipClient,
+    file_path: Path,
+    raw_bytes: bytes,
+    *,
+    account_id: str,
+    qif_account: str | None = None,
+) -> dict[str, Any]:
+    """POST a QIF upload to /v1/imports; return the batch summary dict.
+
+    ``qif_account`` selects one ``!Account`` block from a multi-account
+    QIF — the server splits the file and ingests just that account's
+    transactions against ``account_id``.
+    """
+    data: dict[str, str] = {"account_id": account_id, "source_format": "qif"}
+    if qif_account is not None:
+        data["qif_account"] = qif_account
+    response = client.post_multipart(
+        "/v1/imports",
+        files={"file": (file_path.name, raw_bytes, "application/qif")},
+        data=data,
+        authenticated=True,
+    )
+    return dict(response.json())
+
+
 @imports_app.command("qif")
 def import_qif(
     ctx: typer.Context,
@@ -531,22 +597,100 @@ def import_qif(
         ),
     ],
     account: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--account",
             help=(
-                "Account this statement belongs to. UUID or code. The "
-                "account's currency is applied to every line — QIF doesn't "
-                "carry currency in the file itself."
+                "Account this statement belongs to (single-account QIF). "
+                "UUID or code. The account's currency is applied to every "
+                "line — QIF doesn't carry currency in the file itself. "
+                "Mutually exclusive with --account-map."
             ),
         ),
-    ],
+    ] = None,
+    account_map: Annotated[
+        Path | None,
+        typer.Option(
+            "--account-map",
+            help=(
+                "JSON file mapping each QIF !Account name to a tulip account "
+                "code/UUID, for a multi-account QIF. Mutually exclusive with "
+                "--account. Run with --account on a multi-account file to get "
+                "a starter map."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ] = None,
 ) -> None:
-    """Upload a QIF file; the API parses it and persists a batch."""
-    _do_import(
-        ctx,
-        file_path=file_path,
-        account=account,
-        source_format="qif",
-        content_type="application/qif",
-    )
+    """Upload a QIF file; the API parses it and persists a batch.
+
+    Single-account QIF: pass ``--account``. Multi-account QIF (one file
+    holding several ``!Account`` blocks): pass ``--account-map`` to route
+    each account. Running ``--account`` against a multi-account file
+    prints a copy-pasteable starter map.
+    """
+    if account is not None and account_map is not None:
+        raise typer.BadParameter("pass --account OR --account-map, not both")
+    if account is None and account_map is None:
+        raise typer.BadParameter(
+            "pass --account (single-account QIF) or --account-map (multi-account QIF)"
+        )
+
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    raw_bytes = file_path.read_bytes()
+
+    if account is not None:
+        # Single-account path. Intercept the multi-account rejection so we
+        # can render the friendly starter map instead of the raw error.
+        try:
+            with _client(config, as_json=as_json) as client:
+                account_record = _resolve_account(client, account)
+                summary = _post_qif_chunk(
+                    client, file_path, raw_bytes, account_id=str(account_record["id"])
+                )
+        except CliError as err:
+            if err.problem.get("code") == "import.multi_account_qif" and not as_json:
+                _render_starter_map(list(err.problem.get("account_names", [])))
+                raise typer.Exit(EXIT_USER) from None
+            err.render()
+            raise typer.Exit(err.exit_code) from None
+        if as_json:
+            sys.stdout.write(json.dumps(summary) + "\n")
+            return
+        _render_summary(summary)
+        return
+
+    # Multi-account path: resolve every map entry up front (a bad code
+    # fails before any batch lands), then POST one chunk per account.
+    assert account_map is not None  # noqa: S101 — guarded by the checks above
+    name_to_identifier = _load_account_map(account_map)
+    summaries: list[dict[str, Any]] = []
+    try:
+        with _client(config, as_json=as_json) as client:
+            resolved: dict[str, str] = {}
+            for qif_name, identifier in name_to_identifier.items():
+                resolved[qif_name] = str(_resolve_account(client, identifier)["id"])
+            for qif_name, account_id in resolved.items():
+                summaries.append(
+                    _post_qif_chunk(
+                        client,
+                        file_path,
+                        raw_bytes,
+                        account_id=account_id,
+                        qif_account=qif_name,
+                    )
+                )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(json.dumps(summaries) + "\n")
+        return
+    for qif_name, summary in zip(resolved, summaries, strict=True):
+        typer.echo(f"[{qif_name}] ", nl=False)
+        _render_summary(summary)

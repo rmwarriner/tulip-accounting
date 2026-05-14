@@ -287,6 +287,86 @@ class TestUploadQif:
         )
         assert_problem(r, code="import.qif_parse_failed", status=400)
 
+    def test_multi_account_qif_without_selector_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        # #195: a multi-account QIF imported plainly would silently merge
+        # every account into one — the API rejects it with the names so
+        # the CLI can render a starter --account-map.
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={"account_id": checking_account, "source_format": "qif"},
+        )
+        body = assert_problem(r, code="import.multi_account_qif", status=400)
+        assert body["account_names"] == ["Checking", "Credit Card", "Savings"]
+
+    def test_multi_account_qif_with_selector_ingests_one_account(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        # qif_account picks one !Account block; just its transactions land.
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={
+                "account_id": checking_account,
+                "source_format": "qif",
+                "qif_account": "Checking",
+            },
+        )
+        assert r.status_code == 201, r.text
+        # The Checking block has two records; Savings + Credit Card excluded.
+        assert r.json()["statement_line_count"] == 2
+
+    def test_qif_account_selector_not_in_file_is_rejected(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "multi_account.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("multi.qif", body_bytes, "application/qif")},
+            data={
+                "account_id": checking_account,
+                "source_format": "qif",
+                "qif_account": "Nonexistent",
+            },
+        )
+        body = assert_problem(r, code="import.qif_account_not_found", status=400)
+        assert body["qif_account"] == "Nonexistent"
+        assert "Checking" in body["available"]
+
+    def test_single_account_qif_unaffected_by_multi_account_guard(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ):
+        # A plain single-account QIF (no !Account blocks) still imports
+        # with just account_id — no regression from the #195 guard.
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "minimal.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("may.qif", body_bytes, "application/qif")},
+            data={"account_id": checking_account, "source_format": "qif"},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["statement_line_count"] == 3
+
     def test_unsupported_format_returns_400(
         self,
         client: TestClient,

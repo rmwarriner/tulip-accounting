@@ -547,3 +547,106 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
         )
 
     return out
+
+
+@dataclass(frozen=True, slots=True)
+class QifAccountChunk:
+    """One account's slice of a multi-account QIF (#195).
+
+    ``qif_text`` is a self-contained, independently-parseable
+    single-account QIF document: a ``!Type:`` header followed by that
+    account's transaction records, sliced verbatim from the original
+    file. The CLI POSTs each chunk to ``/v1/imports`` against the tulip
+    account the ``--account-map`` resolves ``account_name`` to — so the
+    server-side parser and import path stay completely unchanged.
+    """
+
+    account_name: str
+    qif_text: str
+
+
+def split_accounts(file_bytes: bytes) -> list[QifAccountChunk]:
+    """Split a multi-account QIF into one parseable chunk per account.
+
+    A multi-account QIF interleaves ``!Account`` declaration blocks with
+    transaction-bearing ``!Type:`` sections — each ``!Account`` block's
+    ``N`` field names the account the following section belongs to. This
+    walks that structure and returns one :class:`QifAccountChunk` per
+    distinct account name, concatenating every record run for an account
+    that appears more than once under its first-seen ``!Type:`` header.
+
+    Returns an empty list when the file has no ``!Account`` blocks (a
+    plain single-account QIF). A file with exactly one ``!Account`` block
+    returns a single chunk; the caller applies the "2+ distinct accounts
+    ⇒ multi-account" rule — one named account is still imported via the
+    ``--account`` path, so #198's single-account Banktivity exports keep
+    working unchanged.
+
+    Non-transaction sections (``!Type:Cat`` etc.) and the records inside
+    them are skipped, exactly as :func:`parse` skips them.
+    """
+    try:
+        text = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # Not decodable — let the caller's parse() raise the real error.
+        return []
+
+    runs: dict[str, list[str]] = {}  # account name -> verbatim record lines
+    type_for: dict[str, str] = {}  # account name -> first-seen !Type: label
+    order: list[str] = []  # first-seen account order
+
+    pending_name: str | None = None
+    in_account_block = False
+    collecting_for: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line.strip():
+            continue
+
+        if line.startswith("!"):
+            if line.strip().lower() == "!account":
+                in_account_block = True
+                pending_name = None
+                collecting_for = None
+                continue
+            m = _HEADER_RE.match(line)
+            if m:
+                in_account_block = False
+                label = m.group(1).strip()
+                if label.lower() in _NON_TXN_TYPES or pending_name is None:
+                    # Non-transaction section, or a !Type: with no
+                    # preceding !Account — nothing to attribute.
+                    collecting_for = None
+                else:
+                    collecting_for = pending_name
+                    if collecting_for not in runs:
+                        runs[collecting_for] = []
+                        type_for[collecting_for] = label
+                        order.append(collecting_for)
+                continue
+            # !Option:* / !Clear:* / other directive — ends collection.
+            collecting_for = None
+            continue
+
+        if in_account_block:
+            # Inside an !Account declaration: capture the N name, skip the
+            # rest, and let the terminating ^ close the block.
+            if line[0] == "N":
+                pending_name = line[1:].strip()
+            if line == _RECORD_TERMINATOR:
+                in_account_block = False
+            continue
+
+        if collecting_for is not None:
+            # Verbatim transaction-record line for the current account.
+            runs[collecting_for].append(line)
+
+    return [
+        QifAccountChunk(
+            account_name=name,
+            qif_text=f"!Type:{type_for[name]}\n" + "\n".join(runs[name]) + "\n",
+        )
+        for name in order
+        if runs[name]  # an account declared but carrying no records is dropped
+    ]

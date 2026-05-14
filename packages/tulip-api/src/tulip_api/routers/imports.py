@@ -41,7 +41,9 @@ from tulip_api.errors import (
     ImportCsvParseFailedError,
     ImportCsvProfileMissingError,
     ImportDuplicateFileError,
+    ImportMultiAccountQifError,
     ImportOfxParseFailedError,
+    ImportQifAccountNotFoundError,
     ImportQifParseFailedError,
     ImportUnsupportedFormatError,
     RequestPayloadTooLargeError,
@@ -75,6 +77,7 @@ from tulip_importers.ofx import OfxParseError
 from tulip_importers.ofx import parse as ofx_parse
 from tulip_importers.qif import QifParseError
 from tulip_importers.qif import parse as qif_parse
+from tulip_importers.qif import split_accounts as qif_split_accounts
 from tulip_storage.models import ImportBatchStatus, SourceFormat
 from tulip_storage.repositories import (
     AccountRepository,
@@ -145,6 +148,8 @@ def _request_uuid(request: Request) -> UUID | None:
             "import.csv_parse_failed",
             "import.csv_profile_missing",
             "import.unsupported_format",
+            "import.multi_account_qif",
+            "import.qif_account_not_found",
             "request.body_invalid",
         ),
         401: problem_response("auth.unauthorized"),
@@ -169,6 +174,18 @@ async def upload_import(
         description=(
             "CSV column-mapping profile (UUID). Required when "
             "source_format='csv'; ignored otherwise."
+        ),
+    ),
+    qif_account: str | None = Form(
+        None,
+        description=(
+            "Name of the !Account block to ingest from a multi-account QIF "
+            "(#195). Only meaningful for source_format='qif'. When set, just "
+            "that account's transactions are parsed and landed against "
+            "account_id; the CLI sends one request per --account-map entry. "
+            "When unset and the QIF declares 2+ accounts, the request is "
+            "rejected with import.multi_account_qif rather than silently "
+            "merging every account into one."
         ),
     ),
     force: bool = Query(
@@ -218,6 +235,28 @@ async def upload_import(
             raise ImportQifParseFailedError(reason="uploaded file is empty")
         raise ImportCsvParseFailedError(reason="uploaded file is empty")
 
+    # Multi-account QIF (#195). The bytes the QIF parser sees — ``qif_payload``
+    # — is the whole file for a normal single-account import, or just one
+    # !Account block's chunk when the caller selects ``qif_account``. The
+    # attachment + dedup hash always cover the original ``raw_bytes`` so the
+    # stored file is the real upload, and per-account dedup stays per the
+    # (account_id, attachment) pair.
+    qif_payload = raw_bytes
+    if source_format == "qif":
+        chunks = qif_split_accounts(raw_bytes)
+        if qif_account is not None:
+            chunk = next((c for c in chunks if c.account_name == qif_account), None)
+            if chunk is None:
+                raise ImportQifAccountNotFoundError(
+                    qif_account=qif_account,
+                    available=[c.account_name for c in chunks],
+                )
+            qif_payload = chunk.qif_text.encode("utf-8")
+        else:
+            account_names = sorted({c.account_name for c in chunks})
+            if len(account_names) >= 2:
+                raise ImportMultiAccountQifError(account_names=account_names)
+
     accounts_repo = AccountRepository(session, claims.household_id)
     account = accounts_repo.get(account_id)
     if account is None:
@@ -265,7 +304,7 @@ async def upload_import(
             raise ImportOfxParseFailedError(reason=str(exc)) from exc
     elif source_format == "qif":
         try:
-            parsed_lines = qif_parse(raw_bytes, currency=account.currency)
+            parsed_lines = qif_parse(qif_payload, currency=account.currency)
         except QifParseError as exc:
             raise ImportQifParseFailedError(reason=str(exc)) from exc
     else:  # csv

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tulip_core.reconciliation import ParsedStatementLine
-from tulip_importers.qif import QifParseError, parse
+from tulip_importers.qif import QifParseError, parse, split_accounts
 
 FIXTURES = Path(__file__).parent / "fixtures" / "qif"
 
@@ -237,6 +237,54 @@ class TestParseSectionSkipping:
         assert len(lines) == 1
         assert lines[0].amount.amount == Decimal("9.99")
         assert lines[0].raw.get("TYPE") == "SomethingNew"
+
+
+class TestSplitAccounts:
+    """Per #195a: split a multi-account QIF into per-account chunks.
+
+    A multi-account QIF interleaves ``!Account`` blocks with
+    transaction-bearing ``!Type:`` sections. ``split_accounts`` walks
+    that structure and returns one verbatim, independently-parseable
+    chunk per distinct account name.
+    """
+
+    def test_multi_account_yields_one_chunk_per_account(self):
+        chunks = split_accounts(_read("multi_account.qif"))
+        assert [c.account_name for c in chunks] == ["Checking", "Savings", "Credit Card"]
+
+    def test_each_chunk_is_independently_parseable(self):
+        chunks = split_accounts(_read("multi_account.qif"))
+        by_name = {c.account_name: c for c in chunks}
+
+        checking = parse(by_name["Checking"].qif_text.encode("utf-8"), currency="USD")
+        assert [line.amount.amount for line in checking] == [
+            Decimal("-58.99"),
+            Decimal("1500.00"),
+        ]
+        savings = parse(by_name["Savings"].qif_text.encode("utf-8"), currency="USD")
+        assert [line.amount.amount for line in savings] == [Decimal("200.00")]
+        credit = parse(by_name["Credit Card"].qif_text.encode("utf-8"), currency="USD")
+        assert [line.amount.amount for line in credit] == [Decimal("-42.00")]
+        # The Credit Card chunk preserved its own !Type:CCard header.
+        assert credit[0].raw.get("TYPE") == "CCard"
+
+    def test_single_account_qif_yields_no_chunks(self):
+        # No !Account blocks → empty list → caller uses the --account path.
+        assert split_accounts(_read("minimal.qif")) == []
+
+    def test_one_named_account_yields_one_chunk(self):
+        # The #198 Banktivity fixture has !Account blocks but only one
+        # distinct name — split returns a single chunk; the caller's
+        # "2+ distinct accounts" rule still routes it to --account.
+        chunks = split_accounts(_read("banktivity_preamble.qif"))
+        assert [c.account_name for c in chunks] == ["Checking"]
+
+    def test_non_transaction_sections_are_not_chunked(self):
+        # !Type:Cat / !Type:Security records never land in a chunk.
+        chunks = split_accounts(_read("banktivity_preamble.qif"))
+        checking = parse(chunks[0].qif_text.encode("utf-8"), currency="USD")
+        # Only the two real !Type:Bank transactions, no category/security rows.
+        assert len(checking) == 2
 
 
 class TestParseErrors:
