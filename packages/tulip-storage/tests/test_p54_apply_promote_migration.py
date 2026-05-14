@@ -160,9 +160,9 @@ class TestForeignKey:
                     "INSERT INTO import_batches (household_id, id, account_id, "
                     "source_format, source_filename, source_file_attachment_id, "
                     "status, imported_count, skipped_count, error_count, "
-                    "summary_json, created_by_user_id, created_at) "
+                    "created_by_user_id, created_at) "
                     "VALUES (:hid, :id, :aid, 'ofx', 'x.ofx', :att, 'parsed', "
-                    "0, 0, 0, '{}', :uid, :now)"
+                    "0, 0, 0, :uid, :now)"
                 ),
                 {
                     "hid": str(h.id),

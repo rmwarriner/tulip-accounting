@@ -28,7 +28,11 @@ from tulip_storage.repositories.scheduled_job import ScheduledJobRepository
 from tulip_storage.repositories.shadow_transaction import ShadowTransactionRepository
 from tulip_storage.repositories.sinking_fund import SinkingFundRepository
 from tulip_storage.repositories.statement_line import StatementLineRepository
-from tulip_storage.repositories.transaction import TransactionRepository, TrialBalanceRow
+from tulip_storage.repositories.transaction import (
+    MasterKeyRequiredError,
+    TransactionRepository,
+    TrialBalanceRow,
+)
 
 __all__ = [
     "AccountRepository",
@@ -39,6 +43,7 @@ __all__ = [
     "CsvProfileRepository",
     "EnvelopeRepository",
     "ImportBatchRepository",
+    "MasterKeyRequiredError",
     "NotificationRepository",
     "PendingProposalRepository",
     "PeriodRepository",
