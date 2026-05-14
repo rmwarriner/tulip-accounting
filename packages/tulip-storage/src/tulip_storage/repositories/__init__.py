@@ -10,6 +10,7 @@ higher layers (the API) call it on every business mutation.
 """
 
 from tulip_storage.repositories.account import AccountRepository
+from tulip_storage.repositories.ai_invocation import AIInvocationRepository
 from tulip_storage.repositories.allocation_pool import AllocationPoolRepository
 from tulip_storage.repositories.attachment import AttachmentRepository
 from tulip_storage.repositories.attachment_link import AttachmentLinkRepository
@@ -35,6 +36,7 @@ from tulip_storage.repositories.transaction import (
 )
 
 __all__ = [
+    "AIInvocationRepository",
     "AccountRepository",
     "AllocationPoolRepository",
     "AttachmentLinkRepository",

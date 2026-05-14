@@ -48,6 +48,8 @@ from tulip_core.money import Money
 from tulip_core.reconciliation.statement_line import StatementLine
 from tulip_storage.encryption import decrypt_field, encrypt_field
 from tulip_storage.models import Account, AccountType, Household
+from tulip_storage.repositories import AIInvocationRepository, AuditLogWriter
+from tulip_storage.runner.handlers import AI_INVOCATION_RETENTION_DAYS
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -409,6 +411,7 @@ def get_ai_config(
         fallback_provider=_get_str("fallback_provider"),
         fallback_model=_get_str("fallback_model"),
         log_prompts=bool(ai_policy.get("log_prompts", False)),
+        invocation_retention_days=AI_INVOCATION_RETENTION_DAYS,
         capabilities={
             cap: _cap_overrides(ai_policy, cap)
             for cap in ("categorize", "nl_query", "forecast", "agentic")
@@ -483,7 +486,23 @@ def put_ai_config(
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
     ai_policy: dict[str, object] = dict(household.ai_policy or {})
+    was_logging = bool(ai_policy.get("log_prompts", False))
     household.ai_policy = _apply_household_patch(ai_policy, body)
+    now_logging = bool(household.ai_policy.get("log_prompts", False))
+    if was_logging and not now_logging:
+        # GDPR Art. 17(1)(b): withdrawing log_prompts consent retroactively
+        # scrubs the prompt + response bodies logged while it was on. The
+        # scrub is atomic with the policy change — same commit (#243).
+        scrubbed = AIInvocationRepository(session, claims.household_id).scrub_prompt_logs()
+        AuditLogWriter(session, claims.household_id).write(
+            action="ai.prompt_log_scrubbed",
+            actor_kind="user",
+            actor_user_id=claims.user_id,
+            entity_type="household",
+            entity_id=claims.household_id,
+            before={"log_prompts": True},
+            after={"log_prompts": False, "rows_scrubbed": scrubbed},
+        )
     session.commit()
     log.info("ai.config_set", household_id=str(claims.household_id))
     return get_ai_config(claims=claims, session=session)
