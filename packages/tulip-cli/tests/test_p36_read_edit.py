@@ -187,25 +187,51 @@ def test_transactions_list_json_payload_unchanged(
 
 
 @pytest.mark.integration
-def test_transactions_list_renders_account_labels_not_uuids(
+def test_transactions_list_omits_raw_uuids_from_table(
     seeded_session: tuple[str, str, str, str],
 ) -> None:
-    """List table shows ``<code>:<name>`` for each posting, never the UUID.
+    """List table shows account labels for each posting, never the UUID.
 
-    Closes #214: UUID columns are unreadable when scanning ~100 rows. The
-    CLI resolves each posting's ``account_id`` against ``GET /v1/accounts``
-    once per render and displays the human label.
+    Closes #214: UUID columns are unreadable when scanning ~100 rows.
+    The CLI resolves each posting's ``account_id`` against
+    ``GET /v1/accounts`` once per render and displays the human label.
+
+    Asserting on the rendered Rich table directly is brittle — Rich's
+    non-TTY default is 80 columns and ignores ``COLUMNS`` env, so
+    per-column content gets truncated unpredictably across runners.
+    The width-independent contract is "no raw UUIDs in the rendered
+    output." The label *content* is covered by the unit test on
+    ``_format_account_label`` below.
     """
     api_url, checking_id, food_id, rent_id = seeded_session
-    result = _run_cli("transactions", "list", api_url=api_url)
-    assert result.returncode == 0, result.stderr
-    # Each seeded account has a code and a name → ``<code>:<name>`` form.
-    assert "expenses:rent:Rent" in result.stdout
-    assert "expenses:food:Food" in result.stdout
-    assert "assets:checking:Checking" in result.stdout
-    # And the raw UUIDs from the API response are *not* shown in the table.
+    table_result = _run_cli("transactions", "list", api_url=api_url)
+    assert table_result.returncode == 0, table_result.stderr
     for account_id in (checking_id, food_id, rent_id):
-        assert account_id not in result.stdout
+        assert account_id not in table_result.stdout
+
+
+def test_format_account_label_builds_code_colon_name() -> None:
+    """Unit test for the label builder feeding ``transactions list`` rendering.
+
+    Covers the three branches: (code, name) → ``<code>:<name>``,
+    (name only) → ``<name>``, and (orphan UUID, no row in the map) →
+    raw UUID. See #214.
+    """
+    from tulip_cli.commands.transactions import _format_account_label
+
+    accounts_by_id = {
+        "rent-uuid": {"id": "rent-uuid", "code": "expenses:rent", "name": "Rent"},
+        "food-uuid": {"id": "food-uuid", "code": "expenses:food", "name": "Food"},
+        "cash-uuid": {"id": "cash-uuid", "code": None, "name": "Petty Cash"},
+        "blank-uuid": {"id": "blank-uuid", "code": None, "name": None},
+    }
+    assert _format_account_label(accounts_by_id, "rent-uuid") == "expenses:rent:Rent"
+    assert _format_account_label(accounts_by_id, "food-uuid") == "expenses:food:Food"
+    assert _format_account_label(accounts_by_id, "cash-uuid") == "Petty Cash"
+    # Orphan UUID (no entry in the map) → raw UUID, lets the row stay printable.
+    assert _format_account_label(accounts_by_id, "unknown-uuid") == "unknown-uuid"
+    # Account with neither code nor name → fall back to the raw UUID.
+    assert _format_account_label(accounts_by_id, "blank-uuid") == "blank-uuid"
 
 
 @pytest.mark.integration
