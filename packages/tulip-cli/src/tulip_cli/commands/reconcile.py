@@ -25,6 +25,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
@@ -152,7 +153,7 @@ def _render_unmatched_txs(console: Console, txs: list[dict[str, Any]]) -> None:
 
 def _render_inbox(body: dict[str, Any]) -> None:
     """Render the four-section reconciliation review pane."""
-    console = Console()
+    console = make_console()
     _render_envelope(console, body["reconciliation"])
     _render_matches(console, body["matches"])
     _render_unmatched_lines(console, body["unmatched_statement_lines"])
@@ -309,7 +310,7 @@ def list_command(
             item["status"],
             str(item["statement_ending_balance"]),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 # ---- show -----------------------------------------------------------------
@@ -789,7 +790,7 @@ def walk_command(
     if as_json:
         raise typer.BadParameter("--json is incompatible with the paper-walk wizard")
 
-    console = Console()
+    console = make_console()
     try:
         with _client(config, as_json=as_json) as client:
             inbox = client.get(
@@ -907,7 +908,7 @@ def interactive_command(
     if as_json:
         raise typer.BadParameter("--json is incompatible with the interactive wizard")
 
-    console = Console()
+    console = make_console()
     try:
         with _client(config, as_json=as_json) as client:
             inbox = client.get(

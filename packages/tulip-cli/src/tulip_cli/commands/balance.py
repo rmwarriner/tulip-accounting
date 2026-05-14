@@ -14,9 +14,9 @@ from datetime import date as date_type
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.config import Config
@@ -64,7 +64,7 @@ def _render_trial_balance(body: dict[str, Any]) -> None:
             currency,
             format_amount(r.get("balance"), currency),
         )
-    console = Console()
+    console = make_console()
     console.print(table)
 
     totals = body.get("totals_by_currency") or []
