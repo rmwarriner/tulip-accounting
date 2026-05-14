@@ -18,6 +18,7 @@ from typing import Annotated, Any
 
 import typer
 
+from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.commands.csv_profiles import csv_profiles_app
@@ -379,16 +380,73 @@ def _render_batch(body: dict[str, Any]) -> None:
     console.print(table)
 
 
+def _format_apply_picker_label(item: dict[str, Any]) -> str:
+    """One-line label for an actionable (status=parsed) batch in the picker."""
+    batch_id = str(item.get("id") or "")
+    created = str(item.get("created_at") or "")
+    if len(created) >= 19:
+        created = created[:19].replace("T", " ")
+    fmt = str(item.get("source_format") or "").upper()
+    filename = str(item.get("source_filename") or "")
+    imported = item.get("imported_count", 0)
+    skipped = item.get("skipped_count", 0)
+    return (
+        f"{batch_id[:8] if batch_id else '—'}  {created}  {fmt:>4}  "
+        f"{filename}  ({imported}/{skipped})"
+    )
+
+
+def _pick_apply_batch_id(config: Config, *, as_json: bool) -> str | None:
+    """Fetch actionable (parsed) batches and prompt the user to pick one.
+
+    Returns the picked UUID string, or ``None`` if the picker is
+    suppressed (no TTY, ``--json``) or the user cancels. Non-interactive
+    callers get a usage hint on stderr matching the legacy "missing
+    argument" message so scripts can ``grep`` it.
+    """
+    if as_json or not is_interactive():
+        typer.echo(
+            "Missing argument BATCH_ID. Run `tulip imports list --status parsed` "
+            "to find a batch, then re-run with the id.",
+            err=True,
+        )
+        return None
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(
+                "/v1/imports",
+                authenticated=True,
+                params={"status": "parsed"},
+            )
+    except CliError as err:
+        err.render()
+        return None
+    items = response.json().get("items") or []
+    return pick(
+        items,
+        label=_format_apply_picker_label,
+        title="Pick a parsed import batch to apply:",
+        empty_message=(
+            "No parsed import batches to apply. Upload one with `tulip imports ofx/qif/csv` first."
+        ),
+        overflow_hint=("  …list truncated; narrow with `tulip imports list --account <id>`."),
+    )
+
+
 @imports_app.command("apply")
 def apply_import(
     ctx: typer.Context,
     batch_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Import batch UUID returned by `tulip imports ofx/qif/csv`.",
+            help=(
+                "Import batch UUID returned by `tulip imports ofx/qif/csv`. "
+                "Omit to pick interactively from recent parsed batches "
+                "(TTY only — scripts still get the usage error)."
+            ),
             metavar="BATCH_ID",
         ),
-    ],
+    ] = None,
     no_categorize: Annotated[
         bool,
         typer.Option(
@@ -424,6 +482,10 @@ def apply_import(
     """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+    if batch_id is None:
+        batch_id = _pick_apply_batch_id(config, as_json=as_json)
+        if batch_id is None:
+            raise typer.Exit(2)
     path = f"/v1/imports/{batch_id}/apply"
     query: list[str] = []
     if no_categorize:

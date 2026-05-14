@@ -25,6 +25,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.config import Config
@@ -314,17 +315,67 @@ def list_command(
 # ---- show -----------------------------------------------------------------
 
 
+def _format_recon_picker_label(item: dict[str, Any]) -> str:
+    """One-line label for an in-progress reconciliation row in the picker."""
+    recon_id = str(item.get("id") or "")
+    account = str(item.get("account_id") or "")
+    period = f"{item.get('statement_period_start', '?')}..{item.get('statement_period_end', '?')}"
+    ending = str(item.get("statement_ending_balance") or "?")
+    return f"{recon_id[:8] if recon_id else '—'}  account={account[:8]}  {period}  ending={ending}"
+
+
+def _pick_reconciliation_id(config: Config, *, as_json: bool) -> str | None:
+    """Fetch in-progress reconciliations and prompt the user to pick one.
+
+    Returns the picked UUID string, or ``None`` when suppressed
+    (``--json`` / non-TTY) or the user cancels.
+    """
+    if as_json or not is_interactive():
+        typer.echo(
+            "Missing argument RECONCILIATION_ID. Run `tulip reconcile list "
+            "--status in_progress` to find an envelope, then re-run with the id.",
+            err=True,
+        )
+        return None
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(
+                "/v1/reconciliations",
+                authenticated=True,
+                params={"status": "in_progress"},
+            )
+    except CliError as err:
+        err.render()
+        return None
+    items = response.json().get("items") or []
+    return pick(
+        items,
+        label=_format_recon_picker_label,
+        title="Pick an in-progress reconciliation:",
+        empty_message=(
+            "No in-progress reconciliations. Open one with "
+            "`tulip reconcile create` or `tulip reconcile start`."
+        ),
+        overflow_hint=("  …list truncated; narrow with `tulip reconcile list --account <id>`."),
+    )
+
+
 @reconcile_app.command("show")
 def show_command(
     ctx: typer.Context,
     reconciliation_id: Annotated[
-        UUID,
+        UUID | None,
         typer.Argument(help="Reconciliation UUID.", metavar="RECONCILIATION_ID"),
-    ],
+    ] = None,
 ) -> None:
     """Show the reconciliation envelope + the four-section review pane."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+    if reconciliation_id is None:
+        picked = _pick_reconciliation_id(config, as_json=as_json)
+        if picked is None:
+            raise typer.Exit(2)
+        reconciliation_id = UUID(picked)
     try:
         with _client(config, as_json=as_json) as client:
             response = client.get(f"/v1/reconciliations/{reconciliation_id}", authenticated=True)
