@@ -60,6 +60,7 @@ def _create_account(
     code: str | None,
     name: str,
     type_: str = "asset",
+    parent_account_id: str | None = None,
 ) -> dict[str, object]:
     body: dict[str, object] = {
         "name": name,
@@ -69,6 +70,8 @@ def _create_account(
     }
     if code is not None:
         body["code"] = code
+    if parent_account_id is not None:
+        body["parent_account_id"] = parent_account_id
     r = httpx.post(
         f"{api_url}/v1/accounts",
         json=body,
@@ -237,3 +240,166 @@ def test_accounts_list_unauthenticated_fails_clearly(
     result = _run_cli("accounts", "list", api_url=live_api)
     assert result.returncode == 2, (result.stdout, result.stderr)
     assert "not logged in" in result.stderr.lower() or "log in" in result.stderr.lower()
+
+
+# --- #197: resolve accounts by name / hierarchical path ----------------------
+
+
+class TestMatchNameOrPath:
+    """Unit tests for the pure name / path matcher behind ``_resolve_account``."""
+
+    @staticmethod
+    def _acct(
+        id_: str,
+        name: str,
+        type_: str = "asset",
+        parent: str | None = None,
+    ) -> dict[str, object]:
+        return {"id": id_, "name": name, "type": type_, "parent_account_id": parent}
+
+    def _chart(self) -> list[dict[str, object]]:
+        # asset:Cash -> asset:Cash:Joint ; liability:Cash (name collision)
+        # expense:Groceries
+        return [
+            self._acct("a-cash", "Cash"),
+            self._acct("a-cash-joint", "Joint", parent="a-cash"),
+            self._acct("l-cash", "Cash", type_="liability"),
+            self._acct("e-groceries", "Groceries", type_="expense"),
+        ]
+
+    def test_bare_unique_name_matches_one(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        matches = _match_name_or_path(self._chart(), "Groceries")
+        assert [m["id"] for m in matches] == ["e-groceries"]
+
+    def test_bare_ambiguous_name_matches_all(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        matches = _match_name_or_path(self._chart(), "Cash")
+        assert {m["id"] for m in matches} == {"a-cash", "l-cash"}
+
+    def test_path_segment_disambiguates(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        matches = _match_name_or_path(self._chart(), "cash:joint")
+        assert [m["id"] for m in matches] == ["a-cash-joint"]
+
+    def test_type_prefix_constrains(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        # Plural and singular type prefixes both resolve.
+        for ident in ("assets:cash", "asset:cash"):
+            matches = _match_name_or_path(self._chart(), ident)
+            assert [m["id"] for m in matches] == ["a-cash"], ident
+        # The liability:Cash is excluded by the asset prefix.
+        liab = _match_name_or_path(self._chart(), "liability:cash")
+        assert [m["id"] for m in liab] == ["l-cash"]
+
+    def test_full_type_prefixed_path(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        matches = _match_name_or_path(self._chart(), "assets:cash:joint")
+        assert [m["id"] for m in matches] == ["a-cash-joint"]
+
+    def test_case_insensitive(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        upper = _match_name_or_path(self._chart(), "ASSETS:CASH:JOINT")
+        lower = _match_name_or_path(self._chart(), "assets:cash:joint")
+        assert [m["id"] for m in upper] == [m["id"] for m in lower] == ["a-cash-joint"]
+
+    def test_wrong_type_prefix_no_match(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        assert _match_name_or_path(self._chart(), "income:groceries") == []
+
+    def test_empty_segment_no_match(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        assert _match_name_or_path(self._chart(), "cash:") == []
+        assert _match_name_or_path(self._chart(), "asset::joint") == []
+
+    def test_path_must_be_contiguous_suffix(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        # Three-level chart: asset:Cash -> Cash:Joint -> Joint:Sub.
+        chart = [
+            self._acct("a-cash", "Cash"),
+            self._acct("a-joint", "Joint", parent="a-cash"),
+            self._acct("a-sub", "Sub", parent="a-joint"),
+        ]
+        # "joint:sub" and "cash:joint:sub" are valid contiguous suffixes.
+        assert [m["id"] for m in _match_name_or_path(chart, "joint:sub")] == ["a-sub"]
+        assert [m["id"] for m in _match_name_or_path(chart, "cash:joint:sub")] == ["a-sub"]
+        # "cash:sub" skips the intermediate "joint" — not a valid suffix.
+        assert _match_name_or_path(chart, "cash:sub") == []
+
+
+def _seed_path_chart(api_url: str) -> str:
+    """Seed Alice's household with a nested chart for path-resolution tests."""
+    alice_login = httpx.post(
+        f"{api_url}/v1/auth/login",
+        json={"email": "alice@example.com", "password": _PASSWORD},
+        timeout=10,
+    )
+    alice_login.raise_for_status()
+    access = str(alice_login.json()["access_token"])
+    cash = _create_account(api_url, access, code="1100", name="Cash")
+    _create_account(api_url, access, code="1110", name="Joint", parent_account_id=str(cash["id"]))
+    _create_account(api_url, access, code="5100", name="Groceries", type_="expense")
+    return access
+
+
+@pytest.mark.integration
+def test_accounts_show_by_unique_name(authed_session: str) -> None:
+    _seed_path_chart(authed_session)
+    result = _run_cli("accounts", "show", "Groceries", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    assert "Groceries" in result.stdout
+
+
+@pytest.mark.integration
+def test_accounts_show_by_hierarchical_path(authed_session: str) -> None:
+    _seed_path_chart(authed_session)
+    # Both the type-prefixed and bare-path forms resolve the nested account.
+    for ident in ("assets:cash:joint", "cash:joint"):
+        result = _run_cli("accounts", "show", ident, api_url=authed_session)
+        assert result.returncode == 0, (ident, result.stderr)
+        assert "Joint" in result.stdout, ident
+
+
+@pytest.mark.integration
+def test_accounts_show_path_is_case_insensitive(authed_session: str) -> None:
+    _seed_path_chart(authed_session)
+    result = _run_cli("accounts", "show", "ASSETS:CASH:JOINT", api_url=authed_session)
+    assert result.returncode == 0, result.stderr
+    assert "Joint" in result.stdout
+
+
+@pytest.mark.integration
+def test_accounts_show_ambiguous_name_lists_paths(authed_session: str) -> None:
+    """Two same-named accounts under different parents → error with both paths."""
+    alice_login = httpx.post(
+        f"{authed_session}/v1/auth/login",
+        json={"email": "alice@example.com", "password": _PASSWORD},
+        timeout=10,
+    )
+    alice_login.raise_for_status()
+    access = str(alice_login.json()["access_token"])
+    checking = _create_account(authed_session, access, code="1100", name="Checking")
+    savings = _create_account(authed_session, access, code="1200", name="Savings")
+    _create_account(
+        authed_session, access, code=None, name="Fees", parent_account_id=str(checking["id"])
+    )
+    _create_account(
+        authed_session, access, code=None, name="Fees", parent_account_id=str(savings["id"])
+    )
+
+    result = _run_cli("accounts", "show", "Fees", api_url=authed_session)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    err = result.stderr.lower()
+    assert "ambiguous" in err or "multiple" in err
+    # Both full paths are printed so the user can pick one.
+    assert "checking:fees" in err
+    assert "savings:fees" in err
