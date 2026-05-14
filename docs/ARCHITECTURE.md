@@ -997,7 +997,7 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **P7.1.b** — CLI surface: `tulip reports <name>` (9 subcommands, `--format json|html|pdf|csv`, `--output PATH`) and `tulip journal {export,import}` over the existing endpoints (PR #190).
 
 ### Phase 8 — Operations + hardening 🔄 in progress
-- ✅ **Deep security audit** — shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md). Multi-agent static review across seven streams (auth/session, authz/tenancy, crypto, input-validation, secrets/logging/deps, audit-log/ops, AI/backup); `pip-audit` clean. **0 Critical · 8 High · 25 Medium · 24 Low.** Document-only; findings tracked as follow-up issues. Explicitly *not* a pen test — that stays deferred to Phase 9.
+- ✅ **Deep security audit** — shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md). Multi-agent static review across seven streams (auth/session, authz/tenancy, crypto, input-validation, secrets/logging/deps, audit-log/ops, AI/backup); `pip-audit` clean. **0 Critical · 8 High · 25 Medium · 24 Low.** Document-only; findings tracked as follow-up issues. Explicitly *not* a pen test — that stays deferred to the pre-cloud phase (Phase 10; the audit document, dated before the Phase 9 TUI insertion, refers to it as "Phase 9").
 - ✅ **Deep privacy audit** — shipped 2026-05-13 as [docs/audits/2026-05-13-deep-privacy-audit.md](audits/2026-05-13-deep-privacy-audit.md). Full-system GDPR / CCPA framing — personal-data inventory, data flows, retention/deletion, user-rights infrastructure, multi-user-within-household boundaries. **1 Critical · 17 High · 28 Medium · 22 Low.**
 - ✅ **Security Wave-1 follow-ups** — the highest-severity security findings: `slowapi` rate limiting on the four `/v1/auth/*` abuse surfaces (#219), single-use MFA-challenge JWTs via the `used_mfa_challenges` table (#219), 80-bit recovery-code entropy floor (#219), constant-time login path closing the user-enumeration timing oracle, structlog email/IP redaction on by default, `AICategorizer` session-deadlock fix (#199, #200), and the proposal `actor_kind` spoofing fix.
 - ✅ **Privacy Wave-1 follow-ups** — the Critical + High privacy findings: `local_only` AI profile pins to Ollama regardless of `fallback_provider` (#233); GDPR Art. 17 right-to-erasure for users (`DELETE /v1/users/{user_id}`, #235) and households (`POST /v1/households/me/erase-request` → `DELETE /v1/households/me`, #235) with attachment-ciphertext GC and audit-log PII redaction (#234).
@@ -1007,7 +1007,28 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - 🔄 **Documentation pass** — ARCHITECTURE, THREAT_MODEL, PHASE_STATUS, README, QUICKSTART brought current through Phase 8. DEPLOYMENT, SECURITY, AI docs still pending.
 - Performance pass on common queries *(pending)*
 
-### Phase 9 — Pre-cloud preparation (optional, before multi-tenant rollout)
+### Phase 9 — Terminal UI (TUI)
+
+Per [ADR-0007](adrs/0007-terminal-ui.md). A [Textual](https://textual.textualize.io/)
+terminal UI as an **additive client** — the CLI stays as the scriptable
+/ automation surface and test-bed, the TUI is the comfortable human
+review surface. Same HTTP API, no backend changes, no new attack
+surface.
+
+- New workspace package `tulip-tui` — an API client like `tulip-cli`;
+  the architecture-boundary test extends to it (no server / storage
+  imports).
+- **v1 TUI scope is read / browse only** — navigable account browser,
+  transaction register, reports, reconciliation status, import
+  batches. No mutations in the first cut; editing / posting /
+  reconcile actions land in later Phase 9 slices once the navigation
+  shell + read surfaces are proven.
+- Tested headlessly via Textual's pilot mode; a `Test (tulip-tui)`
+  shard joins the per-package CI matrix (ADR-0006).
+- The CLI is **not** deprecated — the README's "scriptable CLI client"
+  value proposition stands.
+
+### Phase 10 — Pre-cloud preparation (optional, before multi-tenant rollout)
 - Postgres backend implementation against the existing storage abstraction
 - KMS integration (master key no longer interactive)
 - Worker-process separation for scheduler
@@ -1022,7 +1043,7 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 | **Privacy audit (AI)** | Before Phase 6 implementation begins — ✅ shipped 2026-05-11 as [ADR-0005](adrs/0005-ai-integration.md) | Household financial data starts leaving the local boundary at AI integration; the audit shapes the design rather than reviewing it after. |
 | **Deep security audit** | Phase 8 (operations + hardening) — ✅ shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md) | First point where the system has a real deployment story (Docker, backup/restore) and a stable feature set; before any real-user rollout. |
 | **Deep privacy audit** | Phase 8, alongside the security audit — ✅ shipped 2026-05-13 as [docs/audits/2026-05-13-deep-privacy-audit.md](audits/2026-05-13-deep-privacy-audit.md) | Verifies the shipped state of the ADR-0005 AI privacy posture and broadens to a full-system GDPR / CCPA review before any real-user rollout. |
-| **Pre-cloud security re-audit** | Phase 9, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
+| **Pre-cloud security re-audit** | Phase 10, before multi-tenant cutover | Multi-tenant + network exposure is a new threat model; re-validates Phase 8 findings under the new constraints. |
 
 ---
 
