@@ -17,7 +17,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import String, cast, delete, func, select, update
+from sqlalchemy import String, case, cast, delete, func, select, update
 
 from tulip_storage.encryption import decrypt_field, encrypt_field
 from tulip_storage.models import Posting, Transaction, TransactionStatus
@@ -80,14 +80,30 @@ _DOMAIN_TO_STORAGE_STATUS: dict[str, TransactionStatus] = {
 #: are workflow state, not ledger state, and are excluded from balances.
 _LEDGER_STATUSES = (TransactionStatus.POSTED, TransactionStatus.RECONCILED)
 
+#: The ledger statuses plus PENDING — the filter used when a caller opts
+#: into the "what if all pending is real" view (#274).
+_LEDGER_PLUS_PENDING = (*_LEDGER_STATUSES, TransactionStatus.PENDING)
+
+
+def _balance_statuses(*, include_pending: bool) -> tuple[TransactionStatus, ...]:
+    """Pick the status filter for a balance query (#274)."""
+    return _LEDGER_PLUS_PENDING if include_pending else _LEDGER_STATUSES
+
 
 @dataclass(frozen=True, slots=True)
 class TrialBalanceRow:
-    """One row of a per-(account, currency) trial-balance result."""
+    """One row of a per-(account, currency) trial-balance result.
+
+    ``has_pending`` is True when ``include_pending`` was requested *and*
+    at least one PENDING transaction contributed to this row's balance —
+    it's what the CLI uses to flag a row with a ``(P)`` marker. It's
+    always False on the posted-only path.
+    """
 
     account_id: UUID
     currency: str
     balance: Decimal
+    has_pending: bool = False
 
 
 class TransactionRepository:
@@ -204,12 +220,14 @@ class TransactionRepository:
         *,
         currency: str,
         as_of: date_type | None = None,
+        include_pending: bool = False,
     ) -> Decimal:
         """Sum the ledger postings on ``account_id`` in ``currency``.
 
-        Pending transactions are excluded — only POSTED and RECONCILED
-        contribute. ``as_of`` limits to transactions on or before that
-        date; ``None`` means "all time."
+        By default only POSTED + RECONCILED contribute. ``include_pending``
+        (#274) widens the sum to PENDING transactions too — the "what if
+        all pending is real" view. ``as_of`` limits to transactions on or
+        before that date; ``None`` means "all time."
         """
         query = (
             select(func.coalesce(func.sum(Posting.amount), 0))
@@ -218,7 +236,7 @@ class TransactionRepository:
                 Posting.household_id == self._household_id,
                 Posting.account_id == account_id,
                 Posting.currency == currency,
-                Transaction.status.in_(_LEDGER_STATUSES),
+                Transaction.status.in_(_balance_statuses(include_pending=include_pending)),
             )
         )
         if as_of is not None:
@@ -229,29 +247,79 @@ class TransactionRepository:
         # a type drift on the empty-result branch.
         return Decimal(str(result))
 
+    def count_pending_for_account(
+        self,
+        account_id: UUID,
+        *,
+        currency: str,
+        as_of: date_type | None = None,
+    ) -> int:
+        """Count distinct PENDING transactions with a posting on this account.
+
+        Drives the ``pending_count`` field on the account-balance
+        response (#274). ``distinct`` because one transaction can carry
+        more than one posting on the same account.
+        """
+        query = (
+            select(func.count(func.distinct(Transaction.id)))
+            .join(Posting, Posting.transaction_id == Transaction.id)
+            .where(
+                Posting.household_id == self._household_id,
+                Posting.account_id == account_id,
+                Posting.currency == currency,
+                Transaction.status == TransactionStatus.PENDING,
+            )
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        return int(self._session.execute(query).scalar_one())
+
+    def count_pending_transactions(self, *, as_of: date_type | None = None) -> int:
+        """Count PENDING transactions household-wide (#274).
+
+        Drives the ``pending_count`` field on the trial-balance response.
+        """
+        query = select(func.count()).where(
+            Transaction.household_id == self._household_id,
+            Transaction.status == TransactionStatus.PENDING,
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        return int(self._session.execute(query).scalar_one())
+
     def trial_balance(
         self,
         *,
         as_of: date_type | None = None,
+        include_pending: bool = False,
     ) -> list[TrialBalanceRow]:
         """Return one row per (account_id, currency) for the household's ledger.
 
-        Pending transactions are excluded. ``as_of`` filters to
-        transactions on or before that date; ``None`` means "all time."
-        Accounts with no postings (or only zero-net postings) still
-        appear when they have any matching posting at all — callers may
-        filter zeros if they want.
+        By default only POSTED + RECONCILED contribute. ``include_pending``
+        (#274) widens the sum to PENDING transactions too, and sets
+        ``has_pending`` on each row that drew at least one PENDING
+        posting. ``as_of`` filters to transactions on or before that
+        date; ``None`` means "all time." Accounts with no postings (or
+        only zero-net postings) still appear when they have any matching
+        posting at all — callers may filter zeros if they want.
         """
+        # MAX over a 0/1 case expression collapses to "any pending in the
+        # group" — one extra column, no second query.
+        is_pending = case(
+            (Transaction.status == TransactionStatus.PENDING, 1),
+            else_=0,
+        )
         query = (
             select(
                 Posting.account_id,
                 Posting.currency,
                 func.coalesce(func.sum(Posting.amount), 0).label("balance"),
+                func.max(is_pending).label("has_pending"),
             )
             .join(Transaction, Transaction.id == Posting.transaction_id)
             .where(
                 Posting.household_id == self._household_id,
-                Transaction.status.in_(_LEDGER_STATUSES),
+                Transaction.status.in_(_balance_statuses(include_pending=include_pending)),
             )
             .group_by(Posting.account_id, Posting.currency)
         )
@@ -263,8 +331,9 @@ class TransactionRepository:
                 account_id=account_id,
                 currency=currency,
                 balance=Decimal(str(balance)),
+                has_pending=include_pending and bool(has_pending),
             )
-            for account_id, currency, balance in rows
+            for account_id, currency, balance, has_pending in rows
         ]
 
     def save_balanced(

@@ -322,22 +322,41 @@ def get_account_balance(
             "transactions on or before this date. Defaults to today."
         ),
     ),
+    include_pending: bool = Query(
+        default=False,
+        description=(
+            "When true, fold PENDING transactions into the balance — the "
+            "'what if all pending is real' view. Default false keeps the "
+            "posted-only ledger semantics. The response then carries "
+            "pending_included=true and pending_count."
+        ),
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AccountBalanceRead:
     """Return the ledger balance of an account in its primary currency.
 
-    Pending transactions are excluded — only POSTED + RECONCILED contribute.
-    Postings in other currencies on this account (e.g. FX postings) are
-    not included; use the trial-balance report for the multi-currency view.
+    By default only POSTED + RECONCILED contribute. ``include_pending=true``
+    (#274) widens the sum to PENDING transactions too. Postings in other
+    currencies on this account (e.g. FX postings) are not included; use
+    the trial-balance report for the multi-currency view.
     """
     a = AccountRepository(session, claims.household_id).get(account_id)
     if a is None or not _filter_for_role(a, claims):
         raise AccountNotFoundError()
 
     effective_as_of = as_of or date_type.today()
-    raw_balance = TransactionRepository(session, claims.household_id).balance_for_account(
-        a.id, currency=a.currency, as_of=effective_as_of
+    tx_repo = TransactionRepository(session, claims.household_id)
+    raw_balance = tx_repo.balance_for_account(
+        a.id,
+        currency=a.currency,
+        as_of=effective_as_of,
+        include_pending=include_pending,
+    )
+    pending_count = (
+        tx_repo.count_pending_for_account(a.id, currency=a.currency, as_of=effective_as_of)
+        if include_pending
+        else 0
     )
     # Quantize to the currency's minor units so the JSON representation
     # is the natural "12.50" rather than the storage-precision "12.50000000".
@@ -349,6 +368,8 @@ def get_account_balance(
         currency=a.currency,
         balance=balance,
         as_of=effective_as_of,
+        pending_included=include_pending,
+        pending_count=pending_count,
     )
 
 

@@ -18,11 +18,27 @@ class AccountBalanceRead(BaseModel):
     currency: str
     balance: Decimal = Field(
         description=(
-            "Sum of POSTED + RECONCILED postings on this account in its currency. "
-            "Pending transactions are not included."
+            "Sum of POSTED + RECONCILED postings on this account in its "
+            "currency. When pending_included is true, PENDING transactions "
+            "are folded in as well."
         ),
     )
     as_of: date
+    pending_included: bool = Field(
+        default=False,
+        description=(
+            "True when the request passed include_pending=true and the "
+            "balance reflects PENDING transactions, not just the posted "
+            "ledger."
+        ),
+    )
+    pending_count: int = Field(
+        default=0,
+        description=(
+            "Number of PENDING transactions contributing to this balance. "
+            "Always 0 when pending_included is false."
+        ),
+    )
 
 
 class TrialBalanceRow(BaseModel):
@@ -34,6 +50,13 @@ class TrialBalanceRow(BaseModel):
     type: str
     currency: str
     balance: Decimal
+    has_pending: bool = Field(
+        default=False,
+        description=(
+            "True when pending_included is set and at least one PENDING "
+            "transaction contributed to this row's balance."
+        ),
+    )
 
 
 class CurrencyTotal(BaseModel):
@@ -54,5 +77,21 @@ class TrialBalanceRead(BaseModel):
             "Per-currency totals of positive (debit) and negative (credit) "
             "balances. They sum to zero per currency in a healthy ledger; a "
             "non-zero sum indicates a data issue."
+        ),
+    )
+    pending_included: bool = Field(
+        default=False,
+        description=(
+            "True when the request passed include_pending=true. The rows "
+            "and totals then reflect PENDING transactions on top of the "
+            "posted ledger; rows that drew a PENDING posting carry "
+            "has_pending=true."
+        ),
+    )
+    pending_count: int = Field(
+        default=0,
+        description=(
+            "Number of PENDING transactions folded into this report. "
+            "Always 0 when pending_included is false."
         ),
     )

@@ -37,6 +37,7 @@ class TrialBalanceRow:
     type: str  # asset / liability / equity / income / expense
     currency: str
     balance: Decimal
+    has_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,8 @@ class TrialBalanceData:
     totals_by_currency: list[CurrencyTotal]
     household_name: str
     generated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    pending_included: bool = False
+    pending_count: int = 0
 
 
 VisibleAccountFilter = Callable[[str, UUID | None], bool]
@@ -68,6 +71,7 @@ def build(
     household_id: UUID,
     as_of: date_type | None = None,
     visible_account_filter: VisibleAccountFilter | None = None,
+    include_pending: bool = False,
 ) -> TrialBalanceData:
     """Compute trial-balance rows + totals for one household.
 
@@ -78,6 +82,10 @@ def build(
     Defaults to a permissive filter that returns all accounts; tests
     use the default, the API endpoint passes its
     :func:`_filter_for_role`.
+
+    ``include_pending`` (#274) folds PENDING transactions into the
+    balances and stamps ``has_pending`` on each row that drew one; the
+    rendered report shows a "includes N pending transactions" subtitle.
     """
     from tulip_storage.models import Household
     from tulip_storage.repositories import AccountRepository, TransactionRepository
@@ -86,7 +94,10 @@ def build(
     account_repo = AccountRepository(session, household_id)
     accounts_by_id = {a.id: a for a in account_repo.list_active()}
     effective_as_of = as_of or date_type.today()
-    raw = tx_repo.trial_balance(as_of=effective_as_of)
+    raw = tx_repo.trial_balance(as_of=effective_as_of, include_pending=include_pending)
+    pending_count = (
+        tx_repo.count_pending_transactions(as_of=effective_as_of) if include_pending else 0
+    )
     household = session.get(Household, household_id)
     assert household is not None  # noqa: S101 — caller already authenticated
 
@@ -110,6 +121,7 @@ def build(
                 type=a.type.value,
                 currency=r.currency,
                 balance=balance,
+                has_pending=r.has_pending,
             )
         )
         if balance > 0:
@@ -136,6 +148,8 @@ def build(
         rows=rows,
         totals_by_currency=totals,
         household_name=household.name,
+        pending_included=include_pending,
+        pending_count=pending_count,
     )
 
 
