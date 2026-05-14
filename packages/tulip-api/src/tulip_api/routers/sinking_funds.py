@@ -6,6 +6,7 @@ through transfer or — eventually — a scheduled-tx runner in P4.3).
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from datetime import date as date_type
 from decimal import Decimal
@@ -20,9 +21,11 @@ from tulip_api.deps import get_session
 from tulip_api.errors import (
     ForbiddenError,
     SinkingFundNotFoundError,
+    SinkingFundNotRedactableError,
     problem_response,
 )
 from tulip_api.routers._pool_helpers import filter_for_role
+from tulip_api.schemas.lifecycle import DeactivationResponse, RedactionResponse
 from tulip_api.schemas.pool import PoolBalanceRead
 from tulip_api.schemas.sinking_fund import (
     SinkingFundCreate,
@@ -235,9 +238,13 @@ def update_sinking_fund(
     return _to_read(pool, sf)
 
 
+#: Field types a sinking fund (its allocation pool) retains after a
+#: soft-delete. Erased only by POST /v1/sinking-funds/{id}/redact (#236).
+_SINKING_FUND_PII_FIELDS = ["name"]
+
+
 @router.delete(
     "/{sinking_fund_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
@@ -249,8 +256,12 @@ def deactivate_sinking_fund(
     request: Request,
     claims: Claims = Depends(require_role("admin")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
-) -> None:
-    """Soft-delete (deactivate) a sinking fund. Admin only."""
+) -> DeactivationResponse:
+    """Soft-delete (deactivate) a sinking fund. Admin only.
+
+    DELETE *deactivates* — the pool row and its ``name`` survive. Use
+    ``POST /v1/sinking-funds/{id}/redact`` afterwards to erase the name.
+    """
     found = SinkingFundRepository(session, claims.household_id).get(sinking_fund_id)
     if found is None:
         raise SinkingFundNotFoundError()
@@ -273,6 +284,53 @@ def deactivate_sinking_fund(
         request_id=_request_uuid(request),
     )
     session.commit()
+    return DeactivationResponse(data_retained=_SINKING_FUND_PII_FIELDS)
+
+
+@router.post(
+    "/{sinking_fund_id}/redact",
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("sinking_fund.not_found"),
+        409: problem_response("sinking_fund.not_redactable"),
+    },
+)
+def redact_sinking_fund(
+    sinking_fund_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> RedactionResponse:
+    """Erase a deactivated sinking fund's PII (its pool ``name``). Admin only.
+
+    The sinking fund must already be deactivated
+    (``409 sinking_fund.not_redactable`` otherwise). The pool's
+    user-supplied ``name`` is replaced with a non-PII placeholder;
+    shadow-ledger postings keep their FK and amounts.
+    """
+    found = SinkingFundRepository(session, claims.household_id).get(sinking_fund_id)
+    if found is None:
+        raise SinkingFundNotFoundError()
+    pool, _sf = found
+    if pool.is_active:
+        raise SinkingFundNotRedactableError()
+    placeholder = (
+        f"redacted-sinking-fund-{hashlib.sha256(str(sinking_fund_id).encode()).hexdigest()[:8]}"
+    )
+    AllocationPoolRepository(session, claims.household_id).redact(sinking_fund_id, name=placeholder)
+    AuditLogWriter(session, claims.household_id).write(
+        action="redact",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="sinking_fund",
+        entity_id=pool.id,
+        before={"redacted": False},
+        after={"redacted": True, "name": placeholder},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    return RedactionResponse(fields_redacted=_SINKING_FUND_PII_FIELDS)
 
 
 @router.get(

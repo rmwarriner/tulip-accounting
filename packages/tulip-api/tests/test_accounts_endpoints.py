@@ -96,11 +96,105 @@ class TestAccountCrud:
             json={"name": "Bye", "type": "asset", "currency": "USD"},
         ).json()
         r = client.delete(f"/v1/accounts/{a['id']}", headers=auth_h)
-        assert r.status_code == 204
+        assert r.status_code == 200
+        # The response is honest: DELETE deactivates, it doesn't erase (#236).
+        assert r.json() == {
+            "action": "deactivated",
+            "data_retained": [
+                "name",
+                "external_account_number_encrypted",
+                "notes_encrypted",
+            ],
+        }
 
         # No longer listed.
         rows = client.get("/v1/accounts", headers=auth_h).json()
         assert all(row["id"] != a["id"] for row in rows)
+
+    def test_redact_account_nulls_pii_and_keeps_postings(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ):
+        """#236: redact erases PII but ledger postings still link to the account."""
+        from datetime import date
+        from decimal import Decimal
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import Account, Posting
+
+        sensitive = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Sensitive Acct", "type": "asset", "currency": "USD"},
+        ).json()
+        counterpart = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Groceries", "type": "expense", "currency": "USD"},
+        ).json()
+        # Post a balanced transaction touching the sensitive account.
+        client.post(
+            "/v1/transactions",
+            headers=auth_h,
+            json={
+                "date": date.today().isoformat(),
+                "description": "Lunch",
+                "postings": [
+                    {"account_id": counterpart["id"], "amount": "12.50", "currency": "USD"},
+                    {"account_id": sensitive["id"], "amount": "-12.50", "currency": "USD"},
+                ],
+            },
+        ).raise_for_status()
+
+        client.delete(f"/v1/accounts/{sensitive['id']}", headers=auth_h).raise_for_status()
+        r = client.post(f"/v1/accounts/{sensitive['id']}/redact", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.json() == {
+            "action": "redacted",
+            "fields_redacted": [
+                "name",
+                "external_account_number_encrypted",
+                "notes_encrypted",
+            ],
+        }
+        with session_maker() as s:
+            row = s.execute(select(Account).where(Account.id == UUID(sensitive["id"]))).scalar_one()
+            postings = list(
+                s.execute(select(Posting).where(Posting.account_id == UUID(sensitive["id"])))
+                .scalars()
+                .all()
+            )
+        # PII erased.
+        assert row.name != "Sensitive Acct"
+        assert row.name.startswith("redacted-account-")
+        assert row.external_account_number_encrypted is None
+        assert row.notes_encrypted is None
+        # Ledger history preserved — the posting still links to the redacted account.
+        assert len(postings) == 1
+        assert postings[0].amount == Decimal("-12.50")
+
+    def test_redact_active_account_returns_409(self, client: TestClient, auth_h: dict[str, str]):
+        """An account must be deactivated before it can be redacted (#236)."""
+        a = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Still Active", "type": "asset", "currency": "USD"},
+        ).json()
+        r = client.post(f"/v1/accounts/{a['id']}/redact", headers=auth_h)
+        assert_problem(r, code="account.not_redactable", status=409)
+
+    def test_redact_unknown_account_returns_404(self, client: TestClient, auth_h: dict[str, str]):
+        from uuid import uuid4
+
+        r = client.post(f"/v1/accounts/{uuid4()}/redact", headers=auth_h)
+        assert_problem(r, code="account.not_found", status=404)
+
+    def test_redact_requires_auth(self, client: TestClient):
+        from uuid import uuid4
+
+        r = client.post(f"/v1/accounts/{uuid4()}/redact")
+        assert r.status_code == 401
 
     def test_validation_rejects_unknown_type(self, client: TestClient, auth_h: dict[str, str]):
         r = client.post(

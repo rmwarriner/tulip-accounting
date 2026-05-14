@@ -791,6 +791,55 @@ class SinkingFundNotFoundError(TulipProblem):
         )
 
 
+class AccountNotRedactableError(TulipProblem):
+    """A redact was attempted on an account that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the account.not_redactable problem."""
+        super().__init__(
+            code="account.not_redactable",
+            title="Account not redactable",
+            status=409,
+            detail=(
+                "Only deactivated accounts can be redacted. Delete (deactivate) "
+                "the account first, then redact it to erase its PII."
+            ),
+        )
+
+
+class EnvelopeNotRedactableError(TulipProblem):
+    """A redact was attempted on an envelope that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the envelope.not_redactable problem."""
+        super().__init__(
+            code="envelope.not_redactable",
+            title="Envelope not redactable",
+            status=409,
+            detail=(
+                "Only deactivated envelopes can be redacted. Delete (deactivate) "
+                "the envelope first, then redact it to erase its PII."
+            ),
+        )
+
+
+class SinkingFundNotRedactableError(TulipProblem):
+    """A redact was attempted on a sinking fund that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the sinking_fund.not_redactable problem."""
+        super().__init__(
+            code="sinking_fund.not_redactable",
+            title="Sinking fund not redactable",
+            status=409,
+            detail=(
+                "Only deactivated sinking funds can be redacted. Delete "
+                "(deactivate) the sinking fund first, then redact it to erase "
+                "its PII."
+            ),
+        )
+
+
 class PoolTransferSamePoolError(TulipProblem):
     """A transfer was requested with identical source and destination pools."""
 
