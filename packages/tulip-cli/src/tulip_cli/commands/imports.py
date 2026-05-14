@@ -359,17 +359,20 @@ def _render_batch(body: dict[str, Any]) -> None:
     table.add_column("ccy")
     table.add_column("description")
     table.add_column("flag")
+    from tulip_cli._money_format import format_amount
+
     for line in lines:
         flag_bits: list[str] = []
         if line.get("is_excluded"):
             flag_bits.append("excluded")
         if line.get("reconciliation_match_id"):
             flag_bits.append("reconciled")
+        currency = str(line.get("currency", ""))
         table.add_row(
             str(line.get("line_number", "")),
             str(line.get("posted_date", "")),
-            str(line.get("amount", "")),
-            str(line.get("currency", "")),
+            format_amount(line.get("amount"), currency),
+            currency,
             str(line.get("description", "") or ""),
             ", ".join(flag_bits),
         )

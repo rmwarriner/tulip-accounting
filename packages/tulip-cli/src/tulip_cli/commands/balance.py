@@ -30,14 +30,20 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
 
 def _render_account_balance(body: dict[str, Any]) -> None:
     """Render a single ``AccountBalanceRead`` body."""
+    from tulip_cli._money_format import format_amount
+
     code = body.get("code") or "—"
+    currency = body.get("currency", "")
+    balance = format_amount(body.get("balance"), currency)
     typer.echo(f"{code} — {body.get('name', '')}")
-    typer.echo(f"  balance: {body.get('balance', '')} {body.get('currency', '')}")
+    typer.echo(f"  balance: {balance} {currency}")
     typer.echo(f"  as of:   {body.get('as_of', '')}")
 
 
 def _render_trial_balance(body: dict[str, Any]) -> None:
     """Render a ``TrialBalanceRead`` body as a table + totals."""
+    from tulip_cli._money_format import format_amount
+
     rows = body.get("rows") or []
     if not rows:
         typer.echo(f"No postings on or before {body.get('as_of', 'today')}.")
@@ -50,12 +56,13 @@ def _render_trial_balance(body: dict[str, Any]) -> None:
     table.add_column("currency")
     table.add_column("balance", justify="right")
     for r in rows:
+        currency = r.get("currency") or ""
         table.add_row(
             r.get("code") or "—",
             r.get("name") or "",
             r.get("type") or "",
-            r.get("currency") or "",
-            r.get("balance") or "",
+            currency,
+            format_amount(r.get("balance"), currency),
         )
     console = Console()
     console.print(table)
@@ -63,9 +70,13 @@ def _render_trial_balance(body: dict[str, Any]) -> None:
     totals = body.get("totals_by_currency") or []
     for t in totals:
         currency = t.get("currency", "")
-        debits = t.get("debits", "")
-        credits = t.get("credits", "")
-        marker = "✓" if debits == credits else "⚠"
+        debits_raw = t.get("debits", "")
+        credits_raw = t.get("credits", "")
+        debits = format_amount(debits_raw, currency) if debits_raw != "" else ""
+        credits = format_amount(credits_raw, currency) if credits_raw != "" else ""
+        # Compare the raw (full-precision) values so the equal/unequal marker
+        # isn't fooled by quantization (e.g. .005 vs .004 both round to .00).
+        marker = "✓" if debits_raw == credits_raw else "⚠"
         console.print(
             f"  {currency}: debits {debits}, credits {credits} {marker}",
         )

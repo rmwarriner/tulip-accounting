@@ -30,15 +30,25 @@ from typing import Final
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
+from tulip_core.currency import Currency
+from tulip_core.money import Money
+
 _TEMPLATES_DIR: Final[Path] = Path(__file__).resolve().parent / "templates"
+
+# Fallback used when no currency is supplied; matches the historical hardcoded
+# precision (and what most callers want).
+_DEFAULT_MINOR_UNITS: Final[int] = 2
 
 
 def _format_money(value: object, currency: str | None = None) -> str:
-    """Render a Decimal-like value with thousand separators + 2 decimals.
+    """Render a Decimal-like value with thousand separators + currency-natural precision.
 
     Negative values get a leading minus sign (not parens; parens are
     accountancy convention but make scanning harder on screen). Currency
-    is appended when provided so callers can pass per-row currencies.
+    is appended when provided so callers can pass per-row currencies, and
+    when known governs the decimal precision (USD/EUR → 2, JPY → 0, BHD → 3)
+    via :meth:`Money.quantize_to_currency` so reports match the rest of the
+    Tulip rendering surfaces (issue #213).
     """
     if value is None:
         return ""
@@ -47,10 +57,21 @@ def _format_money(value: object, currency: str | None = None) -> str:
             value = Decimal(str(value))
         except (ArithmeticError, ValueError):
             return str(value)
-    quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+    minor_units = _DEFAULT_MINOR_UNITS
+    if currency:
+        try:
+            quantized = Money(value, currency).quantize_to_currency().amount
+            minor_units = Currency.from_code(currency).minor_units
+        except (ArithmeticError, ValueError):
+            # Unknown currency: fall back to the historical 2dp behaviour.
+            quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+    else:
+        quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
     sign = "-" if quantized < 0 else ""
     absolute = abs(quantized)
-    formatted = f"{absolute:,.2f}"
+    formatted = f"{absolute:,.{minor_units}f}"
     out = f"{sign}{formatted}"
     if currency:
         out += f" {currency}"

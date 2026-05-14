@@ -31,6 +31,23 @@ class TestMoneyFilter:
     def test_string_input_coerced(self) -> None:
         assert _format_money("42.10") == "42.10"
 
+    def test_jpy_uses_zero_decimals(self) -> None:
+        # Issue #213: currency-natural precision — JPY has 0 minor units.
+        assert _format_money(Decimal("100.5"), "JPY") == "100 JPY"
+
+    def test_bhd_uses_three_decimals(self) -> None:
+        # Issue #213: BHD has 3 minor units.
+        assert _format_money(Decimal("1.2"), "BHD") == "1.200 BHD"
+
+    def test_unknown_currency_falls_back_to_two_decimals(self) -> None:
+        # Two-decimal fallback for unknown ISO 4217 codes. Banker's rounding:
+        # .555 → .56 (5 rounds to nearest even — .56 is even).
+        assert _format_money(Decimal("12.555"), "XYZ") == "12.56 XYZ"
+
+    def test_storage_precision_amount_quantizes_to_usd(self) -> None:
+        # Issue #213: an 8-decimal storage amount renders as 2-decimal USD.
+        assert _format_money(Decimal("12.20000000"), "USD") == "12.20 USD"
+
 
 class TestDateFilter:
     def test_iso_date(self) -> None:
