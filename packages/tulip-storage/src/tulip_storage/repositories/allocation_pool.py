@@ -122,6 +122,21 @@ class AllocationPoolRepository:
         self._session.flush()
         return p
 
+    def redact(self, pool_id: UUID, *, name: str) -> AllocationPool:
+        """Replace a pool's ``name`` with a placeholder — its only PII column.
+
+        Pools (envelopes / sinking funds) carry no encrypted fields; the
+        user-supplied ``name`` is the lone PII column. The caller (the API
+        redact endpoint) enforces that the pool is already deactivated.
+        Raises ``LookupError`` if the pool is missing.
+        """
+        p = self.get(pool_id)
+        if p is None:
+            raise LookupError(f"pool {pool_id} not found in household {self._household_id}")
+        p.name = name
+        self._session.flush()
+        return p
+
     def get_system_pool(self, *, pool_type: PoolType, currency: str) -> AllocationPool | None:
         """Return the system pool for ``(household, pool_type, currency)``, or None."""
         if pool_type not in _SYSTEM_POOL_TYPES:

@@ -9,6 +9,7 @@ transaction (Unallocated -X / envelope +X) — see
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from datetime import date as date_type
@@ -23,6 +24,7 @@ from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     EnvelopeNotFoundError,
+    EnvelopeNotRedactableError,
     ForbiddenError,
     problem_response,
 )
@@ -39,6 +41,7 @@ from tulip_api.schemas.envelope import (
     RefillRequest,
     RefillRuleSchema,
 )
+from tulip_api.schemas.lifecycle import DeactivationResponse, RedactionResponse
 from tulip_api.schemas.pool import PoolBalanceRead
 from tulip_core.allocation import (
     PoolType as DomainPoolType,
@@ -289,9 +292,13 @@ def update_envelope(
     return _to_read(pool, env)
 
 
+#: Field types an envelope (its allocation pool) retains after a
+#: soft-delete. Erased only by POST /v1/envelopes/{id}/redact (#236).
+_ENVELOPE_PII_FIELDS = ["name"]
+
+
 @router.delete(
     "/{envelope_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
@@ -303,8 +310,12 @@ def deactivate_envelope(
     request: Request,
     claims: Claims = Depends(require_role("admin")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
-) -> None:
-    """Soft-delete (deactivate) an envelope. Admin only."""
+) -> DeactivationResponse:
+    """Soft-delete (deactivate) an envelope. Admin only.
+
+    DELETE *deactivates* — the pool row and its ``name`` survive. Use
+    ``POST /v1/envelopes/{id}/redact`` afterwards to erase the name.
+    """
     found = EnvelopeRepository(session, claims.household_id).get(envelope_id)
     if found is None:
         raise EnvelopeNotFoundError()
@@ -327,6 +338,50 @@ def deactivate_envelope(
         request_id=_request_uuid(request),
     )
     session.commit()
+    return DeactivationResponse(data_retained=_ENVELOPE_PII_FIELDS)
+
+
+@router.post(
+    "/{envelope_id}/redact",
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("envelope.not_found"),
+        409: problem_response("envelope.not_redactable"),
+    },
+)
+def redact_envelope(
+    envelope_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> RedactionResponse:
+    """Erase a deactivated envelope's PII (its pool ``name``). Admin only.
+
+    The envelope must already be deactivated (``409 envelope.not_redactable``
+    otherwise). The pool's user-supplied ``name`` is replaced with a
+    non-PII placeholder; shadow-ledger postings keep their FK and amounts.
+    """
+    found = EnvelopeRepository(session, claims.household_id).get(envelope_id)
+    if found is None:
+        raise EnvelopeNotFoundError()
+    pool, _env = found
+    if pool.is_active:
+        raise EnvelopeNotRedactableError()
+    placeholder = f"redacted-envelope-{hashlib.sha256(str(envelope_id).encode()).hexdigest()[:8]}"
+    AllocationPoolRepository(session, claims.household_id).redact(envelope_id, name=placeholder)
+    AuditLogWriter(session, claims.household_id).write(
+        action="redact",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="envelope",
+        entity_id=pool.id,
+        before={"redacted": False},
+        after={"redacted": True, "name": placeholder},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    return RedactionResponse(fields_redacted=_ENVELOPE_PII_FIELDS)
 
 
 @router.get(
