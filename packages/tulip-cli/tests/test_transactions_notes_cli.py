@@ -37,7 +37,7 @@ class TestRenderTxDetailNotes:
         }
         with redirect_stdout(buf):
             try:
-                _render_tx_detail(tx)
+                _render_tx_detail(tx, accounts_by_id={})
             except typer.Exit:
                 pass
         out = buf.getvalue()
@@ -57,7 +57,7 @@ class TestRenderTxDetailNotes:
         }
         with redirect_stdout(buf):
             try:
-                _render_tx_detail(tx)
+                _render_tx_detail(tx, accounts_by_id={})
             except typer.Exit:
                 pass
         out = buf.getvalue()
@@ -75,7 +75,7 @@ class TestRenderTxDetailNotes:
         }
         with redirect_stdout(buf):
             try:
-                _render_tx_detail(tx)
+                _render_tx_detail(tx, accounts_by_id={})
             except typer.Exit:
                 pass
         out = buf.getvalue()
@@ -94,7 +94,7 @@ class TestRenderTxDetailNotes:
         }
         with redirect_stdout(buf):
             try:
-                _render_tx_detail(tx)
+                _render_tx_detail(tx, accounts_by_id={})
             except typer.Exit:
                 pass
         out = buf.getvalue()

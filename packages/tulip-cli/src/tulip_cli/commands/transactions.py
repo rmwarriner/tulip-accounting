@@ -440,7 +440,53 @@ def _resolve_tx_id(client: TulipClient, identifier: str, *, as_json: bool) -> UU
     return UUID(str(rows[0]["id"]))
 
 
-def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
+def _format_account_label(
+    accounts_by_id: dict[str, dict[str, Any]],
+    account_id: str,
+) -> str:
+    """Render a human-readable label for a posting's ``account_id`` (#214).
+
+    Preferred form is ``<code>:<name>`` when both are set
+    (e.g. ``5100:Groceries`` or ``expenses:rent:Rent``). When the account
+    has no code we fall back to ``<name>``. An ``account_id`` that isn't
+    in ``accounts_by_id`` (an orphaned posting — shouldn't happen, but
+    the issue calls it out as a graceful-degrade requirement) renders
+    as the raw UUID string so the row is still printable.
+    """
+    account = accounts_by_id.get(account_id)
+    if account is None:
+        return account_id
+    code = account.get("code")
+    name = account.get("name")
+    if code and name:
+        return f"{code}:{name}"
+    if name:
+        return str(name)
+    return account_id
+
+
+def _load_accounts_by_id(client: TulipClient) -> dict[str, dict[str, Any]]:
+    """Fetch ``/v1/accounts`` once and key it by ``id`` for label resolution.
+
+    The accounts list per household is small (dozens, not thousands), so
+    one round-trip per command beats N+1 ``/v1/accounts/{id}`` lookups
+    while rendering a multi-row table. Failures are non-fatal: an empty
+    map causes :func:`_format_account_label` to fall through to the raw
+    UUID, which preserves today's behaviour rather than aborting the
+    render.
+    """
+    try:
+        response = client.get("/v1/accounts", authenticated=True)
+    except CliError:
+        return {}
+    rows = response.json()
+    return {str(a["id"]): a for a in rows if "id" in a}
+
+
+def _render_tx_list_table(
+    rows: list[dict[str, Any]],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
     from tulip_cli._money_format import format_amount
 
     table = Table(show_header=True, show_lines=False)
@@ -456,9 +502,8 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
         for p in postings:
             currency = p.get("currency", "")
             amount = format_amount(p.get("amount"), currency)
-            account = p.get("account_id", "")
-            short = str(account)[:8] if account else "—"
-            summary_parts.append(f"{short} {amount} {currency}")
+            label = _format_account_label(accounts_by_id, str(p.get("account_id", "")))
+            summary_parts.append(f"{label} {amount} {currency}")
         summary = "\n".join(summary_parts)
         tx_id = row.get("id") or ""
         table.add_row(
@@ -472,7 +517,10 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
-def _render_tx_detail(tx: dict[str, Any]) -> None:
+def _render_tx_detail(
+    tx: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
     from tulip_cli._money_format import format_amount
 
     typer.echo(f"id:           {tx.get('id', '')}")
@@ -489,14 +537,14 @@ def _render_tx_detail(tx: dict[str, Any]) -> None:
             typer.echo(f"              {line}")
     typer.echo("postings:")
     table = Table(show_header=True, show_lines=False)
-    table.add_column("account_id")
+    table.add_column("account")
     table.add_column("amount", justify="right")
     table.add_column("currency")
     table.add_column("memo")
     for p in tx.get("postings") or []:
         currency = str(p.get("currency", ""))
         table.add_row(
-            str(p.get("account_id", "")),
+            _format_account_label(accounts_by_id, str(p.get("account_id", ""))),
             format_amount(p.get("amount"), currency),
             currency,
             str(p.get("memo") or ""),
@@ -573,6 +621,14 @@ def list_transactions(
             if limit is not None:
                 params["limit"] = str(limit)
             response = client.get("/v1/transactions", authenticated=True, params=params)
+            # Resolve account UUIDs → human labels once per render (#214).
+            # Loaded inside the `_client` context so it shares the HTTP
+            # client and token handling; only fetched when we actually
+            # need to render a table.
+            if as_json:
+                accounts_by_id: dict[str, dict[str, Any]] = {}
+            else:
+                accounts_by_id = _load_accounts_by_id(client)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -585,7 +641,7 @@ def list_transactions(
     if not rows:
         typer.echo("No transactions match.")
         return
-    _render_tx_list_table(rows)
+    _render_tx_list_table(rows, accounts_by_id)
 
 
 @transactions_app.command("show")
@@ -607,6 +663,13 @@ def show_transaction(
         with _client(config, as_json=as_json) as client:
             resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
             response = client.get(f"/v1/transactions/{resolved}", authenticated=True)
+            # Resolve account UUIDs → human labels (#214). ``--json`` mode
+            # skips the extra round-trip since it just re-emits the API
+            # body verbatim.
+            if as_json:
+                accounts_by_id: dict[str, dict[str, Any]] = {}
+            else:
+                accounts_by_id = _load_accounts_by_id(client)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -614,7 +677,7 @@ def show_transaction(
     if as_json:
         sys.stdout.write(response.text + "\n")
         return
-    _render_tx_detail(response.json())
+    _render_tx_detail(response.json(), accounts_by_id)
 
 
 @transactions_app.command("void")
