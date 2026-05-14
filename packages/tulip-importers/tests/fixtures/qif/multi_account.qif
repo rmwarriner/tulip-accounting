@@ -1,0 +1,35 @@
+!Account
+NChecking
+TBank
+DEveryday checking
+^
+!Type:Bank
+D1/2/26
+T-58.99
+PCenterPoint Energy
+MGas bill
+^
+D1/5/26
+T1500.00
+PEmployer
+MPayroll
+^
+!Account
+NSavings
+TBank
+^
+!Type:Bank
+D1/10/26
+T200.00
+PMonthly transfer
+L[Checking]
+^
+!Account
+NCredit Card
+TCCard
+^
+!Type:CCard
+D1/15/26
+T-42.00
+PCoffee Shop
+^

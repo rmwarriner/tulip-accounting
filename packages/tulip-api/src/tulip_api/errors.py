@@ -1071,6 +1071,46 @@ class ImportQifParseFailedError(TulipProblem):
         )
 
 
+class ImportMultiAccountQifError(TulipProblem):
+    """A multi-account QIF was uploaded without a ``qif_account`` selector (#195).
+
+    The file declares 2+ ``!Account`` blocks; a plain single-account
+    import would silently merge every account's transactions into one
+    tulip account. The ``account_names`` extension lists the QIF account
+    names so the CLI can render a starter ``--account-map``.
+    """
+
+    def __init__(self, *, account_names: list[str]) -> None:
+        """Build the import.multi_account_qif problem (400)."""
+        super().__init__(
+            code="import.multi_account_qif",
+            title="Multi-account QIF requires an account map",
+            status=400,
+            detail=(
+                f"This QIF declares {len(account_names)} accounts. Re-run with "
+                "--account-map to route each one to a tulip account."
+            ),
+            extensions={"account_names": account_names},
+        )
+
+
+class ImportQifAccountNotFoundError(TulipProblem):
+    """The ``qif_account`` selector names an account absent from the file (#195)."""
+
+    def __init__(self, *, qif_account: str, available: list[str]) -> None:
+        """Build the import.qif_account_not_found problem (400)."""
+        super().__init__(
+            code="import.qif_account_not_found",
+            title="QIF account not found in file",
+            status=400,
+            detail=(
+                f"The uploaded QIF has no !Account block named {qif_account!r}. "
+                f"It contains: {', '.join(available) or '(none)'}."
+            ),
+            extensions={"qif_account": qif_account, "available": available},
+        )
+
+
 class ImportCsvParseFailedError(TulipProblem):
     """The uploaded bytes could not be parsed as CSV per the supplied profile (P5.2.c)."""
 

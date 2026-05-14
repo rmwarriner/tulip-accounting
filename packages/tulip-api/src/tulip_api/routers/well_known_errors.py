@@ -82,6 +82,11 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "ImportOfxParseFailedError": {"reason": "could not parse as OFX: ..."},
     "ImportQifParseFailedError": {"reason": "could not parse as QIF: ..."},
+    "ImportMultiAccountQifError": {"account_names": ["Checking", "Savings"]},
+    "ImportQifAccountNotFoundError": {
+        "qif_account": "Checking",
+        "available": ["Savings", "Credit Card"],
+    },
     "ImportCsvParseFailedError": {"reason": "row 7: date '13/45/2026' doesn't match ..."},
     "ImportUnsupportedFormatError": {
         "format_name": "csv",

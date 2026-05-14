@@ -439,6 +439,126 @@ def test_import_qif_happy_path(authed_session: str) -> None:
     assert "Imported 3 statement lines" in result.stdout
 
 
+def _seed_account(api_url: str, *, name: str, code: str, type_: str = "asset") -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            api_url,
+            "accounts",
+            "add",
+            "--name",
+            name,
+            "--type",
+            type_,
+            "--currency",
+            "USD",
+            "--code",
+            code,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.integration
+def test_import_qif_multi_account_without_map_prints_starter(authed_session: str) -> None:
+    # #195: --account against a multi-account QIF prints a copy-pasteable
+    # starter map and exits non-zero rather than silently merging.
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli("import", "qif", str(fixture), "--account", "1110", api_url=authed_session)
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "Multi-account QIF" in combined
+    # The starter map names every !Account block in the file.
+    for name in ("Checking", "Savings", "Credit Card"):
+        assert name in combined
+
+
+@pytest.mark.integration
+def test_import_qif_multi_account_with_map_lands_per_account(
+    authed_session: str, tmp_path: Path
+) -> None:
+    _seed_account(authed_session, name="Checking", code="1110")
+    _seed_account(authed_session, name="Savings", code="1200")
+    _seed_account(authed_session, name="Credit Card", code="2100", type_="liability")
+    account_map = tmp_path / "account-map.json"
+    account_map.write_text(
+        json.dumps({"Checking": "1110", "Savings": "1200", "Credit Card": "2100"})
+    )
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account-map",
+        str(account_map),
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    # One summary line per account, prefixed with the QIF account name.
+    assert "[Checking]" in result.stdout
+    assert "[Savings]" in result.stdout
+    assert "[Credit Card]" in result.stdout
+    # Checking has two records in the fixture; Savings + Credit Card one each.
+    assert "Imported 2 statement lines" in result.stdout
+    assert result.stdout.count("Imported 1 statement line") == 2
+
+
+@pytest.mark.integration
+def test_import_qif_account_and_account_map_are_mutually_exclusive(
+    authed_session: str, tmp_path: Path
+) -> None:
+    account_map = tmp_path / "m.json"
+    account_map.write_text(json.dumps({"Checking": "1110"}))
+    fixture = _OFX_FIXTURES.parent / "qif" / "minimal.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account",
+        "1110",
+        "--account-map",
+        str(account_map),
+        api_url=authed_session,
+    )
+    assert result.returncode != 0
+    assert "not both" in (result.stdout + result.stderr)
+
+
+@pytest.mark.integration
+def test_import_qif_requires_account_or_account_map(authed_session: str) -> None:
+    fixture = _OFX_FIXTURES.parent / "qif" / "minimal.qif"
+    result = _run_cli("import", "qif", str(fixture), api_url=authed_session)
+    assert result.returncode != 0
+    combined = (result.stdout + result.stderr).lower()
+    assert "account" in combined
+
+
+@pytest.mark.integration
+def test_import_qif_account_map_invalid_json_errors(authed_session: str, tmp_path: Path) -> None:
+    bad_map = tmp_path / "bad.json"
+    bad_map.write_text("{not valid json")
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--account-map",
+        str(bad_map),
+        api_url=authed_session,
+    )
+    assert result.returncode != 0
+    assert "account-map" in (result.stdout + result.stderr).lower()
+
+
 @pytest.mark.integration
 def test_csv_profile_create_and_import_e2e(authed_session: str) -> None:
     _seed_checking(authed_session)
