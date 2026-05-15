@@ -271,6 +271,46 @@ class TestUploadQif:
         # Currency on every line picks up the account's USD; QIF carries none.
         assert all(line["currency"] == "USD" for line in full["lines"])
 
+    def test_split_qif_persists_one_line_with_consolidated_total(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        session_maker,
+    ):
+        """#297: a 2-split QIF record produces ONE statement_line with the parent total
+        + structured ``__splits__`` envelope in raw_json.
+        """
+        import json as _json
+        from decimal import Decimal as _Decimal
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import StatementLine
+
+        body_bytes = (_OFX_FIXTURES.parent / "qif" / "split_gas_bill.qif").read_bytes()
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("gas.qif", body_bytes, "application/qif")},
+            data={"account_id": checking_account, "source_format": "qif"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["statement_line_count"] == 1
+
+        # The GET endpoint doesn't expose raw_json (internal detail);
+        # read the DB row directly for the split envelope check.
+        with session_maker() as s:
+            line = s.execute(select(StatementLine)).scalar_one()
+        assert _Decimal(line.amount) == _Decimal("-58.99")
+        assert line.currency == "USD"
+        raw = _json.loads(line.raw_json)
+        assert "__splits__" in raw
+        assert len(raw["__splits__"]) == 2
+        amounts = sorted(_Decimal(s["amount"]) for s in raw["__splits__"])
+        assert amounts == [_Decimal("-45.27"), _Decimal("-13.72")]
+
     def test_qif_garbage_returns_parse_error(
         self,
         client: TestClient,

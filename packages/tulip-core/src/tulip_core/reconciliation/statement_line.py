@@ -56,6 +56,41 @@ def _validate_common(
 
 
 @dataclass(frozen=True, slots=True)
+class ParsedSplit:
+    """One leg of a multi-category statement-line (#297).
+
+    A QIF split-record like::
+
+        T-58.99            (parent total)
+        SNeeds:Utilities   (split 1 category)
+        $-45.27            (split 1 amount)
+        SNeeds:Insurance   (split 2 category)
+        $-13.72            (split 2 amount)
+
+    produces one :class:`ParsedStatementLine` whose ``amount`` is the
+    parent total and whose ``splits`` tuple holds one ``ParsedSplit``
+    per category. Promoting the line builds a single transaction with
+    one bank-side posting (the total) + one posting per split.
+
+    ``category`` is the format-native category string (e.g. the QIF
+    ``L:`` value). The apply path resolves it against the household's
+    chart of accounts at promotion time — there's no per-split account
+    lookup here.
+    """
+
+    amount: Money
+    category: str
+    memo: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject empty category strings."""
+        if not isinstance(self.amount, Money):
+            raise TypeError(f"split amount must be Money (got {type(self.amount).__name__})")
+        if not self.category or not self.category.strip():
+            raise ValueError("split.category must be non-empty after strip()")
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedStatementLine:
     """A bank-statement row as produced by an importer (pre-persistence).
 
@@ -63,6 +98,13 @@ class ParsedStatementLine:
     return ``list[ParsedStatementLine]``. The API handler creates the
     ``ImportBatch`` row first, then converts each parsed line into a
     :class:`StatementLine` via :meth:`with_persistence_ids`.
+
+    ``splits`` (#297) is empty for ordinary two-posting lines. When
+    non-empty, ``amount`` is the consolidated parent total and the
+    sum of ``splits[i].amount`` must equal ``amount`` (the parser
+    enforces this with a ``QifParseError`` on mismatch). The apply
+    path promotes a split-bearing line to a single transaction with
+    ``1 + len(splits)`` postings (one bank-side, one per split).
     """
 
     line_number: int
@@ -73,6 +115,7 @@ class ParsedStatementLine:
     counterparty: str | None = field(default=None)
     reference: str | None = field(default=None)
     fitid: str | None = field(default=None)
+    splits: tuple[ParsedSplit, ...] = field(default=())
 
     def __post_init__(self) -> None:
         """Validate invariants and freeze the ``raw`` dict against later mutation."""
@@ -85,6 +128,15 @@ class ParsedStatementLine:
         # mutate it post-construction. Idempotent on existing proxies.
         if not isinstance(self.raw, MappingProxyType):
             object.__setattr__(self, "raw", MappingProxyType(dict(self.raw)))
+        if self.splits:
+            # Every split must share the parent line's currency — otherwise
+            # promotion can't produce a per-currency balanced transaction.
+            for split in self.splits:
+                if split.amount.currency != self.amount.currency:
+                    raise ValueError(
+                        f"split currency {split.amount.currency!r} does not "
+                        f"match parent line currency {self.amount.currency!r}"
+                    )
 
     def with_persistence_ids(
         self,

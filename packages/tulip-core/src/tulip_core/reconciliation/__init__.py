@@ -26,6 +26,7 @@ from tulip_core.reconciliation.categorizer import (
 from tulip_core.reconciliation.match_confidence import MatchConfidence
 from tulip_core.reconciliation.matcher import find_candidates
 from tulip_core.reconciliation.statement_line import (
+    ParsedSplit,
     ParsedStatementLine,
     StatementLine,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "HouseholdContext",
     "MatchConfidence",
     "NullCategorizer",
+    "ParsedSplit",
     "ParsedStatementLine",
     "StatementLine",
     "find_candidates",

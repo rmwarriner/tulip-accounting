@@ -622,6 +622,21 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#297 (bug)** — QIF split records now import as **one
+  ParsedStatementLine with a structured splits tuple** instead of
+  fanning out into N siblings. The `_finalize_split_record` rewrite +
+  new `ParsedSplit` value object in tulip-core + a multi-posting
+  branch in `promote_statement_line` together produce
+  `1 + len(splits)` postings (one bank-side at the parent total + one
+  per split, balanced per currency) — restoring "one external event
+  = one transaction" for users migrating from Banktivity / Quicken /
+  Moneydance whose checking exports are full of multi-category bills
+  and paychecks. The new splits envelope lives in
+  `statement_lines.raw_json` under a reserved `__splits__` key;
+  legacy `str(dict)`-format rows fall through to the existing
+  two-posting path. Per-split categories resolve against the
+  household's chart of accounts (`accounts.get_by_code`) with
+  fallback to `Imbalance:Unknown` for unknown codes.
 - **#245 (M-1 + M-22 + M-23)** — audit-log tiered retention + backup-leak
   warning. New `households.audit_retention_policy` JSON column + daily
   `audit_retention` scheduled handler that ages out `audit_log` rows by

@@ -367,6 +367,256 @@ class TestPromoteStatementLine:
             assert tx.status == TransactionStatus.PENDING
 
 
+# ---- promote_statement_line: split-bearing lines (#297) ----------------
+
+
+class TestPromoteSplitLine:
+    """Per #297: a split-bearing statement line promotes to ONE transaction
+    with ``1 + len(splits)`` postings (one bank-side + one per split).
+
+    The split detail lives in ``statement_lines.raw_json`` under a
+    reserved ``__splits__`` key (encoded by
+    ``serialize_parsed_line_raw_json`` on import). The apply path
+    reads it back, resolves each split's category via
+    ``AccountRepository.get_by_code``, and falls back to
+    ``Imbalance:Unknown`` for unknown categories. ``no_categorize``
+    is moot for splits — the source format already categorized them.
+    """
+
+    def _seed_split_line(
+        self,
+        session_maker,
+        setup,
+        *,
+        total: str,
+        splits: list[dict],
+    ) -> UUID:
+        """Insert one new split-bearing statement line; return its id."""
+        line_id = uuid4()
+        with session_maker() as s:
+            line = StatementLine(
+                household_id=setup["household_id"],
+                id=line_id,
+                import_batch_id=setup["batch_id"],
+                line_number=99,  # fresh number, no collision with seeded 1/2/3.
+                posted_date=date(2026, 1, 2),
+                amount=Decimal(total),
+                currency="USD",
+                description="CenterPoint Energy",
+                raw_json=(
+                    '{"raw": {"P": "CenterPoint Energy", "T": "' + total + '"}, '
+                    '"__splits__": ' + str(splits).replace("'", '"').replace("None", "null") + "}"
+                ),
+            )
+            s.add(line)
+            s.commit()
+        return line_id
+
+    @pytest.mark.asyncio
+    async def test_split_gas_bill_promotes_one_tx_with_three_postings(self, session_maker, setup):
+        """Banktivity-style 2-split gas bill: -58.99 total = -45.27 + -13.72."""
+        gas_code = "Needs:Utilities:Natural Gas/TulipDrive"
+        warranty_code = "Needs:Insurance:Home Warranty/TulipDrive"
+        # Seed accounts so the split categories resolve.
+        with session_maker() as s:
+            AccountRepository(s, setup["household_id"]).create(
+                code=gas_code, name="Natural Gas", type=AccountType.EXPENSE, currency="USD"
+            )
+            AccountRepository(s, setup["household_id"]).create(
+                code=warranty_code,
+                name="Home Warranty",
+                type=AccountType.EXPENSE,
+                currency="USD",
+            )
+            s.commit()
+
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-58.99",
+            splits=[
+                {
+                    "amount": "-45.27",
+                    "currency": "USD",
+                    "category": gas_code,
+                    "memo": "Current gas charges",
+                },
+                {
+                    "amount": "-13.72",
+                    "currency": "USD",
+                    "category": warranty_code,
+                    "memo": "Current home service charges",
+                },
+            ],
+        )
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+
+            assert tx.status == TransactionStatus.PENDING
+            postings = list(s.query(Posting).filter_by(transaction_id=tx.id).all())
+            # One bank-side + two splits = three postings.
+            assert len(postings) == 3
+            # Postings sum to zero per currency.
+            assert sum(p.amount for p in postings) == Decimal("0")
+            # Bank-side carries the parent total.
+            bank = next(p for p in postings if p.account_id == setup["cash_id"])
+            assert bank.amount == Decimal("-58.99")
+            # Two split-side postings, negated.
+            split_amounts = sorted(p.amount for p in postings if p.account_id != setup["cash_id"])
+            assert split_amounts == [Decimal("13.72"), Decimal("45.27")]
+            # Per-split memo round-trips into Posting.memo.
+            split_memos = {p.memo for p in postings if p.memo is not None}
+            assert split_memos == {"Current gas charges", "Current home service charges"}
+
+    @pytest.mark.asyncio
+    async def test_split_paycheck_promotes_one_tx_with_five_postings(self, session_maker, setup):
+        """4-split paycheck: +2814.50 = +3500.00 - 420 - 150 - 115.50."""
+        wages = "Income:Wages/BNSF"
+        fed = "Expenses:Taxes:Federal/BNSF"
+        state = "Expenses:Taxes:State/BNSF"
+        fica = "Expenses:Taxes:FICA/BNSF"
+        with session_maker() as s:
+            for code, account_type in [
+                (wages, AccountType.INCOME),
+                (fed, AccountType.EXPENSE),
+                (state, AccountType.EXPENSE),
+                (fica, AccountType.EXPENSE),
+            ]:
+                AccountRepository(s, setup["household_id"]).create(
+                    code=code, name=code, type=account_type, currency="USD"
+                )
+            s.commit()
+
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="2814.50",
+            splits=[
+                {"amount": "3500.00", "currency": "USD", "category": wages, "memo": "Gross"},
+                {"amount": "-420.00", "currency": "USD", "category": fed, "memo": "Federal"},
+                {"amount": "-150.00", "currency": "USD", "category": state, "memo": "State"},
+                {"amount": "-115.50", "currency": "USD", "category": fica, "memo": "FICA"},
+            ],
+        )
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+
+            postings = list(s.query(Posting).filter_by(transaction_id=tx.id).all())
+            assert len(postings) == 5
+            assert sum(p.amount for p in postings) == Decimal("0")
+            # Bank-side carries the net deposited amount.
+            bank = next(p for p in postings if p.account_id == setup["cash_id"])
+            assert bank.amount == Decimal("2814.50")
+
+    @pytest.mark.asyncio
+    async def test_unknown_split_category_falls_back_to_imbalance(self, session_maker, setup):
+        """A split whose category doesn't exist routes to Imbalance:Unknown."""
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-58.99",
+            splits=[
+                {
+                    "amount": "-45.27",
+                    "currency": "USD",
+                    "category": "Account:Does:Not:Exist",
+                    "memo": None,
+                },
+                {
+                    "amount": "-13.72",
+                    "currency": "USD",
+                    "category": "Another:Missing:Code",
+                    "memo": None,
+                },
+            ],
+        )
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            postings = list(s.query(Posting).filter_by(transaction_id=tx.id).all())
+            # 3 postings: bank + 2 splits → both unknown splits route to
+            # the auto-created Imbalance:Unknown (code 9999.USD).
+            assert len(postings) == 3
+            imbalance = AccountRepository(s, setup["household_id"]).get_by_code("9999.USD")
+            assert imbalance is not None
+            # Both non-bank postings land on the auto-created Imbalance account.
+            other = [p for p in postings if p.account_id != setup["cash_id"]]
+            assert len(other) == 2
+            assert all(p.account_id == imbalance.id for p in other)
+            assert sum(p.amount for p in postings) == Decimal("0")
+
+    @pytest.mark.asyncio
+    async def test_links_promoted_transaction_id_on_split_line(self, session_maker, setup):
+        """Split lines link to their promoted tx the same way non-split lines do."""
+        gas_code = "Needs:Utilities:Natural Gas/TulipDrive"
+        with session_maker() as s:
+            AccountRepository(s, setup["household_id"]).create(
+                code=gas_code, name="Gas", type=AccountType.EXPENSE, currency="USD"
+            )
+            s.commit()
+
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-58.99",
+            splits=[
+                {
+                    "amount": "-58.99",
+                    "currency": "USD",
+                    "category": gas_code,
+                    "memo": None,
+                },
+            ],
+        )
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            reloaded = _reload(s, StatementLine, setup["household_id"], line.id)
+            assert reloaded.promoted_transaction_id == tx.id
+
+
 # ---- apply_batch ----------------------------------------------------------
 
 
