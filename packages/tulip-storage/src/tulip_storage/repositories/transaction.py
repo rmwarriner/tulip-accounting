@@ -20,7 +20,7 @@ from uuid import UUID
 from sqlalchemy import String, case, cast, delete, func, select, update
 
 from tulip_storage.encryption import decrypt_field, encrypt_field
-from tulip_storage.models import Posting, Transaction, TransactionStatus
+from tulip_storage.models import Posting, StatementLine, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -487,6 +487,19 @@ class TransactionRepository:
     def delete_pending(self, tx_id: UUID) -> None:
         """Hard-delete a PENDING transaction and its postings.
 
+        When the transaction was created via ``imports apply`` (i.e. there
+        is a ``statement_lines.promoted_transaction_id`` row referencing
+        it), the back-reference is NULLed before the transaction delete
+        (#301). Semantically this **un-promotes** the source line — it
+        returns to the unmatched pool so the operator can re-promote or
+        exclude it. Without this NULLing the composite RESTRICT FK
+        ``fk_statement_lines_promoted_tx`` would block the delete with
+        an IntegrityError. Other FKs into ``transactions`` for PENDING
+        rows are unreachable by construction: ``reconciliation_matches``
+        only references POSTED/RECONCILED transactions (the matcher
+        rejects PENDING), and ``transactions.voided_by_transaction_id``
+        likewise only links from POSTED rows (void requires POSTED).
+
         Raises:
             LookupError: ``tx_id`` does not exist in this household.
             TransactionNotDeletableError: transaction is not PENDING.
@@ -500,6 +513,17 @@ class TransactionRepository:
                 f"transaction {tx_id} is {existing.status.value}; "
                 "only PENDING transactions may be hard-deleted (use void otherwise)"
             )
+        # Un-promote any statement line that points at this transaction
+        # (#301). The FK is RESTRICT; without this, the DELETE below
+        # raises sqlite3.IntegrityError.
+        self._session.execute(
+            update(StatementLine)
+            .where(
+                StatementLine.household_id == self._household_id,
+                StatementLine.promoted_transaction_id == tx_id,
+            )
+            .values(promoted_transaction_id=None)
+        )
         self._session.execute(
             delete(Posting).where(
                 Posting.household_id == self._household_id,

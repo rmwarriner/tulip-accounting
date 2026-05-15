@@ -238,6 +238,94 @@ class TestDeletePending:
         with pytest.raises(LookupError):
             repo.delete_pending(uuid4())
 
+    def test_promoted_pending_tx_unpromotes_source_line(
+        self, session: Session, household: Household
+    ):
+        """#301: deleting a promoted PENDING tx must NULL the back-reference
+        on ``statement_lines.promoted_transaction_id`` before the DELETE,
+        otherwise the RESTRICT FK ``fk_statement_lines_promoted_tx`` blocks
+        with sqlite3.IntegrityError.
+
+        The line is left in the unmatched pool so the operator can
+        re-promote or exclude it.
+        """
+        from datetime import datetime as _dt
+
+        from sqlalchemy import text
+
+        from tulip_storage.models import (
+            ImportBatch as ImportBatchModel,
+        )
+        from tulip_storage.models import (
+            ImportBatchStatus,
+            SourceFormat,
+            StatementLine,
+        )
+
+        cash, food = _seed_accounts(session, household)
+        source = _post_pending_lunch(session, household, food, cash)
+
+        # Seed an import batch (and the attachment FK target via raw SQL,
+        # mirroring the test_import_apply fixture pattern — easier than
+        # threading the full encryption pipeline through a repo test).
+        att_id = uuid4()
+        session.execute(
+            text(
+                "INSERT INTO attachments (household_id, id, filename, "
+                "content_type, size_bytes, content_hash, storage_uri, "
+                "uploaded_at) VALUES "
+                "(:h, :i, 'x.qif', 'application/qif', 1, :hash, 's3://x', :now)"
+            ),
+            {
+                "h": str(household.id),
+                "i": str(att_id),
+                "hash": "x" * 64,
+                "now": _dt.now(UTC).isoformat(),
+            },
+        )
+        batch = ImportBatchModel(
+            household_id=household.id,
+            id=uuid4(),
+            account_id=cash.id,
+            source_format=SourceFormat.QIF,
+            source_filename="x.qif",
+            source_file_attachment_id=att_id,
+            status=ImportBatchStatus.APPLIED,
+            imported_count=1,
+            skipped_count=0,
+            error_count=0,
+            created_at=_dt.now(UTC),
+        )
+        session.add(batch)
+        session.flush()
+
+        # Seed a statement line pointing at the source transaction.
+        line = StatementLine(
+            household_id=household.id,
+            id=uuid4(),
+            import_batch_id=batch.id,
+            line_number=1,
+            posted_date=date(2026, 6, 1),
+            amount=Decimal("-12.50"),
+            currency="USD",
+            description="Lunch",
+            raw_json="{}",
+            promoted_transaction_id=source.id,
+        )
+        session.add(line)
+        session.commit()
+
+        # Delete the promoted PENDING tx — must succeed.
+        repo = TransactionRepository(session, household.id)
+        repo.delete_pending(source.id)
+        session.commit()
+
+        # Transaction + postings gone.
+        assert session.query(TxModel).filter_by(id=source.id).one_or_none() is None
+        # Statement line still exists, but its back-reference is cleared.
+        loaded = session.query(StatementLine).filter_by(id=line.id).one()
+        assert loaded.promoted_transaction_id is None
+
 
 class TestUpdatePending:
     def test_updates_header_fields_and_replaces_postings(
