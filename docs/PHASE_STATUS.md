@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,19 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#244 (H-17 + M-3 / M-4 / M-5)** — `THREAT_MODEL.md §2` data
+  classification refreshed against the deep privacy audit's §11
+  recommendations: email moved Medium → High; IP/UA online identifiers
+  added; AI body vs. hash split into Critical-when-populated vs
+  High-pseudonymous; free-text inference risk under GDPR Art. 9(1)
+  given its own Critical-free-text tier with all 12 fields enumerated;
+  `audit_log.before_snapshot` / `after_snapshot` flagged as
+  integrity-High but confidentiality-inherits-content; new
+  Multi-presence column tracks the deletion-cascade footprint. New
+  §2.1 "Explicitly absent categories" enumerates the structure-not-
+  collected categories (DOB, phone, address, government IDs, special
+  categories) so future audits don't reconfirm. New §2.2 documents
+  the multi-presence column's role in right-to-erasure planning.
 - **#249 (M-28)** — new operator-facing
   [`docs/USER_RIGHTS.md`](USER_RIGHTS.md) maps GDPR/CCPA data-subject
   rights (Art. 15 access / 16 rectification / 17 erasure / 18
