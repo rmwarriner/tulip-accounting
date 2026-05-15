@@ -26,6 +26,7 @@ Phase 8 audits are in [`audits/`](audits/).
 | [Data portability](#right-of-portability-art-20) | GDPR Art. 20 | `tulip user export` + `tulip journal export` |
 | [Objection](#right-of-objection-art-21) | GDPR Art. 21 | proposal-approval gate (`tulip ai proposals` / `approve` / `reject`) |
 | [Consent withdrawal](#consent-withdrawal-art-7) | GDPR Art. 7 | `tulip ai config log-prompts off` |
+| [Retention controls](#retention-controls-art-5-1-e) | GDPR Art. 5(1)(e) | `tulip admin audit-policy`, `tulip admin audit-prune` |
 | [Information about processing](#information-art-12) | GDPR Art. 12 / 13 / 14 | this document + [`THREAT_MODEL.md`](THREAT_MODEL.md) + [`adrs/0005-ai-integration.md`](adrs/0005-ai-integration.md) |
 
 ---
@@ -203,6 +204,12 @@ ciphertext from disk. Irreversible.
   erased (`audit_log.before_snapshot` / `after_snapshot` / `metadata_` → `NULL`).
   The row's `actor_user_id` / `entity_id` survive as pseudonyms (FKs aren't
   declared from those columns, so nothing breaks). Art. 17(3)(e) carve-out.
+  **Independently**, the `audit_retention` scheduled handler (#245) ages
+  rows out per their tier — ledger mutations at 7 years by default, auth
+  events at 90 days, AI consent at 30 days. Operators override via
+  `tulip admin audit-policy set <tier> <days>`; the 7-year ledger default
+  is US-tax-anchored (IRS Form 1040 supporting records). HMRC = 6y,
+  ATO = 5y — adjust accordingly.
 - **AI invocations:** `ai_invocations.prompt_json` / `response_text` are
   scrubbed on `log_prompts` consent withdrawal (#243) and on user erasure
   (cascades through `actor_user_id`). The TTL handler also deletes rows older
@@ -210,10 +217,16 @@ ciphertext from disk. Irreversible.
 - **Past exports:** any `tulip user export` JSON the subject downloaded
   previously is their own copy; the controller has no recall mechanism. This
   is expected for a portability right.
-- **Backups:** any DB backup taken before the erasure still contains the
-  data. The operator is responsible for backup rotation per their own
-  retention policy. [#245](https://github.com/rmwarriner/tulip-accounting/issues/245)
-  tracks formalising audit-log + backup tiered retention.
+- **Backups:** any DB backup taken before the erasure still contains
+  the data. **Tulip does not implement backup rotation in-process** —
+  `tulip backup` writes one tarball wherever you point it; the operator
+  owns the archive directory and retention policy. Recommended cron
+  pattern: write to `~/tulip-backups/$(date +%Y-%m-%d).tar.gz` daily,
+  pair with `find ~/tulip-backups -mtime +30 -delete`. Anything pruned
+  from the live DB (via `audit_retention`, `ai_retention`,
+  user-deletion, or `log_prompts` consent withdrawal) lives on in
+  every backup taken before the prune — factor this into the controller's
+  documented retention SLA.
 - **External processors:** if a tenant has opted into cloud AI
   (`tulip ai set-key <provider> <key>`), prompts sent to that provider before
   the erasure are not under Tulip's control. Local-only profile
@@ -388,6 +401,59 @@ calls fire on the user's behalf via that provider.
 **Status:** prompt-log toggle from Phase 6; consent-provenance audit in
 [#247 (PR #317)](https://github.com/rmwarriner/tulip-accounting/pull/317);
 per-user AI keys in [#239 (PR #316)](https://github.com/rmwarriner/tulip-accounting/pull/316).
+
+---
+
+## Retention controls (Art. 5(1)(e))
+
+> "Personal data shall be … kept in a form which permits identification
+> of data subjects for no longer than is necessary for the purposes for
+> which the personal data are processed."
+
+Tulip's `audit_log` rows are GDPR-classified personal data (embedded
+descriptions, emails, account names — see
+[`THREAT_MODEL.md §2`](THREAT_MODEL.md)). The `audit_retention`
+scheduled handler ages them out by tier:
+
+```bash
+# Show the current per-tier retention (operator overrides + code defaults):
+tulip admin audit-policy show
+
+# Override one tier — e.g. drop ledger retention to 5 years:
+tulip admin audit-policy set ledger_days 1825
+
+# Manually trigger the daily prune (ops debugging):
+tulip admin audit-prune
+```
+
+Default tiers and what each covers:
+
+| Tier | Default | Covers |
+|---|---|---|
+| `ledger_days` | 2555 (~7y) | Ledger mutations — `create` / `update` / `delete` / `void` / `description_rectified` / `reconciliation_*` / `import_*` |
+| `auth_days` | 90 | Auth events — `register`, `login`, `mfa.*`, `password_changed`, `auth.refresh`, `auth.logout` |
+| `ai_days` | 30 | AI consent + capability — `ai.consent_changed`, `user.ai_*`, `proposal.*`, `ai.prompt_log_scrubbed` |
+| `admin_days` | 365 | Admin lifecycle — `user.deleted`, `household.deleted`, `csv_profile_*`, `audit.pruned` |
+| `default_days` | 90 | Safety-net for any unmapped action |
+
+The 7-year ledger default is **US-tax-anchored** (IRS Form 1040
+supporting records: 7 years for bad-debt deduction). Operators in
+other jurisdictions override: HMRC = 6y, ATO = 5y, etc.
+
+Two related TTL paths run alongside:
+
+- **`ai_retention`** — drops `ai_invocations` rows older than
+  `AI_INVOCATION_RETENTION_DAYS` (90), except those referenced by a
+  surviving `pending_proposal`. Surfaced read-only on `GET /v1/ai/config`.
+- **`attachment_gc`** — sweeps orphaned attachment ciphertext from
+  disk after `AttachmentRepository.delete()` (#235) decrements the
+  refcount to zero.
+
+**Status:** shipped in [#245](https://github.com/rmwarriner/tulip-accounting/issues/245).
+**Known gaps:** no CLI for `tulip ai config` retention readout (it's
+in the existing `tulip ai config show` output as a read-only line);
+no scheduled handler for backup-file rotation (operator-side cron, see
+§Erasure residue).
 
 ---
 

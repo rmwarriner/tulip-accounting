@@ -459,7 +459,15 @@ uv run tulip ai status
 The output flags the cost-cap-only fallback semantics inline and warns
 if you've turned on `log_prompts` (which stores full prompts +
 responses in `ai_invocations` for forensics — privacy cost is real,
-hence the warning).
+hence the warning). When you flip it on, the CLI also reminds you that
+every subsequent `tulip backup` will carry those bodies in the clear
+(backups aren't re-encrypted; only field-encrypted columns are
+protected at rest). Turn `log_prompts` off — or rotate / scrub
+backups — before transferring them off-host.
+
+The same `tulip admin` group manages audit-log retention (per-tier
+day-counts, defaults to 7y / 90d / 30d / 365d / 90d). See
+[`docs/USER_RIGHTS.md` §Retention controls](USER_RIGHTS.md).
 
 **Step 4.** Try the capabilities. With a key + a non-disabled policy
 in place:

@@ -568,7 +568,34 @@ Capability-level `null` inherits the household default. `profile` selects a reda
 - **OpenTelemetry hooks:** `opentelemetry-instrumentation-fastapi` and `-sqlalchemy` are installed but disabled by default. Enable via env var; emits to OTLP endpoint. This makes future observability (Tempo, Jaeger, Honeycomb) a config flip.
 - **Log levels:** `DEBUG` for development, `INFO` for production default. `WARNING` for soft-close overrides, AI provider degradation. `ERROR` for failures requiring attention. Standard severity discipline.
 
-**App log vs audit log:** the app log is for operational debugging; the audit log is for security and accounting forensics. They are distinct stores. App log can be rotated/expired; audit log is retained per tenant retention policy (default: forever).
+**App log vs audit log:** the app log is for operational debugging; the audit log is for security and accounting forensics. They are distinct stores. App log can be rotated/expired; audit log is retained per tenant retention policy.
+
+**Audit-log retention (#245).** Per-tenant, policy-driven, five-tier:
+
+| Tier | Default | Audit actions |
+|---|---|---|
+| `ledger_days` | 2555 (~7y, US tax-record anchored) | `create`, `update`, `delete`, `void`, `description_rectified`, `reconciliation_*`, `import_*`, `period_close`, etc. |
+| `auth_days` | 90 | `register`, `login`, `login_failed`, `mfa.*`, `auth.refresh`, `auth.logout`, `password_changed`, `profile_updated` |
+| `ai_days` | 30 | `ai.consent_changed`, `ai.prompt_log_scrubbed`, `user.ai_*`, `proposal.*` |
+| `admin_days` | 365 | `user.deleted`, `household.deleted`, `household.audit_policy_set`, `audit.pruned`, `csv_profile_*` |
+| `default_days` | 90 | Safety-net tier — any unmapped action ages here. |
+
+Tier dispatch is by ``audit_log.action`` string via a static map in
+``tulip_storage.runner.handlers.audit_retention``; the architecture
+test ``test_audit_retention_coverage.py`` asserts every action emitted
+by the routers is explicitly tiered (no silent fall-through). Operators
+override tier day-counts per household via
+``PUT /v1/admin/audit-policy`` or ``tulip admin audit-policy set <tier>
+<days>``. The scheduled ``audit_retention`` handler runs daily (a row
+in ``scheduled_jobs`` with a daily RRULE) and the manual trigger is
+``POST /v1/admin/audit-prune`` / ``tulip admin audit-prune``. Each
+prune writes an ``audit.pruned`` summary row (admin_days tier) with
+``metadata.deleted_per_tier`` for forensics.
+
+The 7-year ledger default is anchored on US IRS rules (Form 1040
+supporting records: 7 years for bad-debt deduction). Operators in
+other jurisdictions adjust: HMRC = 6y, ATO = 5y. See
+[`docs/USER_RIGHTS.md`](USER_RIGHTS.md) for the operator surface.
 
 ### 7.3 Testing & TDD
 
@@ -623,11 +650,10 @@ The user has explicitly called out comprehensive testing compliant with modern T
 
 ### 7.5 Backup & Restore
 
-- Scheduled backup job (configurable cadence; default daily at 03:00 local).
-- Backup is an encrypted archive containing: the SQLCipher DB file, the attachment store, a manifest with versions and timestamps.
-- Backup encryption: AES-256-GCM with a backup-specific key derived from the master key + a backup salt. Restore requires the master key.
-- Configurable retention (default 30 daily, 12 monthly, 5 yearly).
-- CLI: `tulip admin backup [--output PATH]`, `tulip admin restore --from PATH`. Restore is destructive; requires `--confirm` flag.
+- Backup is a tarball (gzip) containing: the SQLite DB file (taken via `.backup()` for a concurrent-safe snapshot), the attachment store, a manifest with format version, Tulip version, alembic head, hostname, and an HMAC-SHA256 master-key envelope.
+- Field-encrypted columns (TOTP secrets, encrypted attachments, AI keys) ride through the backup encrypted under the master key; the tarball itself is not re-encrypted. **Plaintext columns — including `ai_invocations.prompt_json` / `response_text` when `log_prompts=true` — land in the tarball in the clear.** The CLI warns at `tulip ai config log-prompts on` toggle time; operators sharing backups off-host should either turn `log_prompts` off and re-take, or rotate / scrub before transferring.
+- CLI: `tulip backup [--output PATH]` writes one tarball per invocation; `tulip restore --from PATH` rolls forward; `tulip backup-inspect PATH` prints the manifest. Restore is destructive; refuses on key mismatch, format-version skew, alembic-head skew (unless `--force`), or a pre-existing target.
+- **Rotation is operator-side, not in-process** (#245 M-23). Tulip's backup CLI writes wherever you point it; the operator owns the archive directory + retention policy. Recommended pattern: a cron entry that writes `~/tulip-backups/$(date +%Y-%m-%d).tar.gz` and a paired `find ~/tulip-backups -mtime +30 -delete` cleanup (or whatever grandfather-father-son schedule fits the operator's RPO). [`docs/USER_RIGHTS.md`](USER_RIGHTS.md) §Erasure documents the residue lifecycle — anything pruned from the live DB lives on in every backup taken before the prune.
 
 ### 7.6 Rate Limiting
 

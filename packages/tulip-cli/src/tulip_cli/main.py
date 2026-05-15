@@ -15,6 +15,7 @@ import typer
 
 from tulip_cli import __version__
 from tulip_cli.commands.accounts import accounts_app
+from tulip_cli.commands.admin import admin_app
 from tulip_cli.commands.ai import ai_app
 from tulip_cli.commands.auth import auth_app
 from tulip_cli.commands.backup_restore import (
@@ -138,6 +139,7 @@ app.add_typer(reconcile_app, name="reconcile")
 app.add_typer(reports_app, name="reports")
 app.add_typer(user_app, name="user")
 app.add_typer(household_app, name="household")
+app.add_typer(admin_app, name="admin")
 app.command("backup")(backup_command)
 app.command("restore")(restore_command)
 app.command("backup-inspect")(manifest_command)

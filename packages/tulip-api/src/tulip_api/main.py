@@ -29,6 +29,7 @@ from tulip_api.logging_config import configure_logging
 from tulip_api.middleware import RequestIdMiddleware
 from tulip_api.routers import (
     accounts,
+    admin,
     ai,
     auth,
     csv_profiles,
@@ -131,6 +132,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             from tulip_storage.runner.handlers import (
                 make_ai_retention_handler,
                 make_attachment_gc_handler,
+                make_audit_retention_handler,
             )
 
             runner.register_handler(
@@ -143,6 +145,14 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             runner.register_handler(
                 "ai_retention",
                 make_ai_retention_handler(session_maker),
+            )
+            # M-1 (#245): tiered TTL prune of audit_log rows. The handler
+            # reads each household's ``audit_retention_policy`` (or the
+            # code defaults for any unset tier) and ages out rows past
+            # their tier's cutoff. Installer seeds a daily rrule.
+            runner.register_handler(
+                "audit_retention",
+                make_audit_retention_handler(session_maker),
             )
             app.state.runner = runner
             _register_ai_categorizer(session_maker)
@@ -184,6 +194,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(health.router)
     app.include_router(system.router)
     app.include_router(ai.router)
+    app.include_router(admin.router)
     app.include_router(well_known_errors.router)
     app.include_router(auth.router)
     app.include_router(users.router)

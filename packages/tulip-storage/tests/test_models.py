@@ -73,6 +73,27 @@ class TestHouseholdCrud:
         loaded = session.execute(select(Household)).scalar_one()
         assert loaded.mfa_policy is MfaPolicy.REQUIRED_FOR_ADMINS
 
+    def test_audit_retention_policy_defaults_to_empty_dict(self, session: Session):
+        """#245 — fresh household has no overrides; resolver uses code defaults."""
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.audit_retention_policy == {}
+
+    def test_audit_retention_policy_round_trips_dict(self, session: Session):
+        """#245 — operator-supplied overrides persist + reload."""
+        h = Household(
+            id=uuid4(),
+            name="Smith",
+            base_currency="USD",
+            audit_retention_policy={"ledger_days": 1825, "auth_days": 45},
+        )
+        session.add(h)
+        session.commit()
+        loaded = session.execute(select(Household)).scalar_one()
+        assert loaded.audit_retention_policy == {"ledger_days": 1825, "auth_days": 45}
+
     def test_mfa_policy_round_trips_after_raw_sql_update(self, session: Session):
         """Regression: raw SQL writes must round-trip back through the ORM.
 
