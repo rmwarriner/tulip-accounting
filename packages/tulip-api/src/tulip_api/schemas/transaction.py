@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import date as date_type
 from datetime import datetime
 from decimal import Decimal
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PostingCreate(BaseModel):
@@ -96,6 +97,41 @@ class TransactionVoidResponse(BaseModel):
             "been auto-voided in the same atomic commit. Null otherwise."
         ),
     )
+
+
+class TransactionRectifyRequest(BaseModel):
+    """PATCH /v1/transactions/{id}/description body — GDPR Art. 16 rectification (#242).
+
+    Mutates ``description`` / ``reference`` / ``notes`` on a POSTED or
+    RECONCILED transaction in place. Postings, status, and date are out of
+    scope — those still require void-and-recreate. ``notes`` follows
+    PATCH semantics: omitting the key leaves the column unchanged; sending
+    ``null`` clears it. ``description`` is non-nullable on the underlying
+    row, so it cannot be set to ``null``. At least one of the three keys
+    must be present.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = Field(default=None, min_length=1, max_length=500)
+    reference: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Free-text transaction-level annotation. Omit to leave "
+            "unchanged; send ``null`` to clear."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if not (self.model_fields_set & {"description", "reference", "notes"}):
+            raise ValueError(
+                "At least one of 'description', 'reference', or 'notes' must be provided."
+            )
+        if "description" in self.model_fields_set and self.description is None:
+            raise ValueError("'description' cannot be null; omit the key to leave it unchanged.")
+        return self
 
 
 class TransactionUpdate(BaseModel):

@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-14 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landed, plus a CLI/importers usability bundle
+**Last updated:** 2026-05-14 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#242 GDPR Art. 16 rectification merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -609,7 +609,7 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   **#229** role-visibility filter threaded through the reports + journal
   export.
 
-### Privacy Wave-1 — 🔄 Critical + first three High landed (#233–#235)
+### Privacy Wave-1 — 🔄 Critical + Highs landing (#233–#235, #242)
 
 - **#233 (C-1)** — `resolve_policy` no longer lets a `local_only` AI
   profile resolve to a cloud provider via `fallback_provider`; pinned to
@@ -622,10 +622,22 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#242 (H-14)** — GDPR Art. 16 rectification:
+  `PATCH /v1/transactions/{id}/description` rewrites a POSTED /
+  RECONCILED transaction's `description` / `reference` / `notes` in
+  place, and rewrites the paired reversal sibling's
+  `f"Reversal of {old}: {reason}"` quote to `[redacted]` so the
+  pre-rectification PII doesn't survive at rest;
+  `PATCH /v1/users/me` mutates `display_name` (no re-auth) and `email`
+  (re-auth via `current_password` in body);
+  `POST /v1/auth/password/change` rotates the Argon2id hash and revokes
+  every outstanding refresh token. New audit actions:
+  `description_rectified` / `profile_updated` / `password_changed`.
 
-Remaining privacy Wave-1 (#236–#243: soft-delete-verb honesty,
-`import_batches.summary_json` PII, per-user AI policy, proposal-lifecycle
-audit, Art. 15 export, rectification, AI-invocation retention) is queued.
+Remaining privacy Wave-1: #237 (cross-user-within-household visibility
+filter, gated on multi-user invite) and #239 (per-user AI policy +
+per-user AI keys, finishing the half-wired `resolve_policy`). All other
+issues in the #236–#243 range have closed.
 
 ### Post-audit CLI + importers usability bundle — ✅
 

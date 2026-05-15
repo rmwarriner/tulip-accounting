@@ -66,6 +66,10 @@ class TransactionNotEditableError(ValueError):
     """Raised when PATCH is attempted on a non-PENDING transaction."""
 
 
+class TransactionNotRectifiableError(ValueError):
+    """Raised when rectification is attempted on a non-ledger transaction (#242)."""
+
+
 class TransactionNotDeletableError(ValueError):
     """Raised when hard-delete is attempted on a non-PENDING transaction."""
 
@@ -587,6 +591,94 @@ class TransactionRepository:
         refreshed = self._session.get(Transaction, (self._household_id, tx_id))
         assert refreshed is not None  # noqa: S101 - existence verified above
         return refreshed
+
+    def rectify_posted(
+        self,
+        tx_id: UUID,
+        *,
+        description: str | _Unset = UNSET,
+        reference: str | None | _Unset = UNSET,
+        notes: str | None | _Unset = UNSET,
+    ) -> tuple[Transaction, UUID | None]:
+        """Rectify a POSTED / RECONCILED transaction's header fields (#242).
+
+        Mutates ``description`` / ``reference`` / ``notes_encrypted`` on the
+        row in place — postings, status, and date are untouched. Each field
+        follows PATCH semantics via the ``UNSET`` sentinel.
+
+        When the source has a paired reversal (``voided_by_transaction_id``)
+        and the reversal's description still matches the canonical
+        ``f"Reversal of {old_description}: "`` prefix the void route writes,
+        the reversal's description is rewritten in place so the old
+        description doesn't survive at rest in the reversal row. The
+        returned UUID is the reversal that was rewritten (or ``None`` when
+        no rewrite was applicable).
+
+        Raises:
+            LookupError: ``tx_id`` does not exist in this household.
+            TransactionNotRectifiableError: row is PENDING.
+            MasterKeyRequiredError: notes is a non-None string but no master_key.
+
+        """
+        existing = self.get(tx_id)
+        if existing is None:
+            raise LookupError(f"transaction {tx_id} not found in household {self._household_id}")
+        if existing.status not in _LEDGER_STATUSES:
+            raise TransactionNotRectifiableError(
+                f"transaction {tx_id} is {existing.status.value}; "
+                "only POSTED / RECONCILED transactions can be rectified"
+            )
+
+        old_description = existing.description
+        header_values: dict[str, object] = {}
+        if not isinstance(description, _Unset):
+            header_values["description"] = description
+        if not isinstance(reference, _Unset):
+            header_values["reference"] = reference
+        if not isinstance(notes, _Unset):
+            if notes is None:
+                header_values["notes_encrypted"] = None
+            else:
+                key = self._require_master_key()
+                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
+
+        if header_values:
+            self._session.execute(
+                update(Transaction)
+                .where(
+                    Transaction.household_id == self._household_id,
+                    Transaction.id == tx_id,
+                )
+                .values(**header_values)
+            )
+
+        reversal_id_rewritten: UUID | None = None
+        if not isinstance(description, _Unset) and existing.voided_by_transaction_id is not None:
+            # The void route at transactions.py:353 builds the reversal
+            # description as ``f"Reversal of {source.description}: {reason}"``.
+            # If that prefix still matches, rewrite it so the source's
+            # pre-rectification description doesn't survive at rest.
+            reversal_id = existing.voided_by_transaction_id
+            reversal = self._session.get(Transaction, (self._household_id, reversal_id))
+            if reversal is not None:
+                prefix = f"Reversal of {old_description}: "
+                if reversal.description.startswith(prefix):
+                    suffix = reversal.description[len(prefix) :]
+                    new_reversal_description = f"Reversal of [redacted]: {suffix}"
+                    self._session.execute(
+                        update(Transaction)
+                        .where(
+                            Transaction.household_id == self._household_id,
+                            Transaction.id == reversal_id,
+                        )
+                        .values(description=new_reversal_description)
+                    )
+                    reversal_id_rewritten = reversal_id
+
+        self._session.flush()
+        refreshed = self._session.get(Transaction, (self._household_id, tx_id))
+        assert refreshed is not None  # noqa: S101 - existence verified above
+        return refreshed, reversal_id_rewritten
 
     def _force_post_unbalanced_for_test(self, domain_tx: DomainTransaction) -> Transaction:
         """Force-post a (potentially unbalanced) Domain Transaction.
