@@ -23,7 +23,7 @@ from tulip_api.services.proposal_executor import (
     supported_proposal_kinds,
 )
 from tulip_storage.models import PendingProposal, ProposalCreatorKind, ProposalStatus
-from tulip_storage.repositories import PendingProposalRepository
+from tulip_storage.repositories import AuditLogWriter, PendingProposalRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -65,6 +65,23 @@ class ProposalAlreadyDecidedError(TulipProblem):
         )
 
 
+class ProposalNotDeletableError(TulipProblem):
+    """A delete was attempted on a proposal that is not REJECTED."""
+
+    def __init__(self, current_status: str) -> None:
+        """Build the proposal.not_deletable problem (#240)."""
+        super().__init__(
+            code="proposal.not_deletable",
+            title="Proposal not deletable",
+            status=409,
+            detail=(
+                f"Proposal is in status {current_status!r}; only rejected "
+                "proposals can be hard-deleted. Approved proposals stay for "
+                "audit-chain integrity; pending proposals must be rejected first."
+            ),
+        )
+
+
 def _request_uuid(request: Request) -> UUID | None:
     rid = request.headers.get("x-request-id")
     if rid:
@@ -73,6 +90,16 @@ def _request_uuid(request: Request) -> UUID | None:
         except ValueError:
             return None
     return None
+
+
+def _ai_invocation_id_str(proposal: PendingProposal) -> str | None:
+    """Stringify a proposal's ai_invocation_id for audit-row metadata (#240).
+
+    Carried on every ``proposal.*`` audit row so the chain back to the
+    originating ``ai_invocations`` row is queryable; ``None`` for
+    user-originated proposals.
+    """
+    return str(proposal.ai_invocation_id) if proposal.ai_invocation_id else None
 
 
 def _to_read(row: PendingProposal) -> ProposalRead:
@@ -92,36 +119,44 @@ def _to_read(row: PendingProposal) -> ProposalRead:
 )
 def create_proposal(
     body: ProposalCreate,
+    request: Request,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ProposalRead:
-    """Create a new pending proposal.
+    """Create a new user-originated pending proposal.
 
-    AI-generated proposals (P6.4.b) supply ``ai_invocation_id`` and set
-    ``created_by_kind=ai_agent`` server-side based on its presence.
-    Direct user-created proposals omit it and stamp ``created_by_kind=user``.
+    Always stamps ``created_by_kind=user``. AI-originated proposals are
+    written via ``PendingProposalRepository.create`` from inside the
+    capability layer (e.g. ``/v1/ai/proposals/suggest/budget``) — that
+    path stamps ``ai_agent`` server-side with a verified ``ai_invocation_id``.
+    See #218 for why we don't accept the field on this HTTP body.
     """
-    creator_kind = (
-        ProposalCreatorKind.AI_AGENT.value
-        if body.ai_invocation_id is not None
-        else ProposalCreatorKind.USER.value
-    )
     repo = PendingProposalRepository(session, claims.household_id)
     row = repo.create(
         kind=body.kind,
         title=body.title,
         payload=body.payload,
         rationale=body.rationale,
-        created_by_kind=creator_kind,
+        created_by_kind=ProposalCreatorKind.USER.value,
         created_by_user_id=claims.user_id,
-        ai_invocation_id=body.ai_invocation_id,
+        ai_invocation_id=None,
+    )
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.create",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=row.id,
+        after={"kind": row.kind, "title": row.title},
+        request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(row)},
     )
     session.commit()
     log.info(
         "proposal.created",
         proposal_id=str(row.id),
         kind=row.kind,
-        created_by_kind=creator_kind,
+        created_by_kind=ProposalCreatorKind.USER.value,
     )
     return _to_read(row)
 
@@ -201,6 +236,17 @@ async def approve_proposal(
         note=note,
     )
     assert updated is not None  # noqa: S101 — we just got it from the repo
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.approve",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before={"status": ProposalStatus.PENDING.value},
+        after={"status": ProposalStatus.APPROVED.value, "decision_note": note},
+        request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(proposal)},
+    )
     session.commit()
     log.info("proposal.approved", proposal_id=str(proposal_id), kind=proposal.kind)
     return _to_read(updated)
@@ -210,6 +256,7 @@ async def approve_proposal(
     "/{proposal_id}/reject",
     response_model=ProposalRead,
     responses={
+        400: problem_response("request.body_invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("proposal.not_found"),
@@ -219,6 +266,7 @@ async def approve_proposal(
 )
 def reject_proposal(
     proposal_id: UUID,
+    request: Request,
     body: ProposalDecisionBody | None = None,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
@@ -234,6 +282,7 @@ def reject_proposal(
     ):
         raise ProposalAlreadyDecidedError(proposal.status)
     note = body.note if body is not None else None
+    before_status = proposal.status
     updated = repo.mark_decided(
         proposal_id,
         status=ProposalStatus.REJECTED.value,
@@ -241,9 +290,68 @@ def reject_proposal(
         note=note,
     )
     assert updated is not None  # noqa: S101
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.reject",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before={"status": before_status},
+        after={"status": ProposalStatus.REJECTED.value, "decision_note": note},
+        request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": _ai_invocation_id_str(proposal)},
+    )
     session.commit()
     log.info("proposal.rejected", proposal_id=str(proposal_id), kind=proposal.kind)
     return _to_read(updated)
+
+
+@router.delete(
+    "/{proposal_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("proposal.not_found"),
+        409: problem_response("proposal.not_deletable"),
+    },
+)
+def delete_proposal(
+    proposal_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Hard-delete a REJECTED proposal (admin-only, #240).
+
+    Only rejected proposals can be removed — an AI hallucination baked
+    into a rejected proposal's payload / rationale / title should be
+    erasable. Approved proposals stay (audit-chain integrity); pending
+    proposals must be rejected first. The deletion itself is audited.
+    """
+    repo = PendingProposalRepository(session, claims.household_id)
+    proposal = repo.get(proposal_id)
+    if proposal is None:
+        raise ProposalNotFoundError()
+    if proposal.status != ProposalStatus.REJECTED.value:
+        raise ProposalNotDeletableError(proposal.status)
+
+    before = {"status": proposal.status, "kind": proposal.kind, "title": proposal.title}
+    ai_invocation_id = _ai_invocation_id_str(proposal)
+    repo.delete(proposal_id)
+    AuditLogWriter(session, claims.household_id).write(
+        action="proposal.delete",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="proposal",
+        entity_id=proposal_id,
+        before=before,
+        after=None,
+        request_id=_request_uuid(request),
+        metadata={"ai_invocation_id": ai_invocation_id},
+    )
+    session.commit()
+    log.info("proposal.deleted", proposal_id=str(proposal_id), kind=before["kind"])
 
 
 @router.get(
@@ -295,7 +403,7 @@ async def suggest_envelope_budget(
 
     from tulip_ai import AIProposalCapability, LitellmAdapter
     from tulip_api.config import get_settings
-    from tulip_storage.models import Household
+    from tulip_storage.models import Household, User
     from tulip_storage.repositories import EnvelopeRepository, ShadowTransactionRepository
 
     found = EnvelopeRepository(session, claims.household_id).get(body.envelope_id)
@@ -321,14 +429,18 @@ async def suggest_envelope_budget(
     settings = get_settings()
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
+    user = session.get(User, (claims.household_id, claims.user_id))
     api_key: str | None = None
-    if household.ai_keys_encrypted:
-        from tulip_api.routers.ai import _load_household_keys
+    provider = household.ai_policy.get("default_provider")
+    if isinstance(provider, str):
+        from tulip_api.routers.ai import _resolve_provider_key
 
-        keys = _load_household_keys(household, settings.master_key)
-        provider = household.ai_policy.get("default_provider")
-        if isinstance(provider, str):
-            api_key = keys.get(provider)
+        api_key = _resolve_provider_key(
+            household=household,
+            user=user,
+            provider=provider,
+            master_key=settings.master_key,
+        )
 
     bind = session.get_bind()
     cap_session_maker = _sessionmaker(bind, expire_on_commit=False)

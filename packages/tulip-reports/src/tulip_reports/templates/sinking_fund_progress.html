@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Sinking-fund progress · {{ data.household_name }}{% endblock %}
+{% block report_title %}Sinking-fund progress{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>As of:</dt><dd>{{ data.as_of | isodate }}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Fund</th>
+      <th class="num">Balance</th>
+      <th class="num">Target</th>
+      <th class="num">Remaining</th>
+      <th>Currency</th>
+      <th>Target date</th>
+      <th class="num">Days left</th>
+      <th class="num">Progress</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td class="num">{{ row.balance | money }}</td>
+      <td class="num">{{ row.target_amount | money }}</td>
+      <td class="num{% if row.remaining_to_target is negative %} negative{% endif %}">{{ row.remaining_to_target | money }}</td>
+      <td>{{ row.currency }}</td>
+      <td>{{ row.target_date | isodate }}</td>
+      <td class="num{% if row.days_remaining < 0 %} warning{% endif %}">{{ row.days_remaining }}</td>
+      <td class="num">{{ row.progress_pct }}%</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No active sinking funds.</p>
+{% endif %}
+{% endblock %}

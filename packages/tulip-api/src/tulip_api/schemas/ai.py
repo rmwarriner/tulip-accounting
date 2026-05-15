@@ -122,6 +122,9 @@ class AIConfigRead(BaseModel):
     fallback_provider: str | None
     fallback_model: str | None
     log_prompts: bool
+    #: Read-only. Non-proposal-linked ai_invocations older than this are
+    #: GC'd by the ``ai_retention`` scheduled handler (#243).
+    invocation_retention_days: int
     capabilities: dict[str, AIConfigCapability]
 
 

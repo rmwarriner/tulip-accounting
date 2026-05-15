@@ -34,7 +34,9 @@ from tulip_api.errors import (
     ReconciliationMatchesExistError,
     ReconciliationMatchNotFoundError,
     ReconciliationNotFoundError,
+    ReconciliationPaperMatchNotPaperReconError,
     ReconciliationTxAccountMismatchError,
+    ReconciliationTxAlreadyMatchedError,
     ReconciliationTxNotFoundError,
     ReconciliationTxNotInPeriodError,
     ReconciliationUnbalancedError,
@@ -49,6 +51,7 @@ from tulip_api.schemas.reconciliation import (
     LedgerTransactionInbox,
     ManualMatchCreate,
     MatchRead,
+    PaperMatchCreate,
     ReconciliationCreate,
     ReconciliationInboxResponse,
     ReconciliationListResponse,
@@ -68,10 +71,14 @@ from tulip_api.services.reconciliation_match import (
     ManualMatchLineNotInBatchError,
     ManualMatchTxAccountMismatchError,
     ManualMatchTxNotFoundError,
+    PaperMatchNotPaperReconError,
+    PaperMatchTxAlreadyMatchedError,
+    PaperMatchTxNotInPeriodError,
     add_carry_forward,
     auto_match,
     complete,
     manual_match,
+    paper_match,
     remove_carry_forward,
 )
 from tulip_storage.models import ReconciliationStatus
@@ -182,16 +189,22 @@ def create_reconciliation(
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ReconciliationRead:
-    """Open a reconciliation envelope tied to one import batch."""
+    """Open a reconciliation envelope.
+
+    Tied to one import batch in the OFX-driven flow; ``source_import_batch_id``
+    is optional in the paper-statement flow (#275) where the user ticks off
+    ledger transactions against a physical statement.
+    """
     accounts = AccountRepository(session, claims.household_id)
     account = accounts.get(body.account_id)
     if account is None:
         raise AccountNotFoundError()
 
-    batches = ImportBatchRepository(session, claims.household_id)
-    batch = batches.get(body.source_import_batch_id)
-    if batch is None or batch.account_id != body.account_id:
-        raise ImportBatchNotFoundError()
+    if body.source_import_batch_id is not None:
+        batches = ImportBatchRepository(session, claims.household_id)
+        batch = batches.get(body.source_import_batch_id)
+        if batch is None or batch.account_id != body.account_id:
+            raise ImportBatchNotFoundError()
 
     if account.currency != body.currency:
         raise ReconciliationCurrencyMismatchError(
@@ -230,13 +243,21 @@ def create_reconciliation(
         entity_id=recon.id,
         after={
             "account_id": str(body.account_id),
-            "source_import_batch_id": str(body.source_import_batch_id),
+            "source_import_batch_id": (
+                str(body.source_import_batch_id)
+                if body.source_import_batch_id is not None
+                else None
+            ),
             "period": (f"{body.statement_period_start}..{body.statement_period_end}"),
         },
         request_id=_request_uuid(request),
     )
     session.commit()
-    log.info("reconciliation.created", reconciliation_id=str(recon.id))
+    log.info(
+        "reconciliation.created",
+        reconciliation_id=str(recon.id),
+        paper=body.source_import_batch_id is None,
+    )
     return _to_read(recon)
 
 
@@ -262,7 +283,7 @@ def get_reconciliation(
     matches = ReconciliationMatchRepository(session, claims.household_id).list_for_reconciliation(
         recon.id
     )
-    matched_line_ids = {m.statement_line_id for m in matches}
+    matched_line_ids = {m.statement_line_id for m in matches if m.statement_line_id is not None}
     matched_tx_ids = {m.ledger_transaction_id for m in matches}
 
     lines_repo = StatementLineRepository(session, claims.household_id)
@@ -674,6 +695,107 @@ async def create_manual_match(
     session.commit()
     log.info(
         "reconciliation_match.manual_created",
+        match_id=str(match.id),
+        reconciliation_id=str(reconciliation_id),
+    )
+    return _to_match_read(match)
+
+
+@router.post(
+    "/{reconciliation_id}/paper-matches",
+    response_model=MatchRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "request.body_invalid",
+            "reconciliation.paper_match_not_paper_recon",
+            "reconciliation.tx_account_mismatch",
+            "reconciliation.tx_not_in_period",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response(
+            "reconciliation.not_found",
+            "reconciliation.transaction_not_found",
+        ),
+        409: problem_response(
+            "reconciliation.invalid_state",
+            "reconciliation.tx_already_matched",
+        ),
+        422: problem_response("validation.failed"),
+    },
+)
+async def create_paper_match(
+    reconciliation_id: UUID,
+    body: PaperMatchCreate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> MatchRead:
+    """Mark a ledger tx as matched in a paper-statement reconciliation (#275).
+
+    No statement_line — the user is asserting "this tx matches a line
+    on my paper statement" without an imported batch to point at. The
+    match amount is derived server-side from the bank-side posting on
+    the recon's account.
+    """
+    repo = ReconciliationRepository(session, claims.household_id)
+    recon = repo.get(reconciliation_id)
+    if recon is None:
+        raise ReconciliationNotFoundError()
+
+    try:
+        match = await paper_match(
+            session=session,
+            household_id=claims.household_id,
+            reconciliation=recon,
+            ledger_transaction_id=body.ledger_transaction_id,
+            actor_user_id=claims.user_id,
+        )
+    except CompleteInvalidStateError as exc:
+        raise ReconciliationInvalidStateError(
+            current_status=exc.current_status, action="create-paper-match"
+        ) from exc
+    except PaperMatchNotPaperReconError as exc:
+        raise ReconciliationPaperMatchNotPaperReconError(
+            reconciliation_id=str(exc.reconciliation_id),
+        ) from exc
+    except ManualMatchTxNotFoundError as exc:
+        raise ReconciliationTxNotFoundError() from exc
+    except PaperMatchTxNotInPeriodError as exc:
+        raise ReconciliationTxNotInPeriodError(
+            ledger_transaction_id=str(exc.ledger_transaction_id),
+            tx_date=exc.tx_date,
+            period_start=exc.period_start,
+            period_end=exc.period_end,
+        ) from exc
+    except ManualMatchTxAccountMismatchError as exc:
+        raise ReconciliationTxAccountMismatchError(
+            ledger_transaction_id=str(exc.ledger_transaction_id),
+            expected_account_id=str(exc.expected_account_id),
+        ) from exc
+    except PaperMatchTxAlreadyMatchedError as exc:
+        raise ReconciliationTxAlreadyMatchedError(
+            ledger_transaction_id=str(exc.ledger_transaction_id),
+            existing_match_id=str(exc.existing_match_id),
+        ) from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="reconciliation_match_create_paper",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="reconciliation_match",
+        entity_id=match.id,
+        after={
+            "reconciliation_id": str(reconciliation_id),
+            "ledger_transaction_id": str(body.ledger_transaction_id),
+            "match_amount": str(match.match_amount),
+        },
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "reconciliation_match.paper_created",
         match_id=str(match.id),
         reconciliation_id=str(reconciliation_id),
     )

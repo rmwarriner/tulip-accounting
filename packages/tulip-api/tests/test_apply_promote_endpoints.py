@@ -89,6 +89,118 @@ class TestApplyImportHappyPath:
         assert r.json()["status"] == "applied"
         assert r.json()["applied_at"] is not None
 
+    def test_apply_no_categorize_succeeds_without_categorizer_account(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        """Slice B: ?no_categorize=true short-circuits the categorizer and
+        auto-creates the Imbalance:Unknown account on demand. The endpoint
+        must succeed even on a household with no chart-of-accounts entry
+        for the categorizer's usual return value.
+        """
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created_count"] == 2
+        # And the auto-created Imbalance:Unknown account exists.
+        accounts = client.get("/v1/accounts", headers=auth_h).json()
+        codes = {a.get("code") for a in accounts}
+        assert "9999.USD" in codes
+
+    def test_apply_as_posted_creates_posted_transactions(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        """Issue #210: ``?as_posted=true&no_categorize=true`` lands every line as POSTED.
+
+        Combined with ``no_categorize=true`` for hermeticity — without a
+        seeded chart-of-accounts the categorizer would 409 first.
+        """
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?as_posted=true&no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created_count"] == 2
+        # Every returned transaction is POSTED.
+        for tx_id in body["transaction_ids"]:
+            tx_resp = client.get(f"/v1/transactions/{tx_id}", headers=auth_h)
+            assert tx_resp.status_code == 200, tx_resp.text
+            assert tx_resp.json()["status"] == "posted"
+
+    def test_apply_default_creates_pending_transactions(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        """Issue #210: without ``?as_posted``, transactions are PENDING (unchanged default)."""
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        for tx_id in body["transaction_ids"]:
+            tx_resp = client.get(f"/v1/transactions/{tx_id}", headers=auth_h)
+            assert tx_resp.status_code == 200, tx_resp.text
+            assert tx_resp.json()["status"] == "pending"
+
+    def test_apply_as_posted_audit_log_records_status(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        parsed_batch: str,
+        session_maker,
+    ):
+        """Issue #210: the import_apply audit row records ``as_posted`` so a
+        forensic audit can tell whether the batch was reviewed or auto-posted.
+        """
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?as_posted=true&no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+
+        from tulip_storage.models import AuditLog
+
+        with session_maker() as s:
+            row = (
+                s.query(AuditLog)
+                .filter(AuditLog.action == "import_apply")
+                .order_by(AuditLog.occurred_at.desc())
+                .first()
+            )
+            assert row is not None, "expected an import_apply audit row"
+            assert row.after_snapshot is not None
+            assert row.after_snapshot.get("as_posted") is True
+
+    def test_apply_default_audit_log_records_pending_status(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        parsed_batch: str,
+        session_maker,
+    ):
+        """Issue #210: the audit row records ``as_posted=False`` on the default path too."""
+        r = client.post(
+            f"/v1/imports/{parsed_batch}/apply?no_categorize=true",
+            headers=auth_h,
+        )
+        assert r.status_code == 200, r.text
+
+        from tulip_storage.models import AuditLog
+
+        with session_maker() as s:
+            row = (
+                s.query(AuditLog)
+                .filter(AuditLog.action == "import_apply")
+                .order_by(AuditLog.occurred_at.desc())
+                .first()
+            )
+            assert row is not None
+            assert row.after_snapshot is not None
+            assert row.after_snapshot.get("as_posted") is False
+
 
 class TestApplyImportErrors:
     def test_unknown_batch_returns_404(self, client: TestClient, auth_h: dict[str, str]):

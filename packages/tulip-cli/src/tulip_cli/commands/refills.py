@@ -12,9 +12,9 @@ import sys
 from typing import Annotated
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._pools import _resolve_envelope
 from tulip_cli.config import Config
@@ -121,7 +121,7 @@ def list_refills(ctx: typer.Context) -> None:
             str(j.get("last_run_at") or "—"),
             j.get("idempotency_key") or "—",
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @refills_app.command("show")

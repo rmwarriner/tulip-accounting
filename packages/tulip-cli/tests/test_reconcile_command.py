@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from _cli_asserts import assert_cli_usage_error
+
 _PASSWORD = "long-enough-password"
 _OFX_FIXTURES = (
     Path(__file__).resolve().parents[2] / "tulip-importers" / "tests" / "fixtures" / "ofx"
@@ -26,6 +28,10 @@ def _run_cli(
     *args: str, api_url: str, extra_env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
+    # Give Rich a wide enough terminal that Typer's usage / error panels
+    # don't truncate mid-word — CI runs at a narrower default and was
+    # silently losing the assertion-target substring.
+    env.setdefault("COLUMNS", "200")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -191,8 +197,7 @@ def test_reconcile_create_invalid_period_returns_2(session_setup: dict[str, str]
         "1457.83",
         api_url=session_setup["api_url"],
     )
-    assert result.returncode != 0
-    assert "period" in (result.stdout + result.stderr).lower()
+    assert_cli_usage_error(result, contains="period")
 
 
 @pytest.mark.integration
@@ -306,6 +311,140 @@ def test_reconcile_show_renders_four_sections(session_setup: dict[str, str]) -> 
 
 
 # ---- auto-match / match / reject ----------------------------------------
+
+
+# ---- interactive wizard --------------------------------------------------
+
+
+def _create_recon(session_setup: dict[str, str]) -> str:
+    """Create a recon envelope and return its UUID."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "create",
+            "--account",
+            "1110",
+            "--batch",
+            session_setup["batch_id"],
+            "--period",
+            "2026-05-01..2026-05-31",
+            "--starting",
+            "0.00",
+            "--ending",
+            "1457.83",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    return str(json.loads(create.stdout)["id"])
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_no_matches_hints_auto_match(
+    session_setup: dict[str, str],
+) -> None:
+    """If no auto-matches exist yet, the wizard tells the user to run auto-match."""
+    recon_id = _create_recon(session_setup)
+    result = _run_cli(
+        "reconcile",
+        "interactive",
+        recon_id,
+        api_url=session_setup["api_url"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "auto-match" in result.stdout.lower()
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_accept_all(session_setup: dict[str, str]) -> None:
+    """Pipe 'a\\na\\n' to accept both auto-matched candidates; summary should report 2 accepted."""
+    recon_id = _create_recon(session_setup)
+    # Pre-run auto-match so there are candidates to walk through.
+    auto = _run_cli("reconcile", "auto-match", recon_id, api_url=session_setup["api_url"])
+    assert auto.returncode == 0, auto.stderr
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "interactive",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="a\na\n",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "2 accepted" in result.stdout
+    assert "0 rejected" in result.stdout
+
+    # And complete should still work since accepted matches are preserved.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode == 0, complete.stderr
+
+
+@pytest.mark.integration
+def test_reconcile_interactive_reject_then_quit(session_setup: dict[str, str]) -> None:
+    """Reject one, quit; the rejected match should be gone from the inbox."""
+    recon_id = _create_recon(session_setup)
+    auto = _run_cli("reconcile", "auto-match", recon_id, api_url=session_setup["api_url"])
+    assert auto.returncode == 0, auto.stderr
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "interactive",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="r\nq\n",
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "1 rejected" in result.stdout
+
+    # And the inbox should now show one fewer match.
+    show = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "show",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    body = json.loads(show.stdout)
+    assert len(body["matches"]) == 1  # one remained (the one we quit on)
 
 
 @pytest.mark.integration
@@ -486,3 +625,211 @@ def test_reconcile_delete_requires_cascade(session_setup: dict[str, str]) -> Non
     )
     assert with_cascade.returncode == 0, with_cascade.stderr
     assert "Deleted" in with_cascade.stdout
+
+
+# ---- paper-statement (no-OFX) flow (#275) --------------------------------
+
+
+@pytest.mark.integration
+def test_reconcile_start_paper_happy_path(session_setup: dict[str, str]) -> None:
+    """`tulip reconcile start` opens a batch-less reconciliation."""
+    result = _run_cli(
+        "reconcile",
+        "start",
+        "--account",
+        "1110",
+        "--statement-date",
+        "2026-05-31",
+        "--period-start",
+        "2026-05-01",
+        "--closing-balance",
+        "1457.83",
+        "--starting-balance",
+        "0.00",
+        api_url=session_setup["api_url"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Opened paper reconciliation" in result.stdout
+    assert "Closing balance asserted: 1457.83" in result.stdout
+
+
+@pytest.mark.integration
+def test_reconcile_start_invalid_date_returns_2(session_setup: dict[str, str]) -> None:
+    result = _run_cli(
+        "reconcile",
+        "start",
+        "--account",
+        "1110",
+        "--statement-date",
+        "not-a-date",
+        "--closing-balance",
+        "1457.83",
+        api_url=session_setup["api_url"],
+    )
+    assert_cli_usage_error(result)
+
+
+@pytest.mark.integration
+def test_reconcile_walk_paper_happy_path(session_setup: dict[str, str]) -> None:
+    """Open a paper recon, walk through two txs marking them, then complete."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "1457.83",
+            "--starting-balance",
+            "0.00",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+
+    # Walk: pipe "m\nm\n" to match both txs.
+    walk = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nm\n",
+        timeout=20,
+    )
+    assert walk.returncode == 0, walk.stderr
+    assert "matched" in walk.stdout
+
+    # Complete: closing-balance assertion should pass.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode == 0, complete.stderr
+    assert "Completed reconciliation" in complete.stdout
+
+
+@pytest.mark.integration
+def test_reconcile_walk_abort_preserves_state(session_setup: dict[str, str]) -> None:
+    """Quit mid-walk via 'q'; remaining tx stays unmatched."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "1457.83",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+
+    # Walk: match first, quit before second.
+    walk = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nq\n",
+        timeout=20,
+    )
+    assert walk.returncode == 0, walk.stderr
+    assert "1 matched" in walk.stdout
+
+    # /complete should refuse because balance is incomplete.
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode != 0
+
+
+@pytest.mark.integration
+def test_reconcile_complete_mismatch_refused(session_setup: dict[str, str]) -> None:
+    """Wrong --closing-balance fails /complete with reconciliation.unbalanced."""
+    create = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "start",
+            "--account",
+            "1110",
+            "--statement-date",
+            "2026-05-31",
+            "--period-start",
+            "2026-05-01",
+            "--closing-balance",
+            "9999.99",  # wrong by a wide margin
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert create.returncode == 0, create.stderr
+    recon_id = json.loads(create.stdout)["id"]
+    # Match both txs.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--api-url",
+            session_setup["api_url"],
+            "reconcile",
+            "walk",
+            recon_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        input="m\nm\n",
+        timeout=20,
+    )
+    complete = _run_cli("reconcile", "complete", recon_id, api_url=session_setup["api_url"])
+    assert complete.returncode != 0

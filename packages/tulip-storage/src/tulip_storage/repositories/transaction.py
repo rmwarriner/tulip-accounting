@@ -17,8 +17,9 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, case, cast, delete, func, select, update
 
+from tulip_storage.encryption import decrypt_field, encrypt_field
 from tulip_storage.models import Posting, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
@@ -31,6 +32,28 @@ if TYPE_CHECKING:
     from tulip_core.transactions import TransactionStatus as DomainTxStatus
 
 
+class _Unset:
+    """Sentinel — distinguishes "field omitted from PATCH" from "set to None"."""
+
+    _instance: _Unset | None = None
+
+    def __new__(cls) -> _Unset:
+        """Singleton: ``UNSET is UNSET`` always holds."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: _Unset = _Unset()
+
+
+class MasterKeyRequiredError(RuntimeError):
+    """Raised when a notes write is attempted without a master key configured."""
+
+
 class TransactionAlreadyVoidedError(ValueError):
     """Raised when a void is attempted on a transaction that already has a reversal."""
 
@@ -41,6 +64,10 @@ class TransactionNotVoidableError(ValueError):
 
 class TransactionNotEditableError(ValueError):
     """Raised when PATCH is attempted on a non-PENDING transaction."""
+
+
+class TransactionNotRectifiableError(ValueError):
+    """Raised when rectification is attempted on a non-ledger transaction (#242)."""
 
 
 class TransactionNotDeletableError(ValueError):
@@ -57,23 +84,71 @@ _DOMAIN_TO_STORAGE_STATUS: dict[str, TransactionStatus] = {
 #: are workflow state, not ledger state, and are excluded from balances.
 _LEDGER_STATUSES = (TransactionStatus.POSTED, TransactionStatus.RECONCILED)
 
+#: The ledger statuses plus PENDING — the filter used when a caller opts
+#: into the "what if all pending is real" view (#274).
+_LEDGER_PLUS_PENDING = (*_LEDGER_STATUSES, TransactionStatus.PENDING)
+
+
+def _balance_statuses(*, include_pending: bool) -> tuple[TransactionStatus, ...]:
+    """Pick the status filter for a balance query (#274)."""
+    return _LEDGER_PLUS_PENDING if include_pending else _LEDGER_STATUSES
+
 
 @dataclass(frozen=True, slots=True)
 class TrialBalanceRow:
-    """One row of a per-(account, currency) trial-balance result."""
+    """One row of a per-(account, currency) trial-balance result.
+
+    ``has_pending`` is True when ``include_pending`` was requested *and*
+    at least one PENDING transaction contributed to this row's balance —
+    it's what the CLI uses to flag a row with a ``(P)`` marker. It's
+    always False on the posted-only path.
+    """
 
     account_id: UUID
     currency: str
     balance: Decimal
+    has_pending: bool = False
 
 
 class TransactionRepository:
     """Persists Transactions and queries existing ones, scoped to one household."""
 
-    def __init__(self, session: Session, household_id: UUID) -> None:
-        """Bind the repository to a session and a tenant scope."""
+    def __init__(
+        self,
+        session: Session,
+        household_id: UUID,
+        *,
+        master_key: bytes | None = None,
+    ) -> None:
+        """Bind the repository to a session and a tenant scope.
+
+        ``master_key`` is required only when the caller passes a ``notes``
+        plaintext to ``save_balanced`` / ``update_pending`` (or reads it
+        back via :meth:`decrypt_notes`). Read-only and non-notes write
+        paths work without one — keeping the legions of existing callers
+        (reconciliation, reports, balance queries) untouched.
+        """
         self._session = session
         self._household_id = household_id
+        self._master_key = master_key
+
+    def _require_master_key(self) -> bytes:
+        if self._master_key is None:
+            raise MasterKeyRequiredError(
+                "TransactionRepository requires a master_key to encrypt or "
+                "decrypt transaction notes; construct with master_key=..."
+            )
+        return self._master_key
+
+    def decrypt_notes(self, header: Transaction) -> str | None:
+        """Return the plaintext notes for ``header`` or None when unset.
+
+        Decoded as UTF-8. Requires a configured master key.
+        """
+        if header.notes_encrypted is None:
+            return None
+        key = self._require_master_key()
+        return decrypt_field(header.notes_encrypted, key).decode("utf-8")
 
     def get(self, tx_id: UUID) -> Transaction | None:
         """Return the Transaction header by id, or None."""
@@ -91,13 +166,16 @@ class TransactionRepository:
         from_date: date_type | None = None,
         to_date: date_type | None = None,
         status: TransactionStatus | None = None,
+        id_prefix: str | None = None,
         limit: int | None = None,
     ) -> list[Transaction]:
         """List transaction headers in this household, newest first.
 
         Filters compose with AND. ``account_id`` matches any transaction
         with at least one posting on that account (any currency). Date
-        filters are inclusive on both ends. ``limit`` caps the number of
+        filters are inclusive on both ends. ``id_prefix`` matches
+        transactions whose string-rendered UUID begins with the given
+        hex prefix (case-insensitive). ``limit`` caps the number of
         rows returned; ``None`` means no cap.
         """
         query = select(Transaction).where(Transaction.household_id == self._household_id)
@@ -116,6 +194,12 @@ class TransactionRepository:
             query = query.where(Transaction.date <= to_date)
         if status is not None:
             query = query.where(Transaction.status == status)
+        if id_prefix is not None:
+            # Cast bypasses the GUID type decorator (which would try to
+            # parse the LIKE pattern as a UUID). Stored ids are always
+            # lowercased by ``str(UUID(...))`` in ``GUID.process_bind_param``,
+            # so a lowercased prefix gives case-insensitive matching.
+            query = query.where(cast(Transaction.id, String).like(f"{id_prefix.lower()}%"))
         query = query.order_by(Transaction.date.desc(), Transaction.created_at.desc())
         if limit is not None:
             query = query.limit(limit)
@@ -140,12 +224,14 @@ class TransactionRepository:
         *,
         currency: str,
         as_of: date_type | None = None,
+        include_pending: bool = False,
     ) -> Decimal:
         """Sum the ledger postings on ``account_id`` in ``currency``.
 
-        Pending transactions are excluded — only POSTED and RECONCILED
-        contribute. ``as_of`` limits to transactions on or before that
-        date; ``None`` means "all time."
+        By default only POSTED + RECONCILED contribute. ``include_pending``
+        (#274) widens the sum to PENDING transactions too — the "what if
+        all pending is real" view. ``as_of`` limits to transactions on or
+        before that date; ``None`` means "all time."
         """
         query = (
             select(func.coalesce(func.sum(Posting.amount), 0))
@@ -154,7 +240,7 @@ class TransactionRepository:
                 Posting.household_id == self._household_id,
                 Posting.account_id == account_id,
                 Posting.currency == currency,
-                Transaction.status.in_(_LEDGER_STATUSES),
+                Transaction.status.in_(_balance_statuses(include_pending=include_pending)),
             )
         )
         if as_of is not None:
@@ -165,29 +251,79 @@ class TransactionRepository:
         # a type drift on the empty-result branch.
         return Decimal(str(result))
 
+    def count_pending_for_account(
+        self,
+        account_id: UUID,
+        *,
+        currency: str,
+        as_of: date_type | None = None,
+    ) -> int:
+        """Count distinct PENDING transactions with a posting on this account.
+
+        Drives the ``pending_count`` field on the account-balance
+        response (#274). ``distinct`` because one transaction can carry
+        more than one posting on the same account.
+        """
+        query = (
+            select(func.count(func.distinct(Transaction.id)))
+            .join(Posting, Posting.transaction_id == Transaction.id)
+            .where(
+                Posting.household_id == self._household_id,
+                Posting.account_id == account_id,
+                Posting.currency == currency,
+                Transaction.status == TransactionStatus.PENDING,
+            )
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        return int(self._session.execute(query).scalar_one())
+
+    def count_pending_transactions(self, *, as_of: date_type | None = None) -> int:
+        """Count PENDING transactions household-wide (#274).
+
+        Drives the ``pending_count`` field on the trial-balance response.
+        """
+        query = select(func.count()).where(
+            Transaction.household_id == self._household_id,
+            Transaction.status == TransactionStatus.PENDING,
+        )
+        if as_of is not None:
+            query = query.where(Transaction.date <= as_of)
+        return int(self._session.execute(query).scalar_one())
+
     def trial_balance(
         self,
         *,
         as_of: date_type | None = None,
+        include_pending: bool = False,
     ) -> list[TrialBalanceRow]:
         """Return one row per (account_id, currency) for the household's ledger.
 
-        Pending transactions are excluded. ``as_of`` filters to
-        transactions on or before that date; ``None`` means "all time."
-        Accounts with no postings (or only zero-net postings) still
-        appear when they have any matching posting at all — callers may
-        filter zeros if they want.
+        By default only POSTED + RECONCILED contribute. ``include_pending``
+        (#274) widens the sum to PENDING transactions too, and sets
+        ``has_pending`` on each row that drew at least one PENDING
+        posting. ``as_of`` filters to transactions on or before that
+        date; ``None`` means "all time." Accounts with no postings (or
+        only zero-net postings) still appear when they have any matching
+        posting at all — callers may filter zeros if they want.
         """
+        # MAX over a 0/1 case expression collapses to "any pending in the
+        # group" — one extra column, no second query.
+        is_pending = case(
+            (Transaction.status == TransactionStatus.PENDING, 1),
+            else_=0,
+        )
         query = (
             select(
                 Posting.account_id,
                 Posting.currency,
                 func.coalesce(func.sum(Posting.amount), 0).label("balance"),
+                func.max(is_pending).label("has_pending"),
             )
             .join(Transaction, Transaction.id == Posting.transaction_id)
             .where(
                 Posting.household_id == self._household_id,
-                Transaction.status.in_(_LEDGER_STATUSES),
+                Transaction.status.in_(_balance_statuses(include_pending=include_pending)),
             )
             .group_by(Posting.account_id, Posting.currency)
         )
@@ -199,8 +335,9 @@ class TransactionRepository:
                 account_id=account_id,
                 currency=currency,
                 balance=Decimal(str(balance)),
+                has_pending=include_pending and bool(has_pending),
             )
-            for account_id, currency, balance in rows
+            for account_id, currency, balance, has_pending in rows
         ]
 
     def save_balanced(
@@ -208,6 +345,7 @@ class TransactionRepository:
         domain_tx: DomainTransaction,
         *,
         imported_from_id: UUID | None = None,
+        notes: str | None = None,
     ) -> Transaction:
         """Persist a balanced Domain Transaction.
 
@@ -218,9 +356,20 @@ class TransactionRepository:
         ``imported_from_id`` links the persisted row to the
         ``import_batches`` row that produced it (used by the apply /
         promote flow in P5.4.a).
+
+        ``notes`` is the transaction-level annotation (free text). When
+        provided, it is AES-256-GCM-encrypted with the constructor's
+        master key and stored in ``notes_encrypted``; ``None`` leaves
+        the column unset. Passing a non-None ``notes`` without a
+        configured master key raises :class:`MasterKeyRequiredError`.
         """
         target_status = self._domain_to_storage(domain_tx.status)
-        return self._save(domain_tx, target_status, imported_from_id=imported_from_id)
+        return self._save(
+            domain_tx,
+            target_status,
+            imported_from_id=imported_from_id,
+            notes=notes,
+        )
 
     def _save(
         self,
@@ -228,7 +377,13 @@ class TransactionRepository:
         target_status: TransactionStatus,
         *,
         imported_from_id: UUID | None = None,
+        notes: str | None = None,
     ) -> Transaction:
+        notes_blob: bytes | None = None
+        if notes is not None:
+            key = self._require_master_key()
+            notes_blob = encrypt_field(notes.encode("utf-8"), key)
+
         header = Transaction(
             household_id=self._household_id,
             id=domain_tx.id,
@@ -239,6 +394,7 @@ class TransactionRepository:
             created_by_user_id=domain_tx.created_by_user_id,
             posted_at=datetime.now(tz=UTC) if target_status is TransactionStatus.POSTED else None,
             imported_from_id=imported_from_id,
+            notes_encrypted=notes_blob,
         )
         self._session.add(header)
         self._session.flush()
@@ -365,12 +521,19 @@ class TransactionRepository:
         description: str,
         reference: str | None,
         postings: tuple[DomainPosting, ...],
+        notes: str | None | _Unset = UNSET,
     ) -> Transaction:
         """Update fields and replace postings on a PENDING transaction.
+
+        ``notes`` follows PATCH semantics: ``UNSET`` (the default) leaves
+        the column unchanged; an explicit ``None`` clears it; a string
+        encrypts and stores the new plaintext. A non-UNSET, non-None
+        ``notes`` requires a configured master key.
 
         Raises:
             LookupError: ``tx_id`` does not exist in this household.
             TransactionNotEditableError: transaction is not PENDING.
+            MasterKeyRequiredError: notes is a string but no master_key.
 
         """
         existing = self.get(tx_id)
@@ -381,13 +544,24 @@ class TransactionRepository:
                 f"transaction {tx_id} is {existing.status.value}; "
                 "only PENDING transactions may be edited (use void otherwise)"
             )
+        header_values: dict[str, object] = {
+            "date": date,
+            "description": description,
+            "reference": reference,
+        }
+        if not isinstance(notes, _Unset):
+            if notes is None:
+                header_values["notes_encrypted"] = None
+            else:
+                key = self._require_master_key()
+                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
         self._session.execute(
             update(Transaction)
             .where(
                 Transaction.household_id == self._household_id,
                 Transaction.id == tx_id,
             )
-            .values(date=date, description=description, reference=reference)
+            .values(**header_values)
         )
         # Replace postings wholesale: simpler than diff-merge and the trigger
         # is a no-op on PENDING transactions.
@@ -417,6 +591,94 @@ class TransactionRepository:
         refreshed = self._session.get(Transaction, (self._household_id, tx_id))
         assert refreshed is not None  # noqa: S101 - existence verified above
         return refreshed
+
+    def rectify_posted(
+        self,
+        tx_id: UUID,
+        *,
+        description: str | _Unset = UNSET,
+        reference: str | None | _Unset = UNSET,
+        notes: str | None | _Unset = UNSET,
+    ) -> tuple[Transaction, UUID | None]:
+        """Rectify a POSTED / RECONCILED transaction's header fields (#242).
+
+        Mutates ``description`` / ``reference`` / ``notes_encrypted`` on the
+        row in place — postings, status, and date are untouched. Each field
+        follows PATCH semantics via the ``UNSET`` sentinel.
+
+        When the source has a paired reversal (``voided_by_transaction_id``)
+        and the reversal's description still matches the canonical
+        ``f"Reversal of {old_description}: "`` prefix the void route writes,
+        the reversal's description is rewritten in place so the old
+        description doesn't survive at rest in the reversal row. The
+        returned UUID is the reversal that was rewritten (or ``None`` when
+        no rewrite was applicable).
+
+        Raises:
+            LookupError: ``tx_id`` does not exist in this household.
+            TransactionNotRectifiableError: row is PENDING.
+            MasterKeyRequiredError: notes is a non-None string but no master_key.
+
+        """
+        existing = self.get(tx_id)
+        if existing is None:
+            raise LookupError(f"transaction {tx_id} not found in household {self._household_id}")
+        if existing.status not in _LEDGER_STATUSES:
+            raise TransactionNotRectifiableError(
+                f"transaction {tx_id} is {existing.status.value}; "
+                "only POSTED / RECONCILED transactions can be rectified"
+            )
+
+        old_description = existing.description
+        header_values: dict[str, object] = {}
+        if not isinstance(description, _Unset):
+            header_values["description"] = description
+        if not isinstance(reference, _Unset):
+            header_values["reference"] = reference
+        if not isinstance(notes, _Unset):
+            if notes is None:
+                header_values["notes_encrypted"] = None
+            else:
+                key = self._require_master_key()
+                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
+
+        if header_values:
+            self._session.execute(
+                update(Transaction)
+                .where(
+                    Transaction.household_id == self._household_id,
+                    Transaction.id == tx_id,
+                )
+                .values(**header_values)
+            )
+
+        reversal_id_rewritten: UUID | None = None
+        if not isinstance(description, _Unset) and existing.voided_by_transaction_id is not None:
+            # The void route at transactions.py:353 builds the reversal
+            # description as ``f"Reversal of {source.description}: {reason}"``.
+            # If that prefix still matches, rewrite it so the source's
+            # pre-rectification description doesn't survive at rest.
+            reversal_id = existing.voided_by_transaction_id
+            reversal = self._session.get(Transaction, (self._household_id, reversal_id))
+            if reversal is not None:
+                prefix = f"Reversal of {old_description}: "
+                if reversal.description.startswith(prefix):
+                    suffix = reversal.description[len(prefix) :]
+                    new_reversal_description = f"Reversal of [redacted]: {suffix}"
+                    self._session.execute(
+                        update(Transaction)
+                        .where(
+                            Transaction.household_id == self._household_id,
+                            Transaction.id == reversal_id,
+                        )
+                        .values(description=new_reversal_description)
+                    )
+                    reversal_id_rewritten = reversal_id
+
+        self._session.flush()
+        refreshed = self._session.get(Transaction, (self._household_id, tx_id))
+        assert refreshed is not None  # noqa: S101 - existence verified above
+        return refreshed, reversal_id_rewritten
 
     def _force_post_unbalanced_for_test(self, domain_tx: DomainTransaction) -> Transaction:
         """Force-post a (potentially unbalanced) Domain Transaction.

@@ -92,3 +92,22 @@ class AccountRepository:
         a.is_active = False
         self._session.flush()
         return a
+
+    def redact(self, account_id: UUID, *, name: str) -> Account:
+        """Null an account's PII columns; replace ``name`` with a placeholder.
+
+        Erases ``name`` (to the caller-supplied non-PII placeholder),
+        ``external_account_number_encrypted`` and ``notes_encrypted``.
+        Postings keep their FK and amounts — ledger history is preserved.
+        The caller (the API redact endpoint) enforces the precondition
+        that the account is already deactivated. Raises ``LookupError``
+        if the account is missing.
+        """
+        a = self.get(account_id)
+        if a is None:
+            raise LookupError(f"account {account_id} not found in household {self._household_id}")
+        a.name = name
+        a.external_account_number_encrypted = None
+        a.notes_encrypted = None
+        self._session.flush()
+        return a

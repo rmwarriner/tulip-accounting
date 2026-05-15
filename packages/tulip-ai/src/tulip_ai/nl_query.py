@@ -225,13 +225,18 @@ class AINLQueryCapability:
         actor_user_id: UUID | None,
         api_key: str | None,
     ) -> NLAnswer:
-        from tulip_storage.models import Household
+        from tulip_storage.models import Household, User
 
         with self._session_maker() as session:
             household = session.get(Household, household_id)
             if household is None:
                 return NLAnswer(summary="", rows=[], sql=None, error="household not found")
-            policy = resolve_policy(household.ai_policy, None, "nl_query")
+            user_policy: dict[str, object] | None = None
+            if actor_user_id is not None:
+                user = session.get(User, (household_id, actor_user_id))
+                if user is not None:
+                    user_policy = user.ai_policy
+            policy = resolve_policy(household.ai_policy, user_policy, "nl_query")
             writer = AIInvocationWriter(session)
 
             if policy.level == "disabled":
@@ -266,7 +271,10 @@ class AINLQueryCapability:
                         outcome="provider_error",
                         prompt_hash=hash_prompt_payload({"question": question}),
                         actor_user_id=actor_user_id,
-                        response_text="no api key configured for provider",
+                        # H-1 (#234): gate error-path response_text on log_prompts.
+                        response_text=(
+                            "no api key configured for provider" if policy.log_prompts else None
+                        ),
                     )
                 )
                 session.commit()
@@ -301,7 +309,7 @@ class AINLQueryCapability:
                         outcome=gate.outcome,
                         prompt_hash=hash_prompt_payload({"question": question}),
                         actor_user_id=actor_user_id,
-                        response_text=gate.reason[:500],
+                        response_text=gate.reason[:500] if policy.log_prompts else None,
                     )
                 )
                 session.commit()
@@ -336,7 +344,7 @@ class AINLQueryCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload({"turn": 1, "question": question}),
-                response_text=str(exc)[:500],
+                response_text=str(exc)[:500] if policy.log_prompts else None,
             )
             return NLAnswer(
                 summary="", rows=[], sql=None, error=f"Provider error on SQL turn: {exc}"
@@ -361,7 +369,7 @@ class AINLQueryCapability:
                 prompt_hash=hash_prompt_payload(
                     {"turn": 1, "question": question, "sql": emitted_sql}
                 ),
-                response_text=f"unsafe_sql: {exc}",
+                response_text=f"unsafe_sql: {exc}" if policy.log_prompts else None,
             )
             return NLAnswer(
                 summary="",
@@ -416,7 +424,7 @@ class AINLQueryCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload({"turn": 2, "rows_count": len(redacted)}),
-                response_text=str(exc)[:500],
+                response_text=str(exc)[:500] if policy.log_prompts else None,
             )
             return NLAnswer(
                 summary="",

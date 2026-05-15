@@ -84,6 +84,80 @@ class TestProviderInheritance:
         assert r.model == "llama3:70b"
 
 
+class TestLocalOnlyLock:
+    """C-1 (#233): profile=local_only must never resolve to a cloud provider.
+
+    ADR-0005 §Q4 locks this; the previous resolver inherited ``provider``
+    from ``fallback_provider`` unconditionally, which silently routed a
+    privacy-conscious household to whatever cloud they had configured as
+    their cost-cap degrade target.
+    """
+
+    def test_cloud_fallback_provider_is_overridden(self) -> None:
+        # Regression test for the bug fixed in #233.
+        h = {
+            "default_provider": "anthropic",
+            "fallback_provider": "openai",
+            "fallback_model": "gpt-5",
+            "profile": "local_only",
+        }
+        r = resolve_policy(h, None, "categorize")
+        assert r.provider == "ollama"
+
+    def test_unset_fallback_resolves_to_ollama(self) -> None:
+        h = {"default_provider": "anthropic", "profile": "local_only"}
+        r = resolve_policy(h, None, "categorize")
+        assert r.provider == "ollama"
+
+    def test_capability_provider_override_does_not_escape_lock(self) -> None:
+        # Per-capability provider override is also subject to the lock.
+        h = {
+            "profile": "local_only",
+            "capabilities": {"categorize": {"provider": "openai", "model": "gpt-5"}},
+        }
+        r = resolve_policy(h, None, "categorize")
+        assert r.provider == "ollama"
+
+    def test_fallback_model_preserved_for_local_use(self) -> None:
+        # fallback_model continues to act as the "local model" hint
+        # (matches existing test_local_only_profile_forces_ollama).
+        h = {
+            "profile": "local_only",
+            "fallback_provider": "openai",  # cloud — ignored
+            "fallback_model": "llama3:70b",
+        }
+        r = resolve_policy(h, None, "categorize")
+        assert r.provider == "ollama"
+        assert r.model == "llama3:70b"
+
+
+class TestLocalOnlyLockProperty:
+    """Property: profile=local_only ⇒ resolved provider is in the local allowlist."""
+
+    def test_local_only_resolves_to_local_for_any_provider_config(self) -> None:
+        from tulip_ai.policy import _LOCAL_PROVIDERS
+
+        # Hand-rolled instead of hypothesis to keep the suite snappy; we
+        # cover the full cartesian product of the inputs that mattered
+        # for the bug.
+        candidates = [None, "anthropic", "openai", "ollama", "google", ""]
+        for default in candidates:
+            for fallback in candidates:
+                for cap in candidates:
+                    h: dict[str, object] = {"profile": "local_only"}
+                    if default is not None:
+                        h["default_provider"] = default
+                    if fallback is not None:
+                        h["fallback_provider"] = fallback
+                    if cap is not None:
+                        h["capabilities"] = {"categorize": {"provider": cap}}
+                    r = resolve_policy(h, None, "categorize")
+                    assert r.provider in _LOCAL_PROVIDERS, (
+                        f"local_only lock broken: default={default!r} "
+                        f"fallback={fallback!r} cap={cap!r} → {r.provider!r}"
+                    )
+
+
 class TestCostCap:
     def test_cap_parsed_as_decimal(self) -> None:
         h = {"monthly_cost_cap_usd": "10.00"}

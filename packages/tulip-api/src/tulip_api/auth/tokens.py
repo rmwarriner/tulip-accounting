@@ -12,7 +12,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
 from jwt.exceptions import InvalidTokenError as PyJwtInvalidTokenError
@@ -105,6 +105,7 @@ class MfaChallengeClaims:
 
     user_id: UUID
     household_id: UUID
+    jti: UUID
     issued_at: datetime
     expires_at: datetime
 
@@ -119,7 +120,9 @@ def create_mfa_challenge_token(
     """Mint a short-lived JWT that authorizes a single MFA-step-2 attempt.
 
     Carries ``purpose: "mfa_challenge"`` so an access token cannot be used
-    in its place (and vice versa). Stateless — bound only by TTL.
+    in its place (and vice versa). ``jti`` is a fresh UUIDv4 the caller
+    must persist on first use so that replay attempts (e.g. the second
+    half of a stolen request log) are rejected — see M-7 in #219.
     """
     now = datetime.now(tz=UTC)
     exp = now + ttl
@@ -128,6 +131,7 @@ def create_mfa_challenge_token(
         "sub": str(user_id),
         "household_id": str(household_id),
         "purpose": PURPOSE_MFA_CHALLENGE,
+        "jti": str(uuid4()),
         "iat": int(now.timestamp()),
         "exp": int(exp.timestamp()),
     }
@@ -138,8 +142,10 @@ def verify_mfa_challenge_token(token: str, *, secret: str) -> MfaChallengeClaims
     """Verify an MFA-challenge JWT.
 
     Raises :class:`InvalidTokenError` on signature mismatch, expiry,
-    issuer mismatch, or — critically — wrong ``purpose``. An access
-    token submitted here is rejected.
+    issuer mismatch, malformed ``jti``, or — critically — wrong
+    ``purpose``. An access token submitted here is rejected. Single-use
+    enforcement (rejecting the same ``jti`` twice) is the caller's
+    responsibility; this function only parses + signature-checks.
     """
     try:
         payload = jwt.decode(
@@ -147,15 +153,20 @@ def verify_mfa_challenge_token(token: str, *, secret: str) -> MfaChallengeClaims
             secret,
             algorithms=[JWT_ALGORITHM],
             issuer=ISSUER,
-            options={"require": ["sub", "household_id", "purpose", "iat", "exp"]},
+            options={"require": ["sub", "household_id", "purpose", "jti", "iat", "exp"]},
         )
     except PyJwtInvalidTokenError as exc:
         raise InvalidTokenError(str(exc)) from exc
     if payload.get("purpose") != PURPOSE_MFA_CHALLENGE:
         raise InvalidTokenError("token is not an MFA challenge")
+    try:
+        jti = UUID(payload["jti"])
+    except (TypeError, ValueError) as exc:
+        raise InvalidTokenError("jti is not a valid UUID") from exc
     return MfaChallengeClaims(
         user_id=UUID(payload["sub"]),
         household_id=UUID(payload["household_id"]),
+        jti=jti,
         issued_at=datetime.fromtimestamp(payload["iat"], tz=UTC),
         expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
     )

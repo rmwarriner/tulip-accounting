@@ -40,8 +40,15 @@ from tulip_api.main import create_app
 # basic contract (status code in declared set, body conforms to schema)
 # still gets exercised.
 _SUPPRESSED = [HealthCheck.filter_too_much, HealthCheck.data_too_large]
+# 10 examples per endpoint x ~80 endpoints = ~800 fuzz iterations per CI run.
+# Per ADR-0006, schemathesis was the dominant cost in the tulip-api shard
+# under the option 3 matrix (9:10 of a 10-min CI wall-clock). Dropping from
+# 25 → 10 examples cuts schemathesis time by ~60% with diminishing returns
+# beyond ~10 examples per endpoint on the kinds of bugs hypothesis catches
+# at this layer (status-code-in-declared-set + body-conforms-to-schema).
+# The "thorough" profile (max_examples=200) remains for ad-hoc deeper runs.
 hyp_settings.register_profile(
-    "ci", max_examples=25, deadline=None, suppress_health_check=_SUPPRESSED
+    "ci", max_examples=10, deadline=None, suppress_health_check=_SUPPRESSED
 )
 hyp_settings.register_profile(
     "thorough", max_examples=200, deadline=None, suppress_health_check=_SUPPRESSED
@@ -121,6 +128,23 @@ _APP = _build_app()
 _SCHEMA = schemathesis.openapi.from_asgi("/openapi.json", _APP)
 
 
+@pytest.fixture(autouse=True)
+def _disable_auth_rate_limit_for_schemathesis():  # type: ignore[no-untyped-def]
+    # H-4 (#219): each parametrized schemathesis case can fire dozens of
+    # requests against the same endpoint within one pytest test, easily
+    # exceeding the 10/min /v1/auth/* limit. The contract test's brief is
+    # schema conformance, not the limiter — so we disable the gate for
+    # the duration of each case.
+    from tulip_api.auth.rate_limit import limiter as _auth_limiter
+
+    previous = _auth_limiter.enabled
+    _auth_limiter.enabled = False
+    try:
+        yield
+    finally:
+        _auth_limiter.enabled = previous
+
+
 @_SCHEMA.parametrize()
 def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     """Every documented operation: response shape matches the OpenAPI spec.
@@ -137,17 +161,38 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     undocumented response, or the documented schema doesn't actually
     describe what comes back. Both are real bugs.
     """
-    # Path-collision skip (P5.2.c): POST /v1/imports/profiles/import is a
-    # static path; the sibling PATCH/DELETE/GET on /v1/imports/profiles/{id_or_name}
-    # also matches "import" as a path-param value. Schemathesis fuzzes
-    # PATCH /v1/imports/profiles/import expecting 405 (since the spec
-    # only documents POST), but it routes to update_profile(id_or_name="import")
-    # and returns 401 (auth) or 404 (no such profile). The collision is
-    # harmless — `import` would be a confusing profile name regardless —
-    # but schemathesis flags it. Skip non-POST methods on the static path.
-    if str(case.path) == "/v1/imports/profiles/import" and case.method.upper() != "POST":
+    # Path-collision skip: a static path segment is syntactically a valid
+    # value for a parameterised sibling, so FastAPI routes an
+    # undocumented-method probe to that sibling instead of returning 405,
+    # and schemathesis can't tell the difference. Examples:
+    #   - GET /v1/imports/multi-account → routes to GET /v1/imports/{batch_id}
+    #     (`multi-account` is a valid {batch_id}) → 401 on auth, not 405.
+    #   - DELETE /v1/ai/proposals/kinds → routes to DELETE
+    #     /v1/ai/proposals/{proposal_id} (#240) → 422 (bad UUID), not 405.
+    #   - DELETE /v1/users/me → routes to DELETE /v1/users/{user_id} (#242)
+    #     → 401, not 405.
+    #   - POST /v1/ai/keys/me → routes to POST /v1/ai/keys/{provider} (#239)
+    #     where ``me`` is a valid {provider} → 401, not 405.
+    # Each collision is harmless. Map every shadowed static path to the one
+    # method it actually documents; skip schemathesis cases targeting the
+    # other methods, and (for the documented method's own case) exclude
+    # the unsupported-method check so the probe-driven 405 expectation
+    # doesn't false-positive on the parametric sibling's response.
+    _SHADOWED_STATIC_PATHS = {
+        "/v1/imports/profiles/import": "POST",
+        "/v1/imports/multi-account": "POST",
+        "/v1/ai/proposals/kinds": "GET",
+        "/v1/users/me": "PATCH",
+        "/v1/ai/keys/me": "GET",
+    }
+    documented_method = _SHADOWED_STATIC_PATHS.get(str(case.path))
+    if documented_method is not None and case.method.upper() != documented_method:
         pytest.skip(
-            "path-collision: PATCH/DELETE on /import routes to /{id_or_name}; "
-            "harmless — see comment."
+            "path-collision: an undocumented method on a static path routes to "
+            "a parameterised sibling; harmless — see comment."
         )
-    case.call_and_validate()
+
+    from schemathesis.specs.openapi.checks import unsupported_method
+
+    excluded = [unsupported_method] if documented_method is not None else None
+    case.call_and_validate(excluded_checks=excluded)

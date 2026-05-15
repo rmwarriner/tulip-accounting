@@ -107,7 +107,6 @@ def setup(session_maker):
             imported_count=0,
             skipped_count=0,
             error_count=0,
-            summary_json={},
             created_at=datetime.now(UTC),
         )
         s.add(batch)
@@ -264,7 +263,9 @@ class TestPromoteStatementLine:
     @pytest.mark.asyncio
     async def test_unknown_categorizer_account_raises(self, session_maker, setup):
         class _BadCategorizer:
-            async def categorize(self, line, household_context) -> CategorizationResult:
+            async def categorize(
+                self, line, household_context, *, session=None
+            ) -> CategorizationResult:
                 return CategorizationResult(account_code="DoesNotExist", confidence=0.5)
 
         with session_maker() as s:
@@ -279,6 +280,91 @@ class TestPromoteStatementLine:
                     categorizer=_BadCategorizer(),
                     actor_user_id=None,
                 )
+
+    @pytest.mark.asyncio
+    async def test_no_categorize_skips_categorizer_and_auto_creates_imbalance(
+        self, session_maker, setup
+    ):
+        """Slice B: ``no_categorize=True`` bypasses the categorizer entirely
+        and routes every line to an auto-created ``Imbalance:Unknown``
+        account (code ``9999.<currency>``) for the bank account's currency.
+
+        The categorizer used here would raise if called; the test asserts
+        ``no_categorize=True`` short-circuits before invocation.
+        """
+
+        class _ExplodingCategorizer:
+            async def categorize(
+                self, line, household_context, *, session=None
+            ) -> CategorizationResult:
+                raise AssertionError("categorizer must not be invoked when no_categorize=True")
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=_ExplodingCategorizer(),
+                actor_user_id=None,
+                no_categorize=True,
+            )
+            s.commit()
+
+            # Auto-created Imbalance:Unknown for USD is the other-side account.
+            other_account = AccountRepository(s, setup["household_id"]).get_by_code("9999.USD")
+            assert other_account is not None
+            assert other_account.name == "Imbalance:Unknown"
+            assert other_account.type == AccountType.EQUITY
+            assert other_account.currency == "USD"
+
+            postings = s.query(Posting).filter_by(transaction_id=tx.id).all()
+            other_ids = {p.account_id for p in postings} - {setup["cash_id"]}
+            assert other_ids == {other_account.id}
+
+    @pytest.mark.asyncio
+    async def test_as_posted_creates_posted_transaction(self, session_maker, setup):
+        """Issue #210: ``as_posted=True`` flips the new tx to POSTED instead of PENDING.
+
+        The two postings (bank-side + categorizer/imbalance-side) already
+        sum to zero per currency, so the POSTED balance invariant holds.
+        """
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+                as_posted=True,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.POSTED
+            # Postings still balance.
+            postings = s.query(Posting).filter_by(transaction_id=tx.id).all()
+            assert sum(p.amount for p in postings) == Decimal("0")
+
+    @pytest.mark.asyncio
+    async def test_default_is_pending(self, session_maker, setup):
+        """Default behavior (no ``as_posted``) preserves the existing PENDING contract."""
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.PENDING
 
 
 # ---- apply_batch ----------------------------------------------------------
@@ -370,6 +456,45 @@ class TestApplyBatch:
                     categorizer=NullCategorizer(),
                     actor_user_id=None,
                 )
+
+    @pytest.mark.asyncio
+    async def test_as_posted_creates_all_posted_transactions(self, session_maker, setup):
+        """Issue #210: ``as_posted=True`` on apply_batch lands every line as POSTED."""
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            result = await apply_batch(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+                as_posted=True,
+            )
+            s.commit()
+            assert result.created_count == 3
+            from tulip_storage.models import Transaction
+
+            txs = s.query(Transaction).filter(Transaction.id.in_(result.transaction_ids)).all()
+            assert len(txs) == 3
+            assert {tx.status for tx in txs} == {TransactionStatus.POSTED}
+
+    @pytest.mark.asyncio
+    async def test_default_apply_batch_creates_pending(self, session_maker, setup):
+        """Default ``apply_batch`` (no flag) still produces PENDING transactions."""
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            result = await apply_batch(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            from tulip_storage.models import Transaction
+
+            txs = s.query(Transaction).filter(Transaction.id.in_(result.transaction_ids)).all()
+            assert {tx.status for tx in txs} == {TransactionStatus.PENDING}
 
     @pytest.mark.asyncio
     async def test_all_lines_excluded_is_no_op_but_flips_status(self, session_maker, setup):

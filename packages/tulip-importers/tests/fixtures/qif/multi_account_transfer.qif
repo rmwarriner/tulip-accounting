@@ -1,0 +1,29 @@
+!Account
+NChecking
+TBank
+^
+!Type:Bank
+D1/2/26
+T-58.99
+PCenterPoint Energy
+MGas bill
+^
+D1/10/26
+T-200.00
+PTransfer to savings
+L[Savings]
+^
+!Account
+NSavings
+TBank
+^
+!Type:Bank
+D1/10/26
+T200.00
+PTransfer from checking
+L[Checking]
+^
+D1/15/26
+T50.00
+PMonthly interest
+^

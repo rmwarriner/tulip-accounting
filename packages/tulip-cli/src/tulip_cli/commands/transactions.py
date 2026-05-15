@@ -32,9 +32,11 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
+from tulip_cli._picker import is_interactive, pick
+from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands._editor import edit_buffer
 from tulip_cli.commands._ledger import LedgerParseError, parse_ledger_text
@@ -102,14 +104,16 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
 
 
 def _render_transaction(body: dict[str, Any]) -> None:
+    from tulip_cli._money_format import format_amount
+
     typer.echo(f"Created transaction {body.get('id', '')}")
     typer.echo(f"  date:        {body.get('date', '')}")
     typer.echo(f"  description: {body.get('description', '')}")
     typer.echo(f"  status:      {body.get('status', '')}")
     typer.echo("  postings:")
     for p in body.get("postings", []):
-        amount = p.get("amount", "")
         currency = p.get("currency", "")
+        amount = format_amount(p.get("amount"), currency)
         account = p.get("account_id", "")
         typer.echo(f"    {account}: {amount} {currency}")
 
@@ -384,8 +388,111 @@ def _resolve_account_id_for_filter(client: TulipClient, identifier: str) -> str:
     return str(resolved["id"])
 
 
-def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
+_HEX_PREFIX_CHARS = frozenset("0123456789abcdefABCDEF-")
+
+
+def _resolve_tx_id(client: TulipClient, identifier: str, *, as_json: bool) -> UUID:
+    """Resolve a TXID argument to a full UUID.
+
+    Fast path: a valid UUID string is returned unchanged with no API
+    call. Otherwise the identifier is treated as a hex prefix and
+    looked up via ``GET /v1/transactions?id_prefix=…``. Zero matches
+    raises ``transaction.not_found``; multiple matches raises
+    ``transaction.ambiguous_id_prefix`` with a sample so the user
+    can lengthen the prefix.
+    """
+    try:
+        return UUID(identifier)
+    except ValueError:
+        pass
+    if not identifier or not all(c in _HEX_PREFIX_CHARS for c in identifier):
+        raise typer.BadParameter("TXID must be a UUID or hex prefix (0-9, a-f, -)")
+    response = client.get(
+        "/v1/transactions",
+        authenticated=True,
+        params={"id_prefix": identifier},
+    )
+    rows = response.json()
+    if len(rows) == 0:
+        raise CliError(
+            problem={
+                "type": "/.well-known/errors/transaction.not_found",
+                "title": "No transaction matches that id prefix",
+                "status": 404,
+                "detail": f"No transaction's id begins with {identifier!r}.",
+                "code": "transaction.not_found",
+            },
+            as_json=as_json,
+        )
+    if len(rows) > 1:
+        sample = ", ".join(str(r["id"])[:12] for r in rows[:5])
+        raise CliError(
+            problem={
+                "type": "/.well-known/errors/transaction.ambiguous_id_prefix",
+                "title": "Ambiguous transaction id prefix",
+                "status": 400,
+                "detail": (
+                    f"Prefix {identifier!r} matched {len(rows)} transactions "
+                    f"(e.g. {sample}). Use more characters."
+                ),
+                "code": "transaction.ambiguous_id_prefix",
+            },
+            as_json=as_json,
+        )
+    return UUID(str(rows[0]["id"]))
+
+
+def _format_account_label(
+    accounts_by_id: dict[str, dict[str, Any]],
+    account_id: str,
+) -> str:
+    """Render a human-readable label for a posting's ``account_id`` (#214).
+
+    Preferred form is ``<code>:<name>`` when both are set
+    (e.g. ``5100:Groceries`` or ``expenses:rent:Rent``). When the account
+    has no code we fall back to ``<name>``. An ``account_id`` that isn't
+    in ``accounts_by_id`` (an orphaned posting — shouldn't happen, but
+    the issue calls it out as a graceful-degrade requirement) renders
+    as the raw UUID string so the row is still printable.
+    """
+    account = accounts_by_id.get(account_id)
+    if account is None:
+        return account_id
+    code = account.get("code")
+    name = account.get("name")
+    if code and name:
+        return f"{code}:{name}"
+    if name:
+        return str(name)
+    return account_id
+
+
+def _load_accounts_by_id(client: TulipClient) -> dict[str, dict[str, Any]]:
+    """Fetch ``/v1/accounts`` once and key it by ``id`` for label resolution.
+
+    The accounts list per household is small (dozens, not thousands), so
+    one round-trip per command beats N+1 ``/v1/accounts/{id}`` lookups
+    while rendering a multi-row table. Failures are non-fatal: an empty
+    map causes :func:`_format_account_label` to fall through to the raw
+    UUID, which preserves today's behaviour rather than aborting the
+    render.
+    """
+    try:
+        response = client.get("/v1/accounts", authenticated=True)
+    except CliError:
+        return {}
+    rows = response.json()
+    return {str(a["id"]): a for a in rows if "id" in a}
+
+
+def _render_tx_list_table(
+    rows: list[dict[str, Any]],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    from tulip_cli._money_format import format_amount
+
     table = Table(show_header=True, show_lines=False)
+    table.add_column("id")
     table.add_column("date")
     table.add_column("description")
     table.add_column("reference")
@@ -395,42 +502,56 @@ def _render_tx_list_table(rows: list[dict[str, Any]]) -> None:
         postings = row.get("postings") or []
         summary_parts = []
         for p in postings:
-            amount = p.get("amount", "")
             currency = p.get("currency", "")
-            account = p.get("account_id", "")
-            short = str(account)[:8] if account else "—"
-            summary_parts.append(f"{short} {amount} {currency}")
+            amount = format_amount(p.get("amount"), currency)
+            label = _format_account_label(accounts_by_id, str(p.get("account_id", "")))
+            summary_parts.append(f"{label} {amount} {currency}")
         summary = "\n".join(summary_parts)
+        tx_id = row.get("id") or ""
         table.add_row(
+            str(tx_id)[:8] if tx_id else "—",
             str(row.get("date") or ""),
             row.get("description") or "",
             row.get("reference") or "—",
             row.get("status") or "",
             summary,
         )
-    Console().print(table)
+    make_console().print(table)
 
 
-def _render_tx_detail(tx: dict[str, Any]) -> None:
+def _render_tx_detail(
+    tx: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    from tulip_cli._money_format import format_amount
+
     typer.echo(f"id:           {tx.get('id', '')}")
     typer.echo(f"date:         {tx.get('date', '')}")
     typer.echo(f"description:  {tx.get('description', '')}")
     typer.echo(f"reference:    {tx.get('reference') or '—'}")
     typer.echo(f"status:       {tx.get('status', '')}")
+    notes = tx.get("notes")
+    if notes:
+        # Indent multi-line notes so the "Notes:" header is unambiguous.
+        first, *rest = str(notes).splitlines() or [""]
+        typer.echo(f"Notes:        {first}")
+        for line in rest:
+            typer.echo(f"              {line}")
     typer.echo("postings:")
     table = Table(show_header=True, show_lines=False)
-    table.add_column("account_id")
-    table.add_column("amount", justify="right")
+    table.add_column("account")
+    add_numeric_column(table, "amount")
     table.add_column("currency")
     table.add_column("memo")
     for p in tx.get("postings") or []:
+        currency = str(p.get("currency", ""))
         table.add_row(
-            str(p.get("account_id", "")),
-            str(p.get("amount", "")),
-            str(p.get("currency", "")),
+            _format_account_label(accounts_by_id, str(p.get("account_id", ""))),
+            format_amount(p.get("amount"), currency),
+            currency,
             str(p.get("memo") or ""),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @transactions_app.command("list")
@@ -502,6 +623,14 @@ def list_transactions(
             if limit is not None:
                 params["limit"] = str(limit)
             response = client.get("/v1/transactions", authenticated=True, params=params)
+            # Resolve account UUIDs → human labels once per render (#214).
+            # Loaded inside the `_client` context so it shares the HTTP
+            # client and token handling; only fetched when we actually
+            # need to render a table.
+            if as_json:
+                accounts_by_id: dict[str, dict[str, Any]] = {}
+            else:
+                accounts_by_id = _load_accounts_by_id(client)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -514,32 +643,95 @@ def list_transactions(
     if not rows:
         typer.echo("No transactions match.")
         return
-    _render_tx_list_table(rows)
+    _render_tx_list_table(rows, accounts_by_id)
+
+
+def _format_tx_picker_label(item: dict[str, Any]) -> str:
+    """One-line label for a transaction row in the picker."""
+    tx_id = str(item.get("id") or "")
+    date = str(item.get("date") or "")
+    desc = str(item.get("description") or "")
+    if len(desc) > 48:
+        desc = desc[:45] + "..."
+    status = str(item.get("status") or "")
+    return f"{tx_id[:8] if tx_id else '—'}  {date}  {status:<10}  {desc}"
+
+
+def _pick_tx_id(config: Config, *, as_json: bool) -> str | None:
+    """Fetch recent transactions and prompt the user to pick one.
+
+    Returns the picked UUID string, or ``None`` when suppressed
+    (``--json`` / non-TTY) or the user cancels.
+    """
+    if as_json or not is_interactive():
+        typer.echo(
+            "Missing argument TXID. Run `tulip transactions list` to find "
+            "a transaction, then re-run with its id or prefix.",
+            err=True,
+        )
+        return None
+    try:
+        with _client(config, as_json=as_json) as client:
+            # 20 is the picker cap; ask the API for exactly that.
+            response = client.get(
+                "/v1/transactions",
+                authenticated=True,
+                params={"limit": "20"},
+            )
+    except CliError as err:
+        err.render()
+        return None
+    rows = response.json()
+    return pick(
+        rows,
+        label=_format_tx_picker_label,
+        title="Pick a recent transaction:",
+        empty_message=(
+            "No transactions yet. Use `tulip add` to create one or "
+            "`tulip imports apply` to land an imported batch."
+        ),
+        overflow_hint=(
+            "  …showing 20 most recent; narrow with "
+            "`tulip transactions list --account <id> --from <date>`."
+        ),
+    )
 
 
 @transactions_app.command("show")
 def show_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Transaction UUID.",
+            help=(
+                "Transaction UUID or unambiguous hex prefix. Omit to pick "
+                "interactively from recent transactions (TTY only — scripts "
+                "still get the usage error)."
+            ),
             metavar="TXID",
         ),
-    ],
+    ] = None,
 ) -> None:
-    """Show one transaction (header + postings) by UUID."""
+    """Show one transaction (header + postings) by UUID or prefix."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
+    if tx_id is None:
+        tx_id = _pick_tx_id(config, as_json=as_json)
+        if tx_id is None:
+            raise typer.Exit(2)
 
     try:
         with _client(config, as_json=as_json) as client:
-            response = client.get(f"/v1/transactions/{tx_id}", authenticated=True)
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            response = client.get(f"/v1/transactions/{resolved}", authenticated=True)
+            # Resolve account UUIDs → human labels (#214). ``--json`` mode
+            # skips the extra round-trip since it just re-emits the API
+            # body verbatim.
+            if as_json:
+                accounts_by_id: dict[str, dict[str, Any]] = {}
+            else:
+                accounts_by_id = _load_accounts_by_id(client)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -547,7 +739,7 @@ def show_transaction(
     if as_json:
         sys.stdout.write(response.text + "\n")
         return
-    _render_tx_detail(response.json())
+    _render_tx_detail(response.json(), accounts_by_id)
 
 
 @transactions_app.command("void")
@@ -555,7 +747,10 @@ def void_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to void.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to void.",
+            metavar="TXID",
+        ),
     ],
     reason: Annotated[
         str,
@@ -588,22 +783,8 @@ def void_transaction(
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
     if reversal_date is not None:
         _validate_iso_date(reversal_date, flag="--date")
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"Void transaction {tx_id}? This posts a reversal sibling.",
-            default=False,
-        )
-        if not confirmed:
-            typer.echo("Aborted; no changes made.")
-            return
 
     body: dict[str, Any] = {"reason": reason}
     if reversal_date is not None:
@@ -611,8 +792,17 @@ def void_transaction(
 
     try:
         with _client(config, as_json=as_json) as client:
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            if not yes:
+                confirmed = typer.confirm(
+                    f"Void transaction {resolved}? This posts a reversal sibling.",
+                    default=False,
+                )
+                if not confirmed:
+                    typer.echo("Aborted; no changes made.")
+                    return
             response = client.post(
-                f"/v1/transactions/{tx_id}/void",
+                f"/v1/transactions/{resolved}/void",
                 json=body,
                 authenticated=True,
             )
@@ -634,7 +824,10 @@ def delete_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to delete.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to delete.",
+            metavar="TXID",
+        ),
     ],
     yes: Annotated[
         bool,
@@ -650,30 +843,26 @@ def delete_transaction(
     as_json: bool = ctx.obj["json"]
 
     try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
-    if not yes:
-        confirmed = typer.confirm(
-            f"Hard-delete transaction {tx_id}? Only PENDING transactions can be deleted.",
-            default=False,
-        )
-        if not confirmed:
-            typer.echo("Aborted; no changes made.")
-            return
-
-    try:
         with _client(config, as_json=as_json) as client:
-            client.delete(f"/v1/transactions/{tx_id}", authenticated=True)
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            if not yes:
+                confirmed = typer.confirm(
+                    f"Hard-delete transaction {resolved}? "
+                    "Only PENDING transactions can be deleted.",
+                    default=False,
+                )
+                if not confirmed:
+                    typer.echo("Aborted; no changes made.")
+                    return
+            client.delete(f"/v1/transactions/{resolved}", authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
     if as_json:
-        sys.stdout.write('{"deleted": "' + tx_id + '"}\n')
+        sys.stdout.write('{"deleted": "' + str(resolved) + '"}\n')
         return
-    typer.echo(f"Deleted transaction {tx_id}.")
+    typer.echo(f"Deleted transaction {resolved}.")
 
 
 @transactions_app.command("edit")
@@ -681,7 +870,10 @@ def edit_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
         str,
-        typer.Argument(help="Transaction UUID to edit.", metavar="TXID"),
+        typer.Argument(
+            help="Transaction UUID or unambiguous hex prefix to edit.",
+            metavar="TXID",
+        ),
     ],
 ) -> None:
     """Edit a PENDING transaction in ``$EDITOR`` (hledger format).
@@ -692,16 +884,12 @@ def edit_transaction(
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    try:
-        UUID(tx_id)
-    except ValueError as exc:
-        raise typer.BadParameter("TXID must be a UUID") from exc
-
     # Pre-flight: load the existing transaction so we can render it into the
     # editor buffer and reject early when it's not PENDING.
     try:
         with _client(config, as_json=as_json) as client:
-            current = client.get(f"/v1/transactions/{tx_id}", authenticated=True).json()
+            resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
+            current = client.get(f"/v1/transactions/{resolved}", authenticated=True).json()
             if current.get("status") != "pending":
                 from tulip_cli.errors import CliError as _CliError
 
@@ -727,23 +915,27 @@ def edit_transaction(
                 if _looks_empty(edited):
                     typer.echo("No changes saved (empty buffer).")
                     return
+                stripped, notes_value = _extract_notes_block(edited)
                 try:
-                    parsed = parse_ledger_text(edited)
+                    parsed = parse_ledger_text(stripped)
                 except LedgerParseError as exc:
                     buffer = _with_banner(edited, str(exc))
                     continue
                 try:
-                    resolved = _resolve_postings(
+                    resolved_postings = _resolve_postings(
                         client,
                         [ParsedPosting(p.account, p.amount, p.currency) for p in parsed.postings],
                     )
-                    body = {
+                    body: dict[str, Any] = {
                         "date": parsed.date.isoformat(),
                         "description": parsed.description,
-                        "postings": resolved,
+                        "postings": resolved_postings,
                     }
+                    if not isinstance(notes_value, _UNSET_TYPE):
+                        # Explicit value (including None to clear).
+                        body["notes"] = notes_value
                     response = client.patch(
-                        f"/v1/transactions/{tx_id}",
+                        f"/v1/transactions/{resolved}",
                         json=body,
                         authenticated=True,
                     )
@@ -769,7 +961,9 @@ def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, 
     """Render an existing transaction back into the hledger-subset format.
 
     Uses account ``code`` when available; falls back to UUID. Inverse of
-    :func:`tulip_cli.commands._ledger.parse_ledger_text`.
+    :func:`tulip_cli.commands._ledger.parse_ledger_text`. Notes (if any)
+    are rendered as a bracketed comment block at the bottom of the
+    buffer; see :func:`_extract_notes_block`.
     """
     lines: list[str] = [_EDITOR_TEMPLATE_HEADER, ""]
     lines.append(f"{tx.get('date', '')} {tx.get('description', '')}")
@@ -780,4 +974,83 @@ def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, 
         amount = p.get("amount", "")
         currency = p.get("currency", "")
         lines.append(f"  {account_ref}  {amount} {currency}")
+    notes = tx.get("notes")
+    lines.append("")
+    lines.extend(_render_notes_block(notes if isinstance(notes, str) else None))
     return "\n".join(lines) + "\n"
+
+
+# Markers that bracket the multi-line notes block in the editor buffer.
+# Anything BETWEEN these two lines is extracted as notes plaintext (each
+# content line is expected to be prefixed by ``# `` so the ledger parser
+# treats the section as a no-op block of comments).
+_NOTES_BLOCK_START = "# ─── notes (delete the lines below to clear, edit to change) ───"
+_NOTES_BLOCK_END = "# ─── end notes ───"
+_NOTES_PREFIX = "# "
+
+
+def _render_notes_block(notes: str | None) -> list[str]:
+    """Render the notes block lines (markers + comment-prefixed content)."""
+    block: list[str] = [_NOTES_BLOCK_START]
+    if notes:
+        for line in notes.splitlines() or [notes]:
+            block.append(f"{_NOTES_PREFIX}{line}")
+    block.append(_NOTES_BLOCK_END)
+    return block
+
+
+def _extract_notes_block(text: str) -> tuple[str, str | None | _UNSET_TYPE]:
+    """Strip the notes block from ``text`` and return ``(stripped, notes)``.
+
+    Returns:
+        stripped: ``text`` with the notes block (markers + content) removed.
+            Safe to feed to :func:`parse_ledger_text`.
+        notes: the extracted plaintext, ``None`` if the block is empty
+            (meaning "clear"), or ``_UNSET`` if no block was present in
+            the buffer (meaning "leave column alone"). The ``_UNSET``
+            sentinel is local — the caller maps it to "omit the ``notes``
+            field from the PATCH body".
+
+    """
+    lines = text.splitlines()
+    try:
+        start = lines.index(_NOTES_BLOCK_START)
+    except ValueError:
+        return text, _UNSET
+    try:
+        end_offset = lines[start + 1 :].index(_NOTES_BLOCK_END)
+    except ValueError:
+        # Opener without closer — treat the rest of the buffer as notes
+        # content, but only the comment-prefixed lines.
+        content_lines = lines[start + 1 :]
+        end = len(lines)
+    else:
+        content_lines = lines[start + 1 : start + 1 + end_offset]
+        end = start + 1 + end_offset + 1  # include the end marker
+
+    note_text_lines: list[str] = []
+    for raw in content_lines:
+        if raw.startswith(_NOTES_PREFIX):
+            note_text_lines.append(raw[len(_NOTES_PREFIX) :])
+        elif raw.strip() == "#":
+            # Bare ``#`` represents an empty line inside notes.
+            note_text_lines.append("")
+        # Non-comment lines inside the block are ignored — keeps the
+        # parser focused on lines the user explicitly marked as notes.
+    notes_value: str | None
+    if note_text_lines:
+        notes_value = "\n".join(note_text_lines).strip("\n")
+        if not notes_value:
+            notes_value = None
+    else:
+        notes_value = None
+
+    stripped_lines = lines[:start] + lines[end:]
+    return "\n".join(stripped_lines), notes_value
+
+
+class _UNSET_TYPE:
+    """Sentinel for "notes block absent from the buffer entirely"."""
+
+
+_UNSET: _UNSET_TYPE = _UNSET_TYPE()

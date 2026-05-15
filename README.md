@@ -47,7 +47,7 @@ Honest expectations matter for internal-beta. The following are deliberately def
 - **Web / mobile UI.** Tulip is API-first with a Typer CLI client; the web client lands as a separate phase. The CLI is the supported UI.
 - **Multi-tenant cloud hosting.** Tulip is single-machine, single-tenant SQLite for internal beta. Postgres + KMS + multi-tenant scaling is a future phase.
 - **Reverse-proxy / TLS tutorial.** Run behind Caddy or Tailscale Funnel; we don't ship a TLS setup guide.
-- **Reports beyond CLI tables.** PDF / HTML / journal export lands in Phase 7.
+- **Full-DB encryption at rest (SQLCipher).** Field-level AES-256-GCM protects the most sensitive columns + attachments today; whole-database SQLCipher is a Phase 8 hardening item still in flight.
 
 **Opt-in AI features** (auto-categorisation, NL queries, forecasts, agentic proposals) are now wired and shipped — disabled by default; bring your own provider key (Anthropic / OpenAI / local Ollama) via `tulip ai set-key` to enable. Per-household policy, per-user rate limits, monthly cost cap, and a `tulip ai status` summary all surface from the CLI. See the AI cookbook in [docs/QUICKSTART.md](docs/QUICKSTART.md) for the enablement walkthrough.
 
@@ -57,7 +57,7 @@ The full deferred-features list and the ordered roadmap is the contributor-side 
 
 ## For contributors
 
-> **Status:** Internal beta. Phases 0–6 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation, opt-in AI integration with BYOK provider keys + cost-cap + rate limit + audited proposals). Next up: Phase 7 (reports + journal export/import). See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
+> **Status:** Internal beta. Phases 0–7 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation, opt-in AI integration with BYOK provider keys + cost-cap + rate limit + audited proposals, nine reports in HTML/PDF/CSV + hledger journal export/import + `tulip reports` and `tulip journal` CLI). **Phase 8 (operations + hardening) is in progress:** the deep security and deep privacy audits have shipped ([docs/audits/](docs/audits/)), along with their highest-severity Wave-1 follow-ups (auth rate limiting, single-use MFA-challenge tokens, GDPR right-to-erasure) and a post-audit CLI/importers usability bundle. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ### Architecture at a glance
 
@@ -90,7 +90,7 @@ git clone https://github.com/rmwarriner/tulip-accounting.git
 cd tulip-accounting
 uv sync --all-packages --dev     # installs all workspace packages + dev deps
 uv run pre-commit install        # enable pre-commit hooks
-just test                        # confirm tests pass (~1426 tests, ~4 min with xdist)
+just test                        # confirm tests pass (~1830 tests, ~4 min with xdist)
 ```
 
 > **Note for committers:** `main` is branch-protected and **requires every commit to be signed**. Configure SSH or GPG commit signing before your first push (`git config --global commit.gpgsign true` plus a signing key); see [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection-on-main) for the diagnostic checklist when a push is rejected as unsigned.
@@ -127,14 +127,17 @@ TULIP_JWT_SECRET="$(uv run python -c 'import secrets; print(secrets.token_urlsaf
   uv run uvicorn tulip_api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Endpoint surface (Phases 0–6):
+Then `curl http://127.0.0.1:8000/health` for a smoke check, or `curl http://127.0.0.1:8000/openapi.json` for the OpenAPI spec. Endpoint surface (Phases 0–8):
 
-- **Auth:** `POST /v1/auth/{register,login,login/mfa,login/recover,refresh,logout}`, `POST /v1/auth/mfa/{enroll,verify,recovery-codes/regenerate}`, `GET /v1/auth/mfa/recovery-codes/status`
-- **Accounts + transactions:** `GET/POST/PATCH/DELETE /v1/accounts[/{id}]`, `GET /v1/accounts/{id}/balance`, `GET/POST/PATCH/DELETE /v1/transactions[/{id}]`, `POST /v1/transactions/{id}/void`, `GET /v1/reports/trial-balance`
+- **Auth:** `POST /v1/auth/{register,login,login/mfa,login/recover,refresh,logout}`, `POST /v1/auth/mfa/{enroll,verify,recovery-codes/regenerate}`, `GET /v1/auth/mfa/recovery-codes/status`. The four abuse-exposed endpoints (`login`, `login/mfa`, `login/recover`, `refresh`) are behind per-IP `slowapi` quotas — `auth.rate_limited` (429) on exceedance.
+- **Users + households (right-to-erasure, GDPR Art. 17):** `DELETE /v1/users/{user_id}` (cascades the user's sessions + recovery codes, redacts their audit-log PII), `POST /v1/households/me/erase-request` → `DELETE /v1/households/me` (two-step token-gated household erasure with attachment-ciphertext GC)
+- **Accounts + transactions:** `GET/POST/PATCH/DELETE /v1/accounts[/{id}]`, `GET /v1/accounts/{id}/balance[?include_pending=&as_of=]`, `GET/POST/PATCH/DELETE /v1/transactions[/{id}]`, `POST /v1/transactions/{id}/void`
 - **Periods:** `GET /v1/periods`, `POST /v1/periods/{id}/{close,reopen}`
 - **Envelopes + sinking funds + pools:** `GET/POST/PATCH/DELETE /v1/envelopes[/{id}]`, `GET/POST/PATCH/DELETE /v1/sinking-funds[/{id}]`, `GET /v1/pools/{id}/balance`, `POST /v1/pools/{id}/{refill,transfer,budget-inflow}`, `POST /v1/pools/balances` (batched), `GET/POST/PATCH/DELETE /v1/refill-schedules[/{id}]`
-- **Importers + reconciliation:** `POST /v1/imports[?force=true]`, `GET /v1/imports/{id}`, `POST /v1/imports/{id}/{apply,lines/{line_id}/promote}`, `GET/POST/PATCH/DELETE /v1/imports/profiles[/{id_or_name}]` (CSV column-mapping profiles, YAML round-trip), `GET/POST/DELETE /v1/reconciliations[/{id}][?cascade=true]`, `POST /v1/reconciliations/{id}/{auto-match,complete,matches,carry-forward}`, `POST /v1/reconciliations/{id}/matches/{id}/reject`, `DELETE /v1/reconciliations/{id}/carry-forward/{tx_id}`
+- **Importers + reconciliation:** `POST /v1/imports[?force=true]`, `POST /v1/imports/multi-account` (whole-file multi-account QIF + `account_map`), `GET /v1/imports` (list, filterable by `status` / `account_id`), `GET /v1/imports/{id}`, `POST /v1/imports/{id}/{apply,lines/{line_id}/promote}`, `GET/POST/PATCH/DELETE /v1/imports/profiles[/{id_or_name}]` (CSV column-mapping profiles, YAML round-trip), `GET/POST/DELETE /v1/reconciliations[/{id}][?cascade=true]`, `POST /v1/reconciliations/{id}/{auto-match,complete,matches,carry-forward}`, `POST /v1/reconciliations/{id}/matches/{id}/reject`, `DELETE /v1/reconciliations/{id}/carry-forward/{tx_id}`
 - **AI (Phase 6, BYOK, admin-only configuration):** `POST/DELETE /v1/ai/keys/{provider}`, `GET /v1/ai/keys`, `GET/PUT /v1/ai/config`, `PUT /v1/ai/config/capabilities/{capability}`, `GET /v1/ai/status`, `POST /v1/ai/preview`, `POST /v1/ai/ask` (two-turn NL query), `GET/POST /v1/ai/proposals[?status=...]`, `GET /v1/ai/proposals/kinds`, `POST /v1/ai/proposals/{id}/{approve,reject}`, `POST /v1/ai/proposals/suggest/budget`
+- **Reports (Phase 7, JSON/HTML/PDF/CSV via `?format=`):** `GET /v1/reports/{trial-balance,balance-sheet,income-statement,cash-flow,envelope-status,sinking-fund-progress,reconciliation-summary,audit-log,custom-query}`
+- **Journal (Phase 7, hledger-format round-trip):** `GET /v1/journal/export[?start=...&end=...]`, `POST /v1/journal/import` (text/plain body → PENDING transactions)
 - **Notifications:** `GET /v1/notifications[?status=...]`, `POST /v1/notifications/{id}/dismiss`
 - **Ops:** `GET /health`, `GET /v1/system/diagnostics` (consumed by `tulip doctor`)
 
@@ -176,7 +179,7 @@ uv run tulip reconcile complete "$RECON_ID"       # strict balance check, denorm
 
 `tulip add --edit` opens `$EDITOR` with a hledger-style template instead of taking flags. `tulip accounts list` renders a Rich tree when nesting exists, a flat table otherwise (`--flat` to force the table for scripting). Tokens persist in the OS keyring; the CLI exit-code map and full RFC 9457 error rendering are documented in [docs/ARCHITECTURE.md §7.8.5](docs/ARCHITECTURE.md).
 
-Other top-level commands: `tulip envelopes`, `tulip sinking-funds`, `tulip refills`, `tulip periods`, `tulip transfer`, `tulip refill`, `tulip budget-inflow`, `tulip transactions {show,edit,void,delete}`, `tulip imports {profiles,apply}`, `tulip notifications {list,dismiss}`, `tulip backup`, `tulip restore`, `tulip doctor`. The `tulip ai` group (Phase 6) covers BYOK + policy editing + the four capabilities: `tulip ai {set-key, forget-key, list-keys, status, preview, config {show,set,clear,set-capability,log-prompts}, ask, propose, proposals, approve, reject, suggest-budget}`. Each takes `--help`; the surface mirrors the API endpoints listed above.
+Other top-level commands: `tulip envelopes`, `tulip sinking-funds`, `tulip refills`, `tulip periods`, `tulip transfer`, `tulip refill`, `tulip budget-inflow`, `tulip transactions {show,edit,void,delete}`, `tulip imports {ofx,csv,qif,list,show,apply,profiles}`, `tulip reconcile {create,start,list,show,auto-match,match,walk,interactive,complete,carry-forward,reject,delete}`, `tulip notifications {list,dismiss}`, `tulip backup`, `tulip restore`, `tulip doctor`. Where a command needs a UUID it also accepts an account code / name / hierarchical path, and an interactive selectable-list picker is offered when the argument is omitted. Phase 8 usability touches: `tulip imports qif --account-map <map.json>` imports a multi-account Banktivity-style QIF in one POST (run `--account` on a multi-account file to get a starter map); `tulip imports apply --posted` lands a bulk historical migration straight to POSTED; `tulip balance --pending` folds PENDING transactions into the figure (clearly labelled, default `--no-pending`); `tulip reconcile start` opens a paper-statement reconciliation with no import batch. The `tulip ai` group (Phase 6) covers BYOK + policy editing + the four capabilities: `tulip ai {set-key, forget-key, list-keys, status, preview, config {show,set,clear,set-capability,log-prompts}, ask, propose, proposals, approve, reject, suggest-budget}`. The `tulip reports` group (Phase 7) has one subcommand per report (`trial-balance`, `balance-sheet`, `income-statement`, `cash-flow`, `envelope-status`, `sinking-fund-progress`, `reconciliation-summary`, `audit-log`, `custom-query`); each accepts `--format json|html|pdf|csv` (default json, JSON/HTML default to stdout, PDF/CSV need `--output PATH`). `tulip journal {export,import}` round-trips the household ledger as hledger-format text. Each takes `--help`; the surface mirrors the API endpoints listed above.
 
 ### Development discipline
 
@@ -193,7 +196,8 @@ This project follows test-driven development. Every feature ships with tests wri
 - [QUICKSTART](docs/QUICKSTART.md) — runnable end-to-end walkthrough (the user entry point; pin this for first-time setup questions)
 - [Architecture](docs/ARCHITECTURE.md) — full system design, data model, phase roadmap, error-handling standard (§7.8)
 - [Phase Status](docs/PHASE_STATUS.md) — what's shipped, what's queued
-- [Threat Model](docs/THREAT_MODEL.md) — lightweight security checkpoint (deep audit deferred to Phase 8)
+- [Threat Model](docs/THREAT_MODEL.md) — security checkpoint, kept current with the Phase 8 audits
+- [Audits](docs/audits/) — the Phase 8 deep security audit (2026-05-12) and deep privacy audit (2026-05-13), finding-by-finding
 - [ADRs](docs/adrs/) — architectural decision records (envelope shadow ledger, scheduler primitive, mutation testing, reconciliation, AI integration / privacy contract)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — TDD discipline, coverage gates, signed commits, manual smoke test format
 - [CLAUDE.md](CLAUDE.md) — operational notes for AI-assisted development on this repo
@@ -201,12 +205,14 @@ This project follows test-driven development. Every feature ships with tests wri
 
 ### Security & privacy
 
-- **Defense-in-depth encryption at rest:** SQLCipher for the whole DB (Phase 8), AES-256-GCM field-level for the most sensitive columns (TOTP secrets, attachments) today. No single key compromise leaks everything.
+- **Defense-in-depth encryption at rest:** SQLCipher for the whole DB (Phase 8, in flight), AES-256-GCM field-level for the most sensitive columns (TOTP secrets, attachments) today. No single key compromise leaks everything.
 - **Master key** is sourced from `TULIP_MASTER_KEY` (env var) or `TULIP_KEY_FILE` (0600 file); never written to disk by Tulip itself.
-- **MFA (TOTP)** required for admin users by default; optional for household members.
+- **MFA (TOTP)** required for admin users by default; optional for household members. TOTP secrets are encrypted at rest; recovery codes are argon2id-hashed with an 80-bit entropy floor; the MFA-login flow uses a single-use challenge token that can't be replayed.
+- **Online-auth hardening (Phase 8 Wave-1):** per-IP rate limiting on the four `/v1/auth/*` abuse surfaces, a constant-time login path that closes the user-enumeration timing oracle, and email/IP redaction in structured logs by default.
+- **Right to erasure (GDPR Art. 17 / CCPA):** `DELETE /v1/users/{id}` and the two-step household-erasure flow cascade-delete the subject's data, garbage-collect attachment ciphertext from disk, and redact PII from audit-log snapshots.
 - **AI privacy posture** is per-tenant + per-user policy, with audit logging of every model invocation, a server-enforced monthly cost cap, and a per-user sliding-window rate limit. Defaults to permissive but a fresh household has no provider key — no provider is contacted until an admin opts in via `tulip ai set-key`. Users can dial up restrictions (per-capability `disabled` / `requires_approval`, `strict` / `local_only` redaction profiles) or switch to local-only models (Ollama). Prompt bodies are never stored by default; only metadata (model, latency, cost, success/fail) lands in `ai_invocations`. Full forensic prompt logging is opt-in via `tulip ai config log-prompts on`.
 
-The lightweight threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); a formal external audit is scheduled before external beta.
+The threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); the Phase 8 deep security and deep privacy audits ([docs/audits/](docs/audits/)) are document-only multi-agent reviews — their highest-severity findings have shipped as Wave-1 follow-ups, with the remainder tracked as issues.
 
 ### License
 

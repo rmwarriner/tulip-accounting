@@ -9,12 +9,12 @@ structlog instead.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from tulip_api.auth.deps import get_current_claims
@@ -25,7 +25,14 @@ from tulip_api.auth.mfa import (
     generate_totp_secret,
     verify_totp_code,
 )
-from tulip_api.auth.passwords import hash_password, verify_password
+from tulip_api.auth.passwords import hash_password, needs_rehash, verify_password
+from tulip_api.auth.rate_limit import (
+    AUTH_LOGIN_LIMIT,
+    AUTH_LOGIN_MFA_LIMIT,
+    AUTH_LOGIN_RECOVER_LIMIT,
+    AUTH_REFRESH_LIMIT,
+    limiter,
+)
 from tulip_api.auth.recovery_codes import (
     generate_recovery_codes,
     hash_recovery_code,
@@ -70,6 +77,7 @@ from tulip_api.schemas.auth import (
     MfaRecoveryStatusResponse,
     MfaRegenerateRequest,
     MfaVerifyRequest,
+    PasswordChangeRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -80,6 +88,7 @@ from tulip_storage.models import (
     Household,
     MfaPolicy,
     MfaRecoveryCode,
+    UsedMfaChallenge,
     User,
     UserRole,
 )
@@ -94,11 +103,27 @@ from tulip_storage.repositories import (
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.orm import Session
 
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 log = structlog.get_logger("tulip_api.auth")
+
+# A precomputed argon2 hash used only to make the no-such-email login path
+# pay roughly the same wall-clock as a single-match path (#221). Lazily
+# initialised so import-time stays cheap.
+_TIMING_DEFENSE_DUMMY_HASH: str | None = None
+
+
+def _timing_defense_dummy_hash() -> str:
+    """Return a stable argon2 hash for the timing-defense dummy verify."""
+    global _TIMING_DEFENSE_DUMMY_HASH
+    if _TIMING_DEFENSE_DUMMY_HASH is None:
+        # Hash of a constant string. The plaintext is never sent; this is
+        # consumed only by verify_password() to spend argon2 cost.
+        _TIMING_DEFENSE_DUMMY_HASH = hash_password("tulip-timing-defense-dummy")
+    return _TIMING_DEFENSE_DUMMY_HASH
 
 
 @router.post(
@@ -191,8 +216,10 @@ def register(
         403: problem_response("auth.mfa_enrollment_required"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_LIMIT)
 def login(
     body: LoginRequest,
     request: Request,
@@ -217,11 +244,53 @@ def login(
     # email and pick the one whose password matches. Collisions across
     # households + matching passwords are extremely unlikely; if it ever
     # happens, we just sign in as the first match.
+    #
+    # #221 timing-oracle defense: iterate ALL candidates without short-
+    # circuit so wall-clock doesn't distinguish "matched first" from
+    # "matched last." When there are zero candidates, run one dummy
+    # argon2 verify so the no-such-email response takes ~argon2 time too.
+    # This still leaks multi-household-count (N candidates ⇒ N verifies),
+    # but eliminates the existence + position oracles. Full defense would
+    # require padding to a fixed verify-count or making emails globally
+    # unique — both deferred decisions.
     candidates = session.execute(select(User).where(User.email == body.email)).scalars().all()
-    user = next((u for u in candidates if verify_password(body.password, u.password_hash)), None)
+    user: User | None = None
+    for candidate in candidates:
+        if verify_password(body.password, candidate.password_hash) and user is None:
+            user = candidate
     if user is None:
+        if not candidates:
+            # Force the no-such-email path to pay ~argon2 cost too.
+            verify_password(body.password, _timing_defense_dummy_hash())
+        else:
+            # We had at least one matching email but the password didn't
+            # match any of them. M-20 (#219): write an audit row anchored
+            # on the first candidate so per-user enumeration / brute-force
+            # patterns are reconstructable. No row for the truly unknown-
+            # email case — there's no household_id to scope the row to,
+            # and structlog already records the attempt below.
+            first = candidates[0]
+            AuditLogWriter(session, first.household_id).write(
+                action="login_failed",
+                actor_kind="user",
+                actor_user_id=first.id,
+                entity_type="user",
+                entity_id=first.id,
+                metadata={"email": body.email},
+                request_id=_request_uuid(request),
+                ip_address=_client_ip(request),
+                user_agent=request.headers.get("user-agent"),
+            )
+            session.commit()
         log.info("login.failed", email=body.email)
         raise InvalidCredentialsError()
+
+    # Argon2 parameter upgrades: re-hash on next successful password verify.
+    # Must commit here — /login/mfa + /login/recover don't see the plaintext.
+    if needs_rehash(user.password_hash):
+        user.password_hash = hash_password(body.password)
+        session.commit()
+        log.info("user.password_rehashed", user_id=str(user.id))
 
     if user.totp_enrolled_at is not None:
         token = create_mfa_challenge_token(
@@ -251,8 +320,10 @@ def login(
         401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_code"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_MFA_LIMIT)
 def login_mfa(
     body: MfaLoginRequest,
     request: Request,
@@ -270,17 +341,32 @@ def login_mfa(
     except InvalidTokenError as exc:
         log.info("user.login.mfa_token_rejected", reason=str(exc))
         raise InvalidMfaTokenError() from exc
+    if not _consume_mfa_challenge(session, claims.jti, claims.expires_at):
+        log.info("user.login.mfa_token_replay", jti=str(claims.jti))
+        raise InvalidMfaTokenError()
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
         # Token was valid but the user is no longer enrolled (or the row
         # vanished). Treat as a token-rejection rather than an MFA-code
         # error — there's nothing to verify against.
+        session.commit()
         raise InvalidMfaTokenError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
     if not verify_totp_code(secret, body.code):
         log.info("user.login.mfa_code_rejected", user_id=str(user.id))
+        AuditLogWriter(session, user.household_id).write(
+            action="mfa.code_rejected",
+            actor_kind="user",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        session.commit()
         raise MfaInvalidCodeError()
 
     AuditLogWriter(session, user.household_id).write(
@@ -312,8 +398,10 @@ def _enrollment_required(policy: MfaPolicy, role: UserRole) -> bool:
         401: problem_response("auth.invalid_refresh_token"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_REFRESH_LIMIT)
 def refresh(
     body: RefreshRequest,
     request: Request,
@@ -334,6 +422,16 @@ def refresh(
 
     # Rotate: revoke this row, then issue a fresh pair.
     row.revoked_at = datetime.now(tz=UTC)
+    AuditLogWriter(session, user.household_id).write(
+        action="auth.refresh",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="session",
+        entity_id=row.id,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
     session.flush()
     return _issue_tokens(session, user, settings, request)
 
@@ -348,6 +446,7 @@ def refresh(
 )
 def logout(
     body: LogoutRequest,
+    request: Request,
     session: Session = Depends(get_session),  # noqa: B008
 ) -> None:
     """Revoke a refresh token. Subsequent uses are rejected."""
@@ -357,7 +456,79 @@ def logout(
     ).scalar_one_or_none()
     if row is not None and row.revoked_at is None:
         row.revoked_at = datetime.now(tz=UTC)
+        AuditLogWriter(session, row.household_id).write(
+            action="auth.logout",
+            actor_kind="user",
+            actor_user_id=row.user_id,
+            entity_type="session",
+            entity_id=row.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
         session.commit()
+
+
+@router.post(
+    "/password/change",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized", "auth.invalid_credentials"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
+def change_password(
+    body: PasswordChangeRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Rotate the caller's password and revoke their refresh tokens (#242).
+
+    Verifies ``current_password`` against the stored Argon2id hash, then
+    replaces the hash with a fresh one over ``new_password``. Every
+    outstanding (non-revoked) session for the user is revoked — a stale
+    refresh token shouldn't survive a credential rotation. The caller's
+    bare access token still works for its remaining TTL; their next
+    ``/v1/auth/refresh`` will need a fresh login.
+
+    The audit row carries no password material — only the count of
+    sessions revoked.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        raise UnauthorizedError("Your account no longer exists.")
+    if not verify_password(body.current_password, user.password_hash):
+        raise InvalidCredentialsError()
+
+    user.password_hash = hash_password(body.new_password)
+
+    now = datetime.now(tz=UTC)
+    result = session.execute(
+        update(SessionRow)
+        .where(
+            SessionRow.household_id == user.household_id,
+            SessionRow.user_id == user.id,
+            SessionRow.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    sessions_revoked = int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    AuditLogWriter(session, user.household_id).write(
+        action="password_changed",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={"sessions_revoked": sessions_revoked},
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info("user.password_changed", user_id=str(user.id), sessions_revoked=sessions_revoked)
 
 
 @router.post(
@@ -494,8 +665,10 @@ def mfa_verify(
         401: problem_response("auth.invalid_mfa_token", "auth.mfa_invalid_recovery_code"),
         400: problem_response("request.body_invalid"),
         422: problem_response("validation.failed"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_LOGIN_RECOVER_LIMIT)
 def login_recover(
     body: MfaRecoveryLoginRequest,
     request: Request,
@@ -515,14 +688,29 @@ def login_recover(
     except InvalidTokenError as exc:
         log.info("user.login.recover_token_rejected", reason=str(exc))
         raise InvalidMfaTokenError() from exc
+    if not _consume_mfa_challenge(session, claims.jti, claims.expires_at):
+        log.info("user.login.recover_token_replay", jti=str(claims.jti))
+        raise InvalidMfaTokenError()
 
     user = session.get(User, (claims.household_id, claims.user_id))
     if user is None or user.totp_enrolled_at is None:
+        session.commit()
         raise InvalidMfaTokenError()
 
     matched = _consume_recovery_code(session, user, body.recovery_code)
     if matched is None:
         log.info("user.login.recover_rejected", user_id=str(user.id))
+        AuditLogWriter(session, user.household_id).write(
+            action="mfa.recovery_rejected",
+            actor_kind="user",
+            actor_user_id=user.id,
+            entity_type="user",
+            entity_id=user.id,
+            request_id=_request_uuid(request),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        session.commit()
         raise MfaInvalidRecoveryCodeError()
 
     AuditLogWriter(session, user.household_id).write(
@@ -698,6 +886,24 @@ def _is_expired(expires_at: datetime) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return expires_at <= datetime.now(tz=UTC)
+
+
+def _consume_mfa_challenge(session: Session, jti: UUID, expires_at: datetime) -> bool:
+    """Mark ``jti`` as redeemed; return False if it was already redeemed.
+
+    M-7 (#219): single-use enforcement for the MFA-challenge JWT. The
+    UNIQUE PK turns a replay into an IntegrityError. Committed eagerly
+    so that a second attempt landing 50 ms later is rejected even if
+    the first attempt's downstream verification fails.
+    """
+    session.add(UsedMfaChallenge(jti=jti, expires_at=expires_at))
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        return False
+    session.commit()
+    return True
 
 
 def _mint_recovery_codes(session: Session, user: User) -> list[str]:

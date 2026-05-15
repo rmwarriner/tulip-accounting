@@ -225,7 +225,9 @@ class TestDeactivateEnvelope:
             },
         ).json()
         r = client.delete(f"/v1/envelopes/{created['id']}", headers=auth_h)
-        assert r.status_code == 204
+        assert r.status_code == 200
+        # Honest body: DELETE deactivates, it doesn't erase (#236).
+        assert r.json() == {"action": "deactivated", "data_retained": ["name"]}
         # No longer in list_active.
         listed = client.get("/v1/envelopes", headers=auth_h).json()
         assert listed == []
@@ -233,6 +235,57 @@ class TestDeactivateEnvelope:
     def test_delete_unknown_returns_404(self, client: TestClient, auth_h: dict[str, str]):
         r = client.delete(f"/v1/envelopes/{uuid4()}", headers=auth_h)
         assert_problem(r, code="envelope.not_found", status=404)
+
+    def test_redact_envelope_renames_pool(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ):
+        """#236: redact replaces a deactivated envelope's pool name with a placeholder."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AllocationPool
+
+        created = client.post(
+            "/v1/envelopes",
+            headers=auth_h,
+            json={
+                "name": "Sensitive Envelope",
+                "currency": "USD",
+                "budget_period": "monthly",
+                "rollover_policy": "reset",
+            },
+        ).json()
+        client.delete(f"/v1/envelopes/{created['id']}", headers=auth_h).raise_for_status()
+        r = client.post(f"/v1/envelopes/{created['id']}/redact", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"action": "redacted", "fields_redacted": ["name"]}
+        with session_maker() as s:
+            pool = s.execute(
+                select(AllocationPool).where(AllocationPool.id == UUID(created["id"]))
+            ).scalar_one()
+        assert pool.name != "Sensitive Envelope"
+        assert pool.name.startswith("redacted-envelope-")
+
+    def test_redact_active_envelope_returns_409(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/envelopes",
+            headers=auth_h,
+            json={
+                "name": "Still Active",
+                "currency": "USD",
+                "budget_period": "monthly",
+                "rollover_policy": "reset",
+            },
+        ).json()
+        r = client.post(f"/v1/envelopes/{created['id']}/redact", headers=auth_h)
+        assert_problem(r, code="envelope.not_redactable", status=409)
+
+    def test_redact_unknown_envelope_returns_404(self, client: TestClient, auth_h: dict[str, str]):
+        r = client.post(f"/v1/envelopes/{uuid4()}/redact", headers=auth_h)
+        assert_problem(r, code="envelope.not_found", status=404)
+
+    def test_redact_requires_auth(self, client: TestClient):
+        r = client.post(f"/v1/envelopes/{uuid4()}/redact")
+        assert r.status_code == 401
 
 
 # ---- Balance --------------------------------------------------------

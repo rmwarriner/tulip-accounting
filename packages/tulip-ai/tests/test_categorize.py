@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tulip_ai.adapters import RecordingAdapter
 from tulip_ai.categorize import AICategorizer, build_categorize_prompt
+from tulip_ai.errors import AIProviderError
 from tulip_ai.redaction import ChartEntry
 from tulip_core.money import Money
 from tulip_core.reconciliation.categorizer import HouseholdContext
@@ -118,6 +119,128 @@ async def test_categorize_happy_path_returns_model_choice(
         assert rows[0].capability == "categorize"
 
 
+class _KeyCapturingAdapter(RecordingAdapter):
+    """Test-only adapter that records the actual ``api_key`` value passed (#239).
+
+    The shared ``RecordingAdapter`` deliberately only records a boolean
+    ``api_key_was_passed`` for privacy; this subclass stores the cleartext
+    so per-user-key-precedence tests can assert which key got through.
+    """
+
+    api_keys_seen: list[str | None]
+
+    def __init__(self, *, canned_reply: str) -> None:
+        super().__init__(canned_reply=canned_reply)
+        self.api_keys_seen = []
+
+    async def chat(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.api_keys_seen.append(kwargs.get("api_key"))
+        return await super().chat(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_categorize_uses_user_key_over_household_when_set(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: per-user ai_keys_encrypted overrides household for the resolved provider."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    # Household key + user key, both for anthropic but different values.
+    _set_ai_keys(
+        session_maker, household.id, keys={"anthropic": "sk-household"}, master_key=master_key
+    )
+    from tulip_storage.encryption import encrypt_field
+
+    with session_maker() as s:
+        u = s.get(type(user), (household.id, user.id))
+        assert u is not None
+        u.ai_keys_encrypted = encrypt_field(b'{"anthropic": "sk-user-only"}', master_key=master_key)
+        s.commit()
+
+    adapter = _KeyCapturingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.9}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    assert adapter.api_keys_seen == ["sk-user-only"]
+
+
+@pytest.mark.asyncio
+async def test_categorize_falls_back_to_household_key_when_user_has_none(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: if user has no key for the provider, the household's is used."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    _set_ai_keys(
+        session_maker, household.id, keys={"anthropic": "sk-household"}, master_key=master_key
+    )
+    # Note: NOT setting user.ai_keys_encrypted.
+
+    adapter = _KeyCapturingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.9}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    assert adapter.api_keys_seen == ["sk-household"]
+
+
+@pytest.mark.asyncio
+async def test_categorize_threads_user_policy_via_acting_user_id(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: user-level ai_policy disables categorize when household is permissive."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    with session_maker() as s:
+        u = s.get(type(user), (household.id, user.id))
+        assert u is not None
+        u.ai_policy = {"capabilities": {"categorize": {"policy": "disabled"}}}
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    result = await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    # Categorize falls back; adapter not called.
+    assert result.account_code == "Imbalance:Unknown"
+    assert adapter.calls == []
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].outcome == "policy_disabled"
+        assert rows[0].policy_resolved == "disabled"
+
+
 @pytest.mark.asyncio
 async def test_categorize_falls_back_when_policy_disabled(
     session_maker: sessionmaker[Session], household_and_user, master_key: bytes
@@ -153,6 +276,74 @@ async def test_categorize_falls_back_when_policy_disabled(
 
 
 @pytest.mark.asyncio
+async def test_categorize_inside_open_write_transaction_does_not_deadlock(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """Regression for #199 + #200: categorize must accept the caller's session.
+
+    Before the fix, the import-apply path held a write lock on connection
+    A while calling categorize; categorize opened connection B for its
+    audit row write, which failed with ``database is locked``. The fix
+    threads the caller's session into categorize so the audit lands in
+    the same transaction (and the same connection).
+    """
+    household, _ = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {"capabilities": {"categorize": {"policy": "disabled"}}}
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+
+    with session_maker() as shared:
+        # Simulate the import-apply path: hold a write lock by inserting
+        # an account without committing, then call categorize within the
+        # same session. The audit row must land in this session's
+        # transaction rather than via a second connection.
+        shared.add(
+            Account(
+                household_id=household.id,
+                id=uuid4(),
+                name="Cash",
+                type=AccountType.ASSET,
+                currency="USD",
+                code="1110",
+                visibility="shared",
+                created_by_user_id=None,
+            )
+        )
+        shared.flush()  # write lock acquired here
+
+        result = await categorizer.categorize(
+            _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+            HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+            session=shared,
+        )
+        # No deadlock; categorize returned the fallback (policy_disabled).
+        assert result.account_code == "Imbalance:Unknown"
+
+        # Audit row is pending in the shared session — not committed yet
+        # (caller owns commit when sharing).
+        pending_rows = shared.execute(select(AIInvocation)).scalars().all()
+        assert len(pending_rows) == 1
+        assert pending_rows[0].outcome == "policy_disabled"
+
+        shared.commit()
+
+    # After commit, the audit row + the seeded Account are both visible.
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_categorize_falls_back_when_no_api_key(
     session_maker: sessionmaker[Session], household_and_user, master_key: bytes
 ) -> None:
@@ -177,6 +368,40 @@ async def test_categorize_falls_back_when_no_api_key(
     )
     assert result.account_code == "Imbalance:Unknown"
     assert adapter.calls == []
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+        # H-1 (#234): response_text is gated on log_prompts; default is
+        # False, so the structured ``outcome`` is the assertion target.
+        assert rows[0].response_text is None
+
+
+@pytest.mark.asyncio
+async def test_categorize_no_api_key_response_text_opt_in_when_log_prompts(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): log_prompts=True restores the diagnostic response_text."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {
+            "default_provider": "anthropic",
+            "default_model": "claude-opus-4-7",
+            "log_prompts": True,
+        }
+        s.commit()
+
+    categorizer = AICategorizer(
+        session_maker=session_maker,
+        master_key=master_key,
+        adapter=RecordingAdapter(canned_reply=""),
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
     with session_maker() as s:
         rows = s.execute(select(AIInvocation)).scalars().all()
         assert rows[0].outcome == "provider_error"
@@ -352,7 +577,9 @@ async def test_categorize_cost_cap_hard_fail_blocks_with_audit(
             .all()
         )
         assert len(rows) == 1
-        assert "cap" in (rows[0].response_text or "").lower()
+        # H-1 (#234): outcome is the structured field; response_text is
+        # gated on log_prompts (False by default).
+        assert rows[0].outcome == "cost_capped"
 
 
 @pytest.mark.asyncio
@@ -398,3 +625,65 @@ async def test_categorize_rate_limited_blocks_with_audit(
             .all()
         )
         assert len(rows) == 1
+
+
+class _RaisingAdapter:
+    """Adapter that always raises AIProviderError — proves the gate on the
+    provider-error branch of every capability."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def chat(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        raise AIProviderError("provider blew up: prompt fragment was 'WHOLE FOODS 12.00'")
+
+
+@pytest.mark.asyncio
+async def test_provider_error_response_text_gated_off_by_default(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): provider-error response_text is NULL when log_prompts=False."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-real"}, master_key=master_key)
+
+    categorizer = AICategorizer(
+        session_maker=session_maker, master_key=master_key, adapter=_RaisingAdapter()
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+        assert rows[0].response_text is None
+
+
+@pytest.mark.asyncio
+async def test_provider_error_response_text_persisted_when_log_prompts_on(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """H-1 (#234): log_prompts=True preserves diagnostic content."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-real"}, master_key=master_key)
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {**dict(h.ai_policy or {}), "log_prompts": True}
+        s.commit()
+
+    categorizer = AICategorizer(
+        session_maker=session_maker, master_key=master_key, adapter=_RaisingAdapter()
+    )
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+        assert rows[0].response_text is not None
+        assert "provider blew up" in rows[0].response_text

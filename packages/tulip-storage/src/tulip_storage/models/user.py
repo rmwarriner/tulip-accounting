@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     ForeignKey,
     LargeBinary,
@@ -51,6 +53,11 @@ class User(Base):
     # Encrypted ``{provider: api_key}``; overrides the household's keys
     # for this user. See ADR-0005 §Q2.
     ai_keys_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # Per-user AI policy override (#239). NULL = inherit household. The
+    # resolver merges this with ``households.ai_policy`` using max-severity
+    # wins per ADR-0005 §Q5 — a user can ratchet *up* (stricter) but not
+    # ratchet down below the household's floor.
+    ai_policy: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=None)
     totp_enrolled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

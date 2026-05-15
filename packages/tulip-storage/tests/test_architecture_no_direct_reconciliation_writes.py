@@ -72,6 +72,23 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # the import is read-only, mirroring how P5.0's void-link guard
         # allowed the API router for read-side access).
         "tulip-api/src/tulip_api/routers/csv_profiles.py",
+        # Reconciliation summary report (P7.1) reads the model for
+        # display; never writes. Same justification as csv_profiles.py.
+        "tulip-reports/src/tulip_reports/reports/reconciliation_summary.py",
+        # Attachment GC handler (#235) reads Attachment.content_hash to
+        # decide which files on disk are orphaned. It never writes the
+        # row — the unlink is on disk only; row writes still go through
+        # AttachmentRepository.
+        "tulip-storage/src/tulip_storage/runner/handlers/attachment_gc.py",
+        # Household-erasure endpoint (#235) reads Attachment.content_hash
+        # before the cascade delete to know which blobs to unlink from
+        # disk afterward. Same read-only justification.
+        "tulip-api/src/tulip_api/routers/households.py",
+        # GDPR Art. 15 data-export endpoint (#241) reads Attachment
+        # metadata uploaded by the subject for the export envelope. The
+        # select is household-scoped; it never writes — same read-only
+        # justification as households.py.
+        "tulip-api/src/tulip_api/routers/users.py",
     }
 )
 

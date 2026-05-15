@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -174,8 +174,67 @@ class TestDeactivateSinkingFund:
             },
         ).json()
         r = client.delete(f"/v1/sinking-funds/{created['id']}", headers=auth_h)
-        assert r.status_code == 204
+        assert r.status_code == 200
+        # Honest body: DELETE deactivates, it doesn't erase (#236).
+        assert r.json() == {"action": "deactivated", "data_retained": ["name"]}
         assert client.get("/v1/sinking-funds", headers=auth_h).json() == []
+
+    def test_redact_sinking_fund_renames_pool(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ):
+        """#236: redact replaces a deactivated sinking fund's pool name with a placeholder."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AllocationPool
+
+        created = client.post(
+            "/v1/sinking-funds",
+            headers=auth_h,
+            json={
+                "name": "Sensitive Fund",
+                "currency": "USD",
+                "target_amount": "3000",
+                "target_date": _future_date(),
+                "contribution_strategy": "manual",
+            },
+        ).json()
+        client.delete(f"/v1/sinking-funds/{created['id']}", headers=auth_h).raise_for_status()
+        r = client.post(f"/v1/sinking-funds/{created['id']}/redact", headers=auth_h)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"action": "redacted", "fields_redacted": ["name"]}
+        with session_maker() as s:
+            pool = s.execute(
+                select(AllocationPool).where(AllocationPool.id == UUID(created["id"]))
+            ).scalar_one()
+        assert pool.name != "Sensitive Fund"
+        assert pool.name.startswith("redacted-sinking-fund-")
+
+    def test_redact_active_sinking_fund_returns_409(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        created = client.post(
+            "/v1/sinking-funds",
+            headers=auth_h,
+            json={
+                "name": "Still Active",
+                "currency": "USD",
+                "target_amount": "3000",
+                "target_date": _future_date(),
+                "contribution_strategy": "manual",
+            },
+        ).json()
+        r = client.post(f"/v1/sinking-funds/{created['id']}/redact", headers=auth_h)
+        assert_problem(r, code="sinking_fund.not_redactable", status=409)
+
+    def test_redact_unknown_sinking_fund_returns_404(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        r = client.post(f"/v1/sinking-funds/{uuid4()}/redact", headers=auth_h)
+        assert_problem(r, code="sinking_fund.not_found", status=404)
+
+    def test_redact_requires_auth(self, client: TestClient):
+        r = client.post(f"/v1/sinking-funds/{uuid4()}/redact")
+        assert r.status_code == 401
 
 
 class TestSinkingFundBalance:

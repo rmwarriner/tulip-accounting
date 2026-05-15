@@ -320,11 +320,17 @@ async def auto_match(
     if existing:
         raise AutoMatchAlreadyRunError(existing_match_count=len(existing))
 
+    # Paper-statement reconciliations have no source batch: nothing to match
+    # against. Return a no-op result rather than reading a None batch id.
+    if reconciliation.source_import_batch_id is None:
+        del actor_user_id  # unused on this path
+        return AutoMatchResult(matches_created=0, high_count=0, medium_count=0, low_count=0)
+
     # Statement lines from the source batch (non-excluded only — the matcher
     # has no view of is_excluded; if we passed them, an excluded line could
     # match by accident and the user would have to re-reject).
     lines_repo = StatementLineRepository(session, household_id)
-    raw_lines = lines_repo.list_for_batch(reconciliation.source_import_batch_id)  # type: ignore[arg-type]
+    raw_lines = lines_repo.list_for_batch(reconciliation.source_import_batch_id)
     eligible_lines = [line for line in raw_lines if not line.is_excluded]
     domain_lines = [_line_to_domain(line) for line in eligible_lines]
 
@@ -454,6 +460,138 @@ def _carry_forward_net(
         )
     ).all()
     return sum((Decimal(r[0]) for r in rows), Decimal("0"))
+
+
+class PaperMatchNotPaperReconError(ValueError):
+    """Raised when a paper-statement match is requested on an OFX-driven recon.
+
+    Paper matches (#275) are only valid when the reconciliation has no
+    ``source_import_batch_id`` — for batch-driven flows the caller must
+    POST to ``/matches`` with a ``statement_line_id``.
+    """
+
+    def __init__(self, reconciliation_id: UUID) -> None:
+        """Build with the recon id for the typed error response."""
+        super().__init__(
+            f"reconciliation {reconciliation_id} has a source_import_batch_id; "
+            "use POST /matches with a statement_line_id instead"
+        )
+        self.reconciliation_id = reconciliation_id
+
+
+class PaperMatchTxAlreadyMatchedError(ValueError):
+    """Raised when the ledger tx is already matched in this reconciliation."""
+
+    def __init__(self, ledger_transaction_id: UUID, existing_match_id: UUID) -> None:
+        """Build with the tx + existing match id."""
+        super().__init__(
+            f"transaction {ledger_transaction_id} already matched in this "
+            f"reconciliation by {existing_match_id}"
+        )
+        self.ledger_transaction_id = ledger_transaction_id
+        self.existing_match_id = existing_match_id
+
+
+class PaperMatchTxNotInPeriodError(ValueError):
+    """Raised when the paper-matched tx falls outside the recon's period."""
+
+    def __init__(
+        self,
+        ledger_transaction_id: UUID,
+        tx_date: str,
+        period_start: str,
+        period_end: str,
+    ) -> None:
+        """Build with the tx + period bounds."""
+        super().__init__(
+            f"transaction {ledger_transaction_id} dated {tx_date} is outside "
+            f"period {period_start}..{period_end}"
+        )
+        self.ledger_transaction_id = ledger_transaction_id
+        self.tx_date = tx_date
+        self.period_start = period_start
+        self.period_end = period_end
+
+
+async def paper_match(
+    *,
+    session: Session,
+    household_id: UUID,
+    reconciliation: Reconciliation,
+    ledger_transaction_id: UUID,
+    actor_user_id: UUID,
+) -> ReconciliationMatch:
+    """Persist a paper-statement match — ledger tx only, no statement line.
+
+    Used by the paper reconciliation flow (#275): the user ticks off a
+    ledger transaction against a physical statement. ``match_amount`` is
+    derived from the bank-side posting on the recon's account.
+
+    Validates:
+
+    - The reconciliation is IN_PROGRESS.
+    - The reconciliation has no ``source_import_batch_id`` (paper-only).
+    - The ledger transaction exists.
+    - The transaction falls within the recon's period.
+    - The transaction has at least one posting on the recon's account.
+    - The transaction is not already matched in this reconciliation.
+
+    Raises:
+        CompleteInvalidStateError: ``reconciliation.status`` is not IN_PROGRESS.
+        PaperMatchNotPaperReconError: recon has a source_import_batch_id.
+        ManualMatchTxNotFoundError: tx doesn't exist in this household.
+        ManualMatchTxAccountMismatchError: tx has no posting on recon's account.
+        PaperMatchTxAlreadyMatchedError: tx already matched in this recon.
+        PaperMatchTxNotInPeriodError: tx falls outside the recon's period.
+
+    """
+    if reconciliation.status is not ReconciliationStatus.IN_PROGRESS:
+        raise CompleteInvalidStateError(reconciliation.status)
+    if reconciliation.source_import_batch_id is not None:
+        raise PaperMatchNotPaperReconError(reconciliation.id)
+
+    tx_repo = TransactionRepository(session, household_id)
+    tx = tx_repo.get(ledger_transaction_id)
+    if tx is None:
+        raise ManualMatchTxNotFoundError(f"transaction {ledger_transaction_id} not found")
+    period_start = reconciliation.statement_period_start
+    period_end = reconciliation.statement_period_end
+    if not (period_start <= tx.date <= period_end):
+        raise PaperMatchTxNotInPeriodError(
+            ledger_transaction_id,
+            tx.date.isoformat(),
+            period_start.isoformat(),
+            period_end.isoformat(),
+        )
+
+    postings = tx_repo.list_postings(ledger_transaction_id)
+    bank_posting = next(
+        (p for p in postings if p.account_id == reconciliation.account_id),
+        None,
+    )
+    if bank_posting is None:
+        raise ManualMatchTxAccountMismatchError(ledger_transaction_id, reconciliation.account_id)
+
+    match_repo = ReconciliationMatchRepository(session, household_id)
+    existing = [
+        m
+        for m in match_repo.list_for_reconciliation(reconciliation.id)
+        if m.ledger_transaction_id == ledger_transaction_id
+    ]
+    if existing:
+        raise PaperMatchTxAlreadyMatchedError(ledger_transaction_id, existing[0].id)
+
+    match = match_repo.create(
+        reconciliation_id=reconciliation.id,
+        statement_line_id=None,
+        ledger_transaction_id=ledger_transaction_id,
+        match_amount=bank_posting.amount,
+        currency=bank_posting.currency,
+        confidence=None,  # manual — null per ADR §Q9
+        matcher_version=None,  # paper — null per ADR §Q9
+        created_by_user_id=actor_user_id,
+    )
+    return match
 
 
 async def manual_match(

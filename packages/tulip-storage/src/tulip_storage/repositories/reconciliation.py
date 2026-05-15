@@ -208,7 +208,7 @@ class ReconciliationRepository:
             .scalars()
             .all()
         )
-        line_ids = [m.statement_line_id for m in match_rows]
+        line_ids = [m.statement_line_id for m in match_rows if m.statement_line_id is not None]
 
         # Clear the statement_line denormalised pointers (no FK to cascade).
         if line_ids:

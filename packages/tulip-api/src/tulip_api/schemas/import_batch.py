@@ -47,6 +47,34 @@ class ImportBatchSummary(BaseModel):
     created_at: datetime
 
 
+class MultiAccountImportSummary(BaseModel):
+    """Response for ``POST /v1/imports/multi-account`` (#195b).
+
+    One :class:`ImportBatchSummary` per QIF ``!Account`` block, plus the
+    count of cross-account transfers landed directly as balanced PENDING
+    transactions and any non-fatal warnings (e.g. a transfer leg whose
+    partner couldn't be resolved, landed one-sided instead).
+    """
+
+    batches: list[ImportBatchSummary]
+    transfer_count: int = Field(
+        description=(
+            "Cross-account transfer pairs landed as balanced PENDING "
+            "transactions. The two source statement lines of each pair are "
+            "marked promoted to that transaction, so a later `apply` skips "
+            "them."
+        )
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Non-fatal issues — a transfer leg whose reciprocal or target "
+            "account couldn't be resolved is landed as an ordinary "
+            "one-sided statement line and noted here."
+        ),
+    )
+
+
 class ImportBatchRead(BaseModel):
     """Response for ``GET /v1/imports/{id}`` — summary + full line list."""
 
@@ -62,6 +90,38 @@ class ImportBatchRead(BaseModel):
     applied_at: datetime | None
     reverted_at: datetime | None
     lines: list[StatementLineRead]
+
+
+class ImportBatchListItem(BaseModel):
+    """One row of ``GET /v1/imports`` — batch summary without per-line detail.
+
+    Mirrors :class:`ImportBatchRead` but omits the embedded statement-line
+    list (which can be hundreds of rows) and the ``applied_at`` /
+    ``reverted_at`` timestamps — discovery surface is "what's there", not
+    "what state-machine transitions has it gone through".
+    """
+
+    id: UUID
+    account_id: UUID
+    source_format: str
+    source_filename: str
+    status: str
+    imported_count: int
+    skipped_count: int
+    created_at: datetime
+
+
+class ImportBatchListResponse(BaseModel):
+    """Response for ``GET /v1/imports`` — page of batches + opaque cursor.
+
+    ``next_cursor`` is non-null exactly when more rows are available; the
+    client passes it back as ``?after=<cursor>`` to fetch the next page.
+    The cursor encoding is an opaque base64 token — clients must treat it
+    as a black box.
+    """
+
+    items: list[ImportBatchListItem]
+    next_cursor: str | None = None
 
 
 class ImportBatchApplyResponse(BaseModel):

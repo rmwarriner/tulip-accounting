@@ -14,9 +14,10 @@ from datetime import date as date_type
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
+from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.config import Config
@@ -30,42 +31,72 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
 
 def _render_account_balance(body: dict[str, Any]) -> None:
     """Render a single ``AccountBalanceRead`` body."""
+    from tulip_cli._money_format import format_amount
+
     code = body.get("code") or "—"
+    currency = body.get("currency", "")
+    balance = format_amount(body.get("balance"), currency)
+    pending_included = bool(body.get("pending_included"))
+    label = "balance (incl. pending)" if pending_included else "balance"
     typer.echo(f"{code} — {body.get('name', '')}")
-    typer.echo(f"  balance: {body.get('balance', '')} {body.get('currency', '')}")
+    typer.echo(f"  {label}: {balance} {currency}")
     typer.echo(f"  as of:   {body.get('as_of', '')}")
+    if pending_included:
+        count = body.get("pending_count", 0)
+        plural = "" if count == 1 else "s"
+        typer.echo(f"  includes {count} pending transaction{plural}")
 
 
 def _render_trial_balance(body: dict[str, Any]) -> None:
     """Render a ``TrialBalanceRead`` body as a table + totals."""
+    from tulip_cli._money_format import format_amount
+
     rows = body.get("rows") or []
     if not rows:
         typer.echo(f"No postings on or before {body.get('as_of', 'today')}.")
         return
 
-    table = Table(title=f"Trial balance as of {body.get('as_of', '')}", show_header=True)
+    pending_included = bool(body.get("pending_included"))
+    title = f"Trial balance as of {body.get('as_of', '')}"
+    if pending_included:
+        count = body.get("pending_count", 0)
+        plural = "" if count == 1 else "s"
+        title += f"  (incl. {count} pending transaction{plural})"
+    balance_header = "balance (incl. pending)" if pending_included else "balance"
+
+    table = Table(title=title, show_header=True)
     table.add_column("code")
     table.add_column("name")
     table.add_column("type")
     table.add_column("currency")
-    table.add_column("balance", justify="right")
+    add_numeric_column(table, balance_header)
     for r in rows:
+        currency = r.get("currency") or ""
+        name = r.get("name") or ""
+        # A row that drew a PENDING posting gets a (P) marker — only
+        # meaningful when the caller opted into --pending.
+        if pending_included and r.get("has_pending"):
+            name = f"{name} (P)"
         table.add_row(
             r.get("code") or "—",
-            r.get("name") or "",
+            name,
             r.get("type") or "",
-            r.get("currency") or "",
-            r.get("balance") or "",
+            currency,
+            format_amount(r.get("balance"), currency),
         )
-    console = Console()
+    console = make_console()
     console.print(table)
 
     totals = body.get("totals_by_currency") or []
     for t in totals:
         currency = t.get("currency", "")
-        debits = t.get("debits", "")
-        credits = t.get("credits", "")
-        marker = "✓" if debits == credits else "⚠"
+        debits_raw = t.get("debits", "")
+        credits_raw = t.get("credits", "")
+        debits = format_amount(debits_raw, currency) if debits_raw != "" else ""
+        credits = format_amount(credits_raw, currency) if credits_raw != "" else ""
+        # Compare the raw (full-precision) values so the equal/unequal marker
+        # isn't fooled by quantization (e.g. .005 vs .004 both round to .00).
+        marker = "✓" if debits_raw == credits_raw else "⚠"
         console.print(
             f"  {currency}: debits {debits}, credits {credits} {marker}",
         )
@@ -87,8 +118,27 @@ def balance(
             help="Point-in-time date (YYYY-MM-DD). Defaults to today.",
         ),
     ] = None,
+    include_pending: Annotated[
+        bool,
+        typer.Option(
+            "--pending/--no-pending",
+            help=(
+                "Fold PENDING transactions into the balance — the "
+                "'what if all pending is real' view. Default is the "
+                "posted-only ledger. When on, the output is clearly "
+                "labelled and pending-affected rows carry a (P) marker."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Show a single account's balance, or the household trial balance."""
+    """Show a single account's balance, or the household trial balance.
+
+    By default only POSTED + RECONCILED transactions count, matching the
+    trial-balance convention. ``--pending`` widens the view to include
+    PENDING transactions — useful right after an import, before the
+    batch has been reviewed. The pending-inclusive output is always
+    labelled so it's never mistaken for the posted ledger.
+    """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
@@ -98,7 +148,11 @@ def balance(
         except ValueError as exc:
             raise typer.BadParameter("--as-of must be YYYY-MM-DD") from exc
 
-    params = {"as_of": as_of} if as_of else None
+    params: dict[str, str] = {}
+    if as_of:
+        params["as_of"] = as_of
+    if include_pending:
+        params["include_pending"] = "true"
 
     try:
         with _client(config, as_json=as_json) as client:
@@ -106,14 +160,14 @@ def balance(
                 response = client.get(
                     "/v1/reports/trial-balance",
                     authenticated=True,
-                    params=params,
+                    params=params or None,
                 )
             else:
                 resolved = _resolve_account(client, account)
                 response = client.get(
                     f"/v1/accounts/{resolved['id']}/balance",
                     authenticated=True,
-                    params=params,
+                    params=params or None,
                 )
     except CliError as err:
         err.render()

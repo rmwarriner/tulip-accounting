@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date as date_type
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -13,6 +14,7 @@ from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountNotFoundError,
+    AccountNotRedactableError,
     AccountParentCurrencyMismatchError,
     AccountParentCycleError,
     AccountParentNotFoundError,
@@ -23,6 +25,7 @@ from tulip_api.errors import (
 )
 from tulip_api.schemas.account import AccountCreate, AccountRead, AccountUpdate
 from tulip_api.schemas.balance import AccountBalanceRead
+from tulip_api.schemas.lifecycle import DeactivationResponse, RedactionResponse
 from tulip_core.money import Money
 from tulip_storage.models import AccountType
 from tulip_storage.repositories import AccountRepository, AuditLogWriter, TransactionRepository
@@ -322,22 +325,41 @@ def get_account_balance(
             "transactions on or before this date. Defaults to today."
         ),
     ),
+    include_pending: bool = Query(
+        default=False,
+        description=(
+            "When true, fold PENDING transactions into the balance — the "
+            "'what if all pending is real' view. Default false keeps the "
+            "posted-only ledger semantics. The response then carries "
+            "pending_included=true and pending_count."
+        ),
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AccountBalanceRead:
     """Return the ledger balance of an account in its primary currency.
 
-    Pending transactions are excluded — only POSTED + RECONCILED contribute.
-    Postings in other currencies on this account (e.g. FX postings) are
-    not included; use the trial-balance report for the multi-currency view.
+    By default only POSTED + RECONCILED contribute. ``include_pending=true``
+    (#274) widens the sum to PENDING transactions too. Postings in other
+    currencies on this account (e.g. FX postings) are not included; use
+    the trial-balance report for the multi-currency view.
     """
     a = AccountRepository(session, claims.household_id).get(account_id)
     if a is None or not _filter_for_role(a, claims):
         raise AccountNotFoundError()
 
     effective_as_of = as_of or date_type.today()
-    raw_balance = TransactionRepository(session, claims.household_id).balance_for_account(
-        a.id, currency=a.currency, as_of=effective_as_of
+    tx_repo = TransactionRepository(session, claims.household_id)
+    raw_balance = tx_repo.balance_for_account(
+        a.id,
+        currency=a.currency,
+        as_of=effective_as_of,
+        include_pending=include_pending,
+    )
+    pending_count = (
+        tx_repo.count_pending_for_account(a.id, currency=a.currency, as_of=effective_as_of)
+        if include_pending
+        else 0
     )
     # Quantize to the currency's minor units so the JSON representation
     # is the natural "12.50" rather than the storage-precision "12.50000000".
@@ -349,12 +371,18 @@ def get_account_balance(
         currency=a.currency,
         balance=balance,
         as_of=effective_as_of,
+        pending_included=include_pending,
+        pending_count=pending_count,
     )
+
+
+#: Field types an account retains after a soft-delete (deactivate). Erased
+#: only by a follow-up POST /v1/accounts/{id}/redact (#236).
+_ACCOUNT_PII_FIELDS = ["name", "external_account_number_encrypted", "notes_encrypted"]
 
 
 @router.delete(
     "/{account_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
@@ -366,8 +394,14 @@ def deactivate_account(
     request: Request,
     claims: Claims = Depends(require_role("admin")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
-) -> None:
-    """Soft-delete (deactivate) an account. Admin only."""
+) -> DeactivationResponse:
+    """Soft-delete (deactivate) an account. Admin only.
+
+    DELETE *deactivates* — it does not erase. The account row, ``name``,
+    and the encrypted PII columns all survive (posting FKs are
+    ``ON DELETE RESTRICT``). The response says so honestly; use
+    ``POST /v1/accounts/{id}/redact`` afterwards to erase the PII.
+    """
     repo = AccountRepository(session, claims.household_id)
     try:
         a = repo.deactivate(account_id)
@@ -384,6 +418,52 @@ def deactivate_account(
         request_id=_request_uuid(request),
     )
     session.commit()
+    return DeactivationResponse(data_retained=_ACCOUNT_PII_FIELDS)
+
+
+@router.post(
+    "/{account_id}/redact",
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("account.not_found"),
+        409: problem_response("account.not_redactable"),
+    },
+)
+def redact_account(
+    account_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> RedactionResponse:
+    """Erase a deactivated account's PII. Admin only.
+
+    Nulls ``external_account_number_encrypted`` / ``notes_encrypted`` and
+    replaces ``name`` with a non-PII placeholder. Postings keep their FK
+    and amounts — ledger history is preserved. The account must already
+    be deactivated (``409 account.not_redactable`` otherwise); there is
+    no API path to re-activate it, so the erasure is final.
+    """
+    repo = AccountRepository(session, claims.household_id)
+    a = repo.get(account_id)
+    if a is None:
+        raise AccountNotFoundError()
+    if a.is_active:
+        raise AccountNotRedactableError()
+    placeholder = f"redacted-account-{hashlib.sha256(str(account_id).encode()).hexdigest()[:8]}"
+    repo.redact(account_id, name=placeholder)
+    AuditLogWriter(session, claims.household_id).write(
+        action="redact",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="account",
+        entity_id=account_id,
+        before={"redacted": False},
+        after={"redacted": True, "name": placeholder},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    return RedactionResponse(fields_redacted=_ACCOUNT_PII_FIELDS)
 
 
 def _request_uuid(request: Request) -> UUID | None:

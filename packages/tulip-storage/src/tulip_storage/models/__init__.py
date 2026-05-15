@@ -32,6 +32,7 @@ from tulip_storage.models.notification import (
     NotificationKind,
     NotificationSeverity,
 )
+from tulip_storage.models.pending_household_erasure import PendingHouseholdErasure
 from tulip_storage.models.pending_proposal import (
     PendingProposal,
     ProposalCreatorKind,
@@ -59,6 +60,7 @@ from tulip_storage.models.shadow_transaction import (
 from tulip_storage.models.sinking_fund import ContributionStrategy, SinkingFund
 from tulip_storage.models.statement_line import StatementLine
 from tulip_storage.models.transaction import Transaction, TransactionStatus
+from tulip_storage.models.used_mfa_challenge import UsedMfaChallenge
 from tulip_storage.models.user import User, UserRole
 
 __all__ = [
@@ -85,6 +87,7 @@ __all__ = [
     "Notification",
     "NotificationKind",
     "NotificationSeverity",
+    "PendingHouseholdErasure",
     "PendingProposal",
     "Period",
     "PeriodStatus",
@@ -109,6 +112,7 @@ __all__ = [
     "StatementLine",
     "Transaction",
     "TransactionStatus",
+    "UsedMfaChallenge",
     "User",
     "UserRole",
 ]

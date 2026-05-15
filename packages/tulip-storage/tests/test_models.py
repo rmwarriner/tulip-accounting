@@ -135,6 +135,45 @@ class TestUserCrud:
         with pytest.raises(IntegrityError):
             session.commit()
 
+    def test_ai_policy_defaults_null(self, session: Session):
+        """New users have no per-user AI policy (#239) — inherit household."""
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        u = User(
+            household_id=h.id,
+            id=uuid4(),
+            email="carol@example.com",
+            password_hash="argon2id$dummy",
+            display_name="Carol",
+            role=UserRole.MEMBER,
+        )
+        session.add(u)
+        session.commit()
+        loaded = session.execute(select(User).where(User.email == "carol@example.com")).scalar_one()
+        assert loaded.ai_policy is None
+
+    def test_ai_policy_round_trips_dict(self, session: Session):
+        """Per-user ai_policy JSON column persists and reloads a dict (#239)."""
+        h = Household(id=uuid4(), name="Smith", base_currency="USD")
+        session.add(h)
+        u = User(
+            household_id=h.id,
+            id=uuid4(),
+            email="dave@example.com",
+            password_hash="argon2id$dummy",
+            display_name="Dave",
+            role=UserRole.MEMBER,
+            ai_policy={
+                "capabilities": {"categorize": {"policy": "disabled"}},
+            },
+        )
+        session.add(u)
+        session.commit()
+        loaded = session.execute(select(User).where(User.email == "dave@example.com")).scalar_one()
+        assert loaded.ai_policy == {
+            "capabilities": {"categorize": {"policy": "disabled"}},
+        }
+
     def test_totp_enrolled_at_defaults_null_and_round_trips(self, session: Session):
         h = Household(id=uuid4(), name="Smith", base_currency="USD")
         session.add(h)

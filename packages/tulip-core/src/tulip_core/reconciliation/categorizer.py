@@ -23,7 +23,7 @@ from __future__ import annotations
 import inspect
 import warnings
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from tulip_core.reconciliation.statement_line import StatementLine
@@ -52,11 +52,17 @@ class HouseholdContext:
     inputs (recent transactions, learned rules, account preferences),
     and that's where ``HouseholdContext`` will grow. Adding fields with
     defaults won't break existing callers.
+
+    ``acting_user_id`` (#239) is the optional id of the user on whose
+    behalf the categorization runs. When set, downstream AI capabilities
+    read that user's ``ai_policy`` and per-user keys; when ``None`` the
+    household-level policy is dispositive.
     """
 
     household_id: UUID
     account_whitelist: frozenset[UUID]
     existing_rules: tuple[object, ...] = field(default=())
+    acting_user_id: UUID | None = None
 
 
 @runtime_checkable
@@ -66,10 +72,21 @@ class Categorizer(Protocol):
     Phase 6's ``AICategorizer`` plugs in here via :func:`register_categorizer`.
     The matcher and P5.4's reconciliation flow call :func:`get_categorizer`
     to obtain the active implementation.
+
+    ``session`` is the opt-in session-sharing hook (#199, #200): callers
+    that are inside an open DB transaction pass theirs, and the concrete
+    implementer (e.g. ``AICategorizer``) uses it so the audit row write
+    can't deadlock against the caller's write lock. The Protocol stays
+    DB-agnostic by typing it as ``object | None``; the concrete impl
+    narrows to its own session type.
     """
 
     async def categorize(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Any = None,  # noqa: ANN401 — tulip-core can't import sqlalchemy
     ) -> CategorizationResult:
         """Suggest a category for an unmatched statement line."""
         ...
@@ -84,10 +101,14 @@ class NullCategorizer:
     """
 
     async def categorize(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Any = None,  # noqa: ANN401 — tulip-core can't import sqlalchemy
     ) -> CategorizationResult:
         """Return ``Imbalance:Unknown`` regardless of ``line``."""
-        del line, household_context  # unused — placeholder-by-design
+        del line, household_context, session  # unused — placeholder-by-design
         return CategorizationResult(account_code="Imbalance:Unknown", confidence=1.0)
 
 

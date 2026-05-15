@@ -11,6 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, Query, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
+from tulip_api.config import get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountUnknownError,
@@ -25,6 +26,7 @@ from tulip_api.errors import (
     TransactionNotDeletableError,
     TransactionNotEditableError,
     TransactionNotFoundError,
+    TransactionNotRectifiableError,
     TransactionNotVoidableError,
     TransactionUnbalancedError,
     problem_response,
@@ -33,6 +35,7 @@ from tulip_api.schemas.transaction import (
     PostingRead,
     TransactionCreate,
     TransactionRead,
+    TransactionRectifyRequest,
     TransactionUpdate,
     TransactionVoidRequest,
     TransactionVoidResponse,
@@ -73,10 +76,16 @@ from tulip_storage.repositories import (
     TransactionRepository,
 )
 from tulip_storage.repositories.transaction import (
+    UNSET,
+)
+from tulip_storage.repositories.transaction import (
     TransactionNotDeletableError as RepoNotDeletableError,
 )
 from tulip_storage.repositories.transaction import (
     TransactionNotEditableError as RepoNotEditableError,
+)
+from tulip_storage.repositories.transaction import (
+    TransactionNotRectifiableError as RepoNotRectifiableError,
 )
 
 if TYPE_CHECKING:
@@ -232,8 +241,9 @@ def create_transaction(
         # invariant. Always a Tulip bug, not user input.
         raise ShadowLedgerInternalError() from exc
 
-    tx_repo = TransactionRepository(session, claims.household_id)
-    saved = tx_repo.save_balanced(posted)
+    settings = get_settings()
+    tx_repo = TransactionRepository(session, claims.household_id, master_key=settings.master_key)
+    saved = tx_repo.save_balanced(posted, notes=body.notes)
 
     paired_shadow_tx_id: UUID | None = None
     if shadow_tx is not None:
@@ -422,6 +432,16 @@ def get_transaction(
     return _read_response(tx_id, claims.household_id, session)
 
 
+def _resolve_notes_patch(body: TransactionUpdate) -> str | None | object:
+    """Return UNSET if ``notes`` was omitted; else the body value (str or None).
+
+    Distinguishes "don't touch the column" from "explicitly clear it".
+    """
+    if "notes" in body.model_fields_set:
+        return body.notes
+    return UNSET
+
+
 @router.patch(
     "/{tx_id}",
     response_model=TransactionRead,
@@ -442,7 +462,8 @@ def patch_transaction(
     session: Session = Depends(get_session),  # noqa: B008
 ) -> TransactionRead:
     """Edit a PENDING transaction. POSTED / RECONCILED return 409."""
-    tx_repo = TransactionRepository(session, claims.household_id)
+    settings = get_settings()
+    tx_repo = TransactionRepository(session, claims.household_id, master_key=settings.master_key)
     existing = tx_repo.get(tx_id)
     if existing is None:
         raise TransactionNotFoundError()
@@ -482,11 +503,14 @@ def patch_transaction(
             for p in existing_postings
         )
 
-    before_snapshot = {
+    before_snapshot: dict[str, object] = {
         "date": existing.date.isoformat(),
         "description": existing.description,
         "reference": existing.reference,
     }
+    notes_patch = _resolve_notes_patch(body)
+    if notes_patch is not UNSET:
+        before_snapshot["notes_present"] = existing.notes_encrypted is not None
     try:
         tx_repo.update_pending(
             tx_id,
@@ -494,10 +518,18 @@ def patch_transaction(
             description=new_desc,
             reference=new_ref,
             postings=new_postings,
+            notes=notes_patch,  # type: ignore[arg-type]
         )
     except RepoNotEditableError as exc:
         raise TransactionNotEditableError() from exc
 
+    after_snapshot: dict[str, object] = {
+        "date": new_date.isoformat(),
+        "description": new_desc,
+        "reference": new_ref,
+    }
+    if notes_patch is not UNSET:
+        after_snapshot["notes_present"] = notes_patch is not None
     AuditLogWriter(session, claims.household_id).write(
         action="update",
         actor_kind="user",
@@ -505,15 +537,111 @@ def patch_transaction(
         entity_type="transaction",
         entity_id=tx_id,
         before=before_snapshot,
-        after={
-            "date": new_date.isoformat(),
-            "description": new_desc,
-            "reference": new_ref,
-        },
+        after=after_snapshot,
         request_id=_request_uuid(request),
     )
     session.commit()
     log.info("transaction.updated", tx_id=str(tx_id))
+    return _read_response(tx_id, claims.household_id, session)
+
+
+@router.patch(
+    "/{tx_id}/description",
+    response_model=TransactionRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.not_rectifiable"),
+        422: problem_response("validation.failed"),
+    },
+)
+def rectify_transaction_description(
+    tx_id: UUID,
+    body: TransactionRectifyRequest,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionRead:
+    """Rectify a POSTED / RECONCILED transaction's header fields (GDPR Art. 16, #242).
+
+    Mutates ``description`` / ``reference`` / ``notes_encrypted`` in place
+    on the original row; postings, status, and date are unchanged. When the
+    transaction has been voided, the reversal sibling's description (which
+    the void route built as ``f"Reversal of {old}: {reason}"``) is
+    rewritten in place so the source's pre-rectification description does
+    not survive at rest in the reversal row.
+
+    The OLD values are written verbatim into the audit row's
+    ``before_snapshot``. Per the Art. 17(3)(e) integrity carve-out, the
+    audit row preserves them until the user is later erased (at which
+    point :func:`tulip_api.routers.users.delete_user` nulls the
+    ``before_snapshot`` / ``after_snapshot`` blobs for rows referencing
+    that user).
+    """
+    settings = get_settings()
+    tx_repo = TransactionRepository(session, claims.household_id, master_key=settings.master_key)
+    existing = tx_repo.get(tx_id)
+    if existing is None:
+        raise TransactionNotFoundError()
+
+    fields_set = body.model_fields_set
+
+    before_snapshot: dict[str, object] = {}
+    if "description" in fields_set:
+        before_snapshot["description"] = existing.description
+    if "reference" in fields_set:
+        before_snapshot["reference"] = existing.reference
+    if "notes" in fields_set:
+        before_snapshot["notes_present"] = existing.notes_encrypted is not None
+
+    # The schema validator forbids body.description being None when the
+    # key is set; assert for type-narrowing.
+    description_arg: str | object
+    if "description" in fields_set:
+        assert body.description is not None  # noqa: S101 — guaranteed by schema validator
+        description_arg = body.description
+    else:
+        description_arg = UNSET
+    try:
+        _, reversal_id_rewritten = tx_repo.rectify_posted(
+            tx_id,
+            description=description_arg,
+            reference=body.reference if "reference" in fields_set else UNSET,
+            notes=body.notes if "notes" in fields_set else UNSET,
+        )
+    except RepoNotRectifiableError as exc:
+        raise TransactionNotRectifiableError() from exc
+
+    after_snapshot: dict[str, object] = {}
+    if "description" in fields_set:
+        after_snapshot["description"] = body.description
+    if "reference" in fields_set:
+        after_snapshot["reference"] = body.reference
+    if "notes" in fields_set:
+        after_snapshot["notes_present"] = body.notes is not None
+
+    metadata: dict[str, object] | None = None
+    if reversal_id_rewritten is not None:
+        metadata = {"reversal_id_rewritten": str(reversal_id_rewritten)}
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="description_rectified",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before=before_snapshot,
+        after=after_snapshot,
+        metadata=metadata,
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "transaction.description_rectified",
+        tx_id=str(tx_id),
+        reversal_id_rewritten=str(reversal_id_rewritten) if reversal_id_rewritten else None,
+    )
     return _read_response(tx_id, claims.household_id, session)
 
 
@@ -594,6 +722,15 @@ def list_transactions(
         description="One of 'pending', 'posted', 'reconciled'.",
         pattern="^(pending|posted|reconciled)$",
     ),
+    id_prefix: str | None = Query(
+        default=None,
+        description=(
+            "Restrict to transactions whose UUID begins with this hex prefix "
+            "(case-insensitive). Hyphens are accepted so callers can paste a "
+            "partial UUID like '5df7-822c'. Excludes LIKE wildcards by regex."
+        ),
+        pattern="^[0-9a-fA-F-]{1,36}$",
+    ),
     limit: int | None = Query(
         default=None,
         ge=1,
@@ -617,6 +754,7 @@ def list_transactions(
         from_date=from_date,
         to_date=to_date,
         status=storage_status,
+        id_prefix=id_prefix,
         limit=limit,
     )
     return [_read_response(t.id, claims.household_id, session) for t in rows]
@@ -646,7 +784,8 @@ def _read_response(
     *,
     paired_shadow_tx_id: UUID | None = None,
 ) -> TransactionRead:
-    repo = TransactionRepository(session, household_id)
+    settings = get_settings()
+    repo = TransactionRepository(session, household_id, master_key=settings.master_key)
     header = repo.get(tx_id)
     assert header is not None  # caller verifies before invoking  # noqa: S101
     postings = repo.list_postings(tx_id)
@@ -660,6 +799,7 @@ def _read_response(
         date=header.date,
         description=header.description,
         reference=header.reference,
+        notes=repo.decrypt_notes(header),
         status=header.status.value,
         postings=[
             PostingRead(

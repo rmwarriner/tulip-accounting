@@ -217,6 +217,199 @@ class TestConfigPut:
         body = client.get("/v1/ai/config", headers=auth_h).json()
         assert body["default_provider"] == "anthropic"
 
+    def test_config_exposes_invocation_retention_days(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """#243: the retention policy is surfaced read-only on the config."""
+        from tulip_storage.runner.handlers import AI_INVOCATION_RETENTION_DAYS
+
+        body = client.get("/v1/ai/config", headers=auth_h).json()
+        assert body["invocation_retention_days"] == AI_INVOCATION_RETENTION_DAYS
+
+    def test_withdrawing_log_prompts_scrubs_prompt_logs(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """#243: flipping log_prompts true->false nulls prompt_json + response_text."""
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import AIInvocation, AuditLog, Household
+
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": True}).raise_for_status()
+        with session_maker() as s:
+            household_id = s.execute(select(Household)).scalar_one().id
+            for _ in range(2):
+                s.add(
+                    AIInvocation(
+                        household_id=household_id,
+                        id=uuid4(),
+                        capability="nl_query",
+                        policy_resolved="permissive",
+                        profile="default",
+                        outcome="success",
+                        prompt_hash=b"\x00" * 32,
+                        prompt_json='{"q": "secret question"}',
+                        response_text="secret answer",
+                    )
+                )
+            s.commit()
+
+        r = client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": False})
+        assert r.status_code == 200, r.text
+        assert r.json()["log_prompts"] is False
+
+        with session_maker() as s:
+            rows = list(s.execute(select(AIInvocation)).scalars().all())
+            audit = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.prompt_log_scrubbed"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 2
+        # Bodies erased; the row + prompt_hash survive for the audit chain.
+        assert all(row.prompt_json is None and row.response_text is None for row in rows)
+        assert all(row.prompt_hash == b"\x00" * 32 for row in rows)
+        assert len(audit) == 1
+        assert audit[0].after_snapshot["rows_scrubbed"] == 2
+
+    def test_put_config_writes_consent_changed_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """#247: any mutation through PUT /v1/ai/config records an audit row.
+
+        Carries full before/after of the household ``ai_policy`` blob and
+        ``actor_user_id`` so GDPR Art. 7(1) "when did consent change and
+        by whom" is answerable.
+        """
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": True}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.entity_type == "household"
+        assert row.actor_user_id is not None
+        # Empty before — the household was newly registered with default policy.
+        assert row.before_snapshot == {}
+        assert row.after_snapshot == {"log_prompts": True}
+
+    def test_put_capability_config_writes_consent_changed_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """The per-capability PUT also records a consent audit row (#247)."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        r = client.put(
+            "/v1/ai/config/capabilities/nl_query",
+            headers=auth_h,
+            json={"policy": "disabled"},
+        )
+        assert r.status_code == 200, r.text
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].before_snapshot == {}
+        assert rows[0].after_snapshot == {
+            "capabilities": {"nl_query": {"policy": "disabled"}},
+        }
+
+    def test_put_config_no_change_emits_no_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """A no-op PUT (every field matches existing state) writes no row."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        # Default household ai_policy is {} — sending a body of {} is a no-op.
+        client.put("/v1/ai/config", headers=auth_h, json={}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert rows == []
+
+    def test_consent_audit_captures_log_prompts_flip(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """Toggling log_prompts on then off writes two distinct audit rows."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": True}).raise_for_status()
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": False}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.action == "ai.consent_changed")
+                    .order_by(AuditLog.occurred_at)
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 2
+        assert rows[0].before_snapshot == {}
+        assert rows[0].after_snapshot == {"log_prompts": True}
+        assert rows[1].before_snapshot == {"log_prompts": True}
+        assert rows[1].after_snapshot == {"log_prompts": False}
+
+    def test_no_scrub_when_log_prompts_not_a_true_to_false_transition(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """The scrub only fires on the true->false edge — not on a false->false PUT."""
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import AIInvocation, Household
+
+        with session_maker() as s:
+            household_id = s.execute(select(Household)).scalar_one().id
+            s.add(
+                AIInvocation(
+                    household_id=household_id,
+                    id=uuid4(),
+                    capability="nl_query",
+                    policy_resolved="permissive",
+                    profile="default",
+                    outcome="success",
+                    prompt_hash=b"\x00" * 32,
+                    prompt_json='{"q": "kept"}',
+                    response_text="kept",
+                )
+            )
+            s.commit()
+
+        # Default policy has no log_prompts → this PUT is a false->false no-op.
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": False}).raise_for_status()
+
+        with session_maker() as s:
+            row = s.execute(select(AIInvocation)).scalar_one()
+        assert row.prompt_json == '{"q": "kept"}'
+        assert row.response_text == "kept"
+
     def test_clears_with_sentinel(self, client: TestClient, auth_h: dict[str, str]) -> None:
         client.put("/v1/ai/config", headers=auth_h, json={"default_provider": "anthropic"})
         r = client.put("/v1/ai/config", headers=auth_h, json={"default_provider": "__CLEAR__"})

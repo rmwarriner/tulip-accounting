@@ -12,17 +12,19 @@ test in ``tulip-cli/tests/test_architecture.py`` enforces this).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
+from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
 from tulip_cli.commands.csv_profiles import csv_profiles_app
 from tulip_cli.config import Config
-from tulip_cli.errors import CliError
+from tulip_cli.errors import EXIT_USER, CliError
 from tulip_cli.http import TulipClient
 
 imports_app = typer.Typer(
@@ -185,8 +187,120 @@ def import_csv(
     )
 
 
-@imports_app.command("apply")
-def apply_import(
+_VALID_LIST_STATUSES = ("parsed", "applied", "reverted")
+
+
+@imports_app.command("list")
+def list_imports(
+    ctx: typer.Context,
+    status_: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help="Filter by batch status. One of: parsed, applied, reverted.",
+        ),
+    ] = None,
+    account: Annotated[
+        str | None,
+        typer.Option(
+            "--account",
+            help=(
+                "Filter to batches uploaded against this account. UUID or code "
+                "(resolved the same way as `accounts show`)."
+            ),
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on rows returned (1-200). Defaults to 25.",
+            min=1,
+            max=200,
+        ),
+    ] = None,
+) -> None:
+    """List recent import batches, newest first.
+
+    Use the printed ID prefix (first 8 chars) with ``tulip imports show
+    <prefix>`` to drill into a batch.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    if status_ is not None and status_ not in _VALID_LIST_STATUSES:
+        raise typer.BadParameter(
+            f"--status must be one of {', '.join(_VALID_LIST_STATUSES)} (got {status_!r})"
+        )
+
+    params: dict[str, str] = {}
+    try:
+        with _client(config, as_json=as_json) as client:
+            if account is not None:
+                resolved = _resolve_account(client, account)
+                params["account_id"] = str(resolved["id"])
+            if status_ is not None:
+                params["status"] = status_
+            if limit is not None:
+                params["limit"] = str(limit)
+            response = client.get("/v1/imports", authenticated=True, params=params)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    items = body.get("items") or []
+    if not items:
+        typer.echo("No import batches match.")
+        return
+    _render_list_table(items)
+    if body.get("next_cursor"):
+        typer.echo(
+            "\nMore batches available. Re-run with --limit to widen the page, or filter further."
+        )
+
+
+def _render_list_table(items: list[dict[str, Any]]) -> None:
+    """Render a list of ``ImportBatchListItem`` dicts as a Rich table."""
+    from rich.table import Table
+
+    from tulip_cli._console import make_console
+    from tulip_cli._tables import add_numeric_column
+
+    table = Table(show_header=True, show_lines=False)
+    table.add_column("id")
+    table.add_column("created")
+    table.add_column("status")
+    table.add_column("format")
+    table.add_column("account")
+    table.add_column("filename")
+    add_numeric_column(table, "counts")
+    for item in items:
+        batch_id = str(item.get("id") or "")
+        account_id = str(item.get("account_id") or "")
+        created = str(item.get("created_at") or "")
+        # ISO-8601 timestamps are 19+ chars; trim microseconds + timezone for
+        # readability while keeping date + time-of-day.
+        if len(created) >= 19:
+            created = created[:19].replace("T", " ")
+        table.add_row(
+            batch_id[:8] if batch_id else "—",
+            created,
+            str(item.get("status") or ""),
+            str(item.get("source_format") or "").upper(),
+            account_id[:8] if account_id else "—",
+            str(item.get("source_filename") or ""),
+            f"{item.get('imported_count', 0)}/{item.get('skipped_count', 0)}",
+        )
+    make_console().print(table)
+
+
+@imports_app.command("show")
+def show_import(
     ctx: typer.Context,
     batch_id: Annotated[
         str,
@@ -196,15 +310,198 @@ def apply_import(
         ),
     ],
 ) -> None:
-    """Apply a parsed batch: every non-excluded line becomes a PENDING ledger transaction."""
+    """Render an import batch's header + parsed statement lines."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     try:
         with _client(config, as_json=as_json) as client:
-            response = client.post(
-                f"/v1/imports/{batch_id}/apply",
+            response = client.get(f"/v1/imports/{batch_id}", authenticated=True)
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+    _render_batch(response.json())
+
+
+def _render_batch(body: dict[str, Any]) -> None:
+    """Render an ``ImportBatchRead`` body to stdout."""
+    from rich.table import Table
+
+    from tulip_cli._console import make_console
+    from tulip_cli._tables import add_numeric_column
+
+    console = make_console()
+    header_lines = [
+        f"Batch:    {body.get('id', '')}",
+        f"Source:   {body.get('source_filename', '')} ({body.get('source_format', '?').upper()})",
+        f"Account:  {body.get('account_id', '')}",
+        f"Status:   {body.get('status', '?')}",
+        f"Counts:   imported={body.get('imported_count', 0)}  "
+        f"skipped={body.get('skipped_count', 0)}  "
+        f"errors={body.get('error_count', 0)}",
+        f"Created:  {body.get('created_at', '')}",
+    ]
+    applied_at = body.get("applied_at")
+    if applied_at:
+        header_lines.append(f"Applied:  {applied_at}")
+    reverted_at = body.get("reverted_at")
+    if reverted_at:
+        header_lines.append(f"Reverted: {reverted_at}")
+    for line in header_lines:
+        typer.echo(line)
+
+    lines = body.get("lines") or []
+    if not lines:
+        typer.echo("\n(no statement lines)")
+        return
+
+    table = Table(title=f"\nStatement lines ({len(lines)})", show_header=True)
+    add_numeric_column(table, "#")
+    table.add_column("date")
+    add_numeric_column(table, "amount")
+    table.add_column("ccy")
+    table.add_column("description")
+    table.add_column("flag")
+    from tulip_cli._money_format import format_amount
+
+    for line in lines:
+        flag_bits: list[str] = []
+        if line.get("is_excluded"):
+            flag_bits.append("excluded")
+        if line.get("reconciliation_match_id"):
+            flag_bits.append("reconciled")
+        currency = str(line.get("currency", ""))
+        table.add_row(
+            str(line.get("line_number", "")),
+            str(line.get("posted_date", "")),
+            format_amount(line.get("amount"), currency),
+            currency,
+            str(line.get("description", "") or ""),
+            ", ".join(flag_bits),
+        )
+    console.print(table)
+
+
+def _format_apply_picker_label(item: dict[str, Any]) -> str:
+    """One-line label for an actionable (status=parsed) batch in the picker."""
+    batch_id = str(item.get("id") or "")
+    created = str(item.get("created_at") or "")
+    if len(created) >= 19:
+        created = created[:19].replace("T", " ")
+    fmt = str(item.get("source_format") or "").upper()
+    filename = str(item.get("source_filename") or "")
+    imported = item.get("imported_count", 0)
+    skipped = item.get("skipped_count", 0)
+    return (
+        f"{batch_id[:8] if batch_id else '—'}  {created}  {fmt:>4}  "
+        f"{filename}  ({imported}/{skipped})"
+    )
+
+
+def _pick_apply_batch_id(config: Config, *, as_json: bool) -> str | None:
+    """Fetch actionable (parsed) batches and prompt the user to pick one.
+
+    Returns the picked UUID string, or ``None`` if the picker is
+    suppressed (no TTY, ``--json``) or the user cancels. Non-interactive
+    callers get a usage hint on stderr matching the legacy "missing
+    argument" message so scripts can ``grep`` it.
+    """
+    if as_json or not is_interactive():
+        typer.echo(
+            "Missing argument BATCH_ID. Run `tulip imports list --status parsed` "
+            "to find a batch, then re-run with the id.",
+            err=True,
+        )
+        return None
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(
+                "/v1/imports",
                 authenticated=True,
+                params={"status": "parsed"},
             )
+    except CliError as err:
+        err.render()
+        return None
+    items = response.json().get("items") or []
+    return pick(
+        items,
+        label=_format_apply_picker_label,
+        title="Pick a parsed import batch to apply:",
+        empty_message=(
+            "No parsed import batches to apply. Upload one with `tulip imports ofx/qif/csv` first."
+        ),
+        overflow_hint=("  …list truncated; narrow with `tulip imports list --account <id>`."),
+    )
+
+
+@imports_app.command("apply")
+def apply_import(
+    ctx: typer.Context,
+    batch_id: Annotated[
+        str | None,
+        typer.Argument(
+            help=(
+                "Import batch UUID returned by `tulip imports ofx/qif/csv`. "
+                "Omit to pick interactively from recent parsed batches "
+                "(TTY only — scripts still get the usage error)."
+            ),
+            metavar="BATCH_ID",
+        ),
+    ] = None,
+    no_categorize: Annotated[
+        bool,
+        typer.Option(
+            "--no-categorize",
+            help=(
+                "Skip the AI categorizer; route every line to the "
+                "household's Imbalance:Unknown account (auto-created per "
+                "currency on first use). Useful for bulk migrations from "
+                "another tool where you'll assign categories manually."
+            ),
+        ),
+    ] = False,
+    posted: Annotated[
+        bool,
+        typer.Option(
+            "--posted",
+            help=(
+                "Land every promoted line as POSTED instead of PENDING "
+                "(skips the review step). Each line lands committed; "
+                "use `tulip transactions edit` to fix categorizations "
+                "later. Useful when every imported line is already "
+                "cleared by the bank (migration workflows from "
+                "Banktivity, Quicken, GnuCash, etc.)."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Apply a parsed batch: every non-excluded line becomes a ledger transaction.
+
+    By default, new transactions are PENDING (review queue). Pass
+    ``--posted`` to land them as POSTED directly — useful for migrations
+    where every line is already cleared by the source bank/tool.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    if batch_id is None:
+        batch_id = _pick_apply_batch_id(config, as_json=as_json)
+        if batch_id is None:
+            raise typer.Exit(2)
+    path = f"/v1/imports/{batch_id}/apply"
+    query: list[str] = []
+    if no_categorize:
+        query.append("no_categorize=true")
+    if posted:
+        query.append("as_posted=true")
+    if query:
+        path += "?" + "&".join(query)
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.post(path, authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -213,10 +510,85 @@ def apply_import(
         sys.stdout.write(response.text + "\n")
         return
     body = response.json()
+    landed_as = "POSTED" if posted else "PENDING"
     typer.echo(
         f"Applied batch {body['batch_id']}: created {body['created_count']} "
-        f"PENDING transactions, skipped {body['skipped_count']} lines."
+        f"{landed_as} transactions, skipped {body['skipped_count']} lines."
     )
+
+
+def _load_account_map(path: Path) -> dict[str, str]:
+    """Load + validate a JSON account-map file: ``{qif name: account id/code}``.
+
+    The map routes each ``!Account`` block in a multi-account QIF to a
+    tulip account. Values are resolved with the same UUID/code/name/path
+    resolver as ``--account`` (#197). JSON only for now — a YAML reader
+    would mean a new CLI dependency.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"--account-map {path} is not readable JSON: {exc}") from exc
+    if not isinstance(raw, dict) or not raw:
+        raise typer.BadParameter(
+            f"--account-map {path} must be a non-empty JSON object "
+            '({"QIF account name": "tulip account code or UUID"}).'
+        )
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
+            raise typer.BadParameter(
+                f"--account-map {path}: every entry must map a QIF account "
+                "name (string) to a non-empty account code / UUID (string)."
+            )
+        out[key] = value.strip()
+    return out
+
+
+def _render_starter_map(account_names: list[str]) -> None:
+    """Print the copy-pasteable starter --account-map for a multi-account QIF."""
+    typer.echo(
+        f"Multi-account QIF — {len(account_names)} accounts found. "
+        "Create a JSON account map and re-run with --account-map:\n",
+        err=True,
+    )
+    starter = {name: "<tulip account code or UUID>" for name in account_names}
+    typer.echo(json.dumps(starter, indent=2), err=True)
+
+
+def _post_qif_single(
+    client: TulipClient,
+    file_path: Path,
+    raw_bytes: bytes,
+    *,
+    account_id: str,
+) -> dict[str, Any]:
+    """POST a single-account QIF to /v1/imports; return the batch summary dict."""
+    response = client.post_multipart(
+        "/v1/imports",
+        files={"file": (file_path.name, raw_bytes, "application/qif")},
+        data={"account_id": account_id, "source_format": "qif"},
+        authenticated=True,
+    )
+    return dict(response.json())
+
+
+def _render_multi_account_summary(body: dict[str, Any], uuid_to_name: dict[str, str]) -> None:
+    """Render a ``MultiAccountImportSummary``: per-account batches + transfers."""
+    for batch in body.get("batches", []):
+        account_id = str(batch.get("account_id", ""))
+        name = uuid_to_name.get(account_id, account_id)
+        typer.echo(f"[{name}] ", nl=False)
+        _render_summary(batch)
+    transfer_count = body.get("transfer_count", 0)
+    if transfer_count:
+        plural = "" if transfer_count == 1 else "s"
+        typer.echo(
+            f"Paired {transfer_count} cross-account transfer{plural} "
+            "into balanced PENDING transactions."
+        )
+    for warning in body.get("warnings", []):
+        typer.echo(f"  warning: {warning}", err=True)
 
 
 @imports_app.command("qif")
@@ -234,22 +606,97 @@ def import_qif(
         ),
     ],
     account: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--account",
             help=(
-                "Account this statement belongs to. UUID or code. The "
-                "account's currency is applied to every line — QIF doesn't "
-                "carry currency in the file itself."
+                "Account this statement belongs to (single-account QIF). "
+                "UUID or code. The account's currency is applied to every "
+                "line — QIF doesn't carry currency in the file itself. "
+                "Mutually exclusive with --account-map."
             ),
         ),
-    ],
+    ] = None,
+    account_map: Annotated[
+        Path | None,
+        typer.Option(
+            "--account-map",
+            help=(
+                "JSON file mapping each QIF !Account name to a tulip account "
+                "code/UUID, for a multi-account QIF. Mutually exclusive with "
+                "--account. Run with --account on a multi-account file to get "
+                "a starter map."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ] = None,
 ) -> None:
-    """Upload a QIF file; the API parses it and persists a batch."""
-    _do_import(
-        ctx,
-        file_path=file_path,
-        account=account,
-        source_format="qif",
-        content_type="application/qif",
-    )
+    """Upload a QIF file; the API parses it and persists a batch.
+
+    Single-account QIF: pass ``--account``. Multi-account QIF (one file
+    holding several ``!Account`` blocks): pass ``--account-map`` to route
+    each account. Running ``--account`` against a multi-account file
+    prints a copy-pasteable starter map.
+    """
+    if account is not None and account_map is not None:
+        raise typer.BadParameter("pass --account OR --account-map, not both")
+    if account is None and account_map is None:
+        raise typer.BadParameter(
+            "pass --account (single-account QIF) or --account-map (multi-account QIF)"
+        )
+
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    raw_bytes = file_path.read_bytes()
+
+    if account is not None:
+        # Single-account path. Intercept the multi-account rejection so we
+        # can render the friendly starter map instead of the raw error.
+        try:
+            with _client(config, as_json=as_json) as client:
+                account_record = _resolve_account(client, account)
+                summary = _post_qif_single(
+                    client, file_path, raw_bytes, account_id=str(account_record["id"])
+                )
+        except CliError as err:
+            if err.problem.get("code") == "import.multi_account_qif" and not as_json:
+                _render_starter_map(list(err.problem.get("account_names", [])))
+                raise typer.Exit(EXIT_USER) from None
+            err.render()
+            raise typer.Exit(err.exit_code) from None
+        if as_json:
+            sys.stdout.write(json.dumps(summary) + "\n")
+            return
+        _render_summary(summary)
+        return
+
+    # Multi-account path: resolve every map entry up front (a bad code
+    # fails before any batch lands), then POST the whole file + the
+    # resolved map in one request. The server splits it by !Account,
+    # creates a batch per account, and pairs cross-account transfers.
+    assert account_map is not None  # noqa: S101 — guarded by the checks above
+    name_to_identifier = _load_account_map(account_map)
+    try:
+        with _client(config, as_json=as_json) as client:
+            resolved: dict[str, str] = {
+                qif_name: str(_resolve_account(client, identifier)["id"])
+                for qif_name, identifier in name_to_identifier.items()
+            }
+            response = client.post_multipart(
+                "/v1/imports/multi-account",
+                files={"file": (file_path.name, raw_bytes, "application/qif")},
+                data={"account_map": json.dumps(resolved)},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    body = dict(response.json())
+    if as_json:
+        sys.stdout.write(json.dumps(body) + "\n")
+        return
+    _render_multi_account_summary(body, {v: k for k, v in resolved.items()})

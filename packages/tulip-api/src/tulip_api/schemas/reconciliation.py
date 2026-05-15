@@ -18,7 +18,12 @@ from pydantic import BaseModel, Field
 
 
 class ReconciliationCreate(BaseModel):
-    """Request body for ``POST /v1/reconciliations``."""
+    """Request body for ``POST /v1/reconciliations``.
+
+    ``source_import_batch_id`` is optional: omit it to open a paper-statement
+    reconciliation (#275) where the user ticks off ledger transactions
+    against a physical statement, with no imported batch to match against.
+    """
 
     account_id: UUID
     statement_period_start: date_type
@@ -26,11 +31,12 @@ class ReconciliationCreate(BaseModel):
     statement_starting_balance: Decimal
     statement_ending_balance: Decimal
     currency: str = Field(min_length=3, max_length=3)
-    source_import_batch_id: UUID = Field(
+    source_import_batch_id: UUID | None = Field(
+        default=None,
         description=(
             "The import batch whose statement lines this reconciliation will "
-            "match against. P5.4.b requires one batch per reconciliation; "
-            "multi-batch reconciliations are out of scope."
+            "match against. Omit for paper-statement (#275) reconciliations "
+            "with no imported file."
         ),
     )
 
@@ -56,7 +62,7 @@ class MatchRead(BaseModel):
 
     id: UUID
     reconciliation_id: UUID
-    statement_line_id: UUID
+    statement_line_id: UUID | None
     ledger_transaction_id: UUID
     match_amount: Decimal
     currency: str
@@ -127,6 +133,19 @@ class ManualMatchCreate(BaseModel):
     ledger_transaction_id: UUID
     match_amount: Decimal
     currency: str = Field(min_length=3, max_length=3)
+
+
+class PaperMatchCreate(BaseModel):
+    """Request body for paper-statement reconciliation match (#275).
+
+    No ``statement_line_id`` — the user is asserting "this ledger
+    transaction matches a line on my paper statement" without an
+    imported file to point at. ``match_amount`` and ``currency`` are
+    derived server-side from the bank-side posting on the recon's
+    account; the client need only identify the transaction.
+    """
+
+    ledger_transaction_id: UUID
 
 
 class CarryForwardCreate(BaseModel):

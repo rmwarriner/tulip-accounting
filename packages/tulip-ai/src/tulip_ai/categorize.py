@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from tulip_ai._sessions import use_session_or_make_one
 from tulip_ai.adapters import ProviderAdapter, ProviderResponse
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
 from tulip_ai.cost import PreCallApproval, enforce_pre_call
@@ -40,7 +41,7 @@ from tulip_ai.redaction import (
 )
 from tulip_core.reconciliation.categorizer import CategorizationResult
 from tulip_storage.encryption import decrypt_field
-from tulip_storage.models import Account, AccountType, Household
+from tulip_storage.models import Account, AccountType, Household, User
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,6 +63,7 @@ class _PromptInputs:
     """What we gathered from the DB to build the prompt + audit the call."""
 
     household: Household
+    user_policy: dict[str, object] | None
     api_key: str | None
     chart: list[ChartEntry]
 
@@ -104,20 +106,30 @@ class AICategorizer:
         self._adapter = adapter
 
     async def categorize(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Session | None = None,
     ) -> CategorizationResult:
         """Suggest a category for one statement line.
+
+        ``session`` is the opt-in session-sharing path (#199, #200): callers
+        that are mid-transaction (the import-apply flow is the motivating
+        case) pass their session so the audit-row write doesn't deadlock
+        against the caller's own write lock. Standalone callers pass
+        nothing and the capability opens its own session.
 
         Wide ``except`` is intentional at the outer boundary: importer
         failures from a flaky AI provider — or from any AI-stack bug —
         must not block the whole apply batch. The provider-error branch
         produces an explicit ``ai_invocations`` row; deeper failures
-        (DB lock, decryption, unexpected exception) fall through to a
-        silent ``Imbalance:Unknown`` so the apply succeeds and the
-        operator gets the signal via structlog.
+        (decryption, unexpected exception) fall through to a silent
+        ``Imbalance:Unknown`` so the apply succeeds and the operator
+        gets the signal via structlog.
         """
         try:
-            return await self._categorize_inner(line, household_context)
+            return await self._categorize_inner(line, household_context, session=session)
         except Exception:
             log.exception(
                 "ai.categorize.failed",
@@ -126,16 +138,24 @@ class AICategorizer:
             return _FALLBACK_RESULT
 
     async def _categorize_inner(
-        self, line: StatementLine, household_context: HouseholdContext
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        session: Session | None,
     ) -> CategorizationResult:
         """Inner categorize body — caller wraps in a broad exception guard."""
-        with self._session_maker() as session:
-            inputs = self._load_inputs(session, household_context.household_id)
+        with use_session_or_make_one(session, self._session_maker) as (session, should_commit):
+            inputs = self._load_inputs(
+                session,
+                household_context.household_id,
+                household_context.acting_user_id,
+            )
             if inputs is None:
                 # Household vanished mid-call (shouldn't happen) — fall back silently.
                 return _FALLBACK_RESULT
 
-            policy = resolve_policy(inputs.household.ai_policy, None, "categorize")
+            policy = resolve_policy(inputs.household.ai_policy, inputs.user_policy, "categorize")
             writer = AIInvocationWriter(session)
 
             if policy.level == "disabled":
@@ -150,7 +170,8 @@ class AICategorizer:
                         prompt_hash=hash_prompt_payload(payload.to_dict()),
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             if inputs.api_key is None and policy.provider != "ollama":
@@ -165,10 +186,14 @@ class AICategorizer:
                         model=policy.model,
                         outcome="provider_error",
                         prompt_hash=hash_prompt_payload(payload.to_dict()),
-                        response_text="no api key configured for provider",
+                        # H-1 (#234): gate error-path response_text on log_prompts.
+                        response_text=(
+                            "no api key configured for provider" if policy.log_prompts else None
+                        ),
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             payload = build_categorize_prompt(line, inputs.chart)
@@ -189,7 +214,7 @@ class AICategorizer:
             gate = enforce_pre_call(
                 session,
                 household_id=household_context.household_id,
-                user_id=None,  # importer-driven; no acting user surfaced yet
+                user_id=household_context.acting_user_id,
                 rate_limit_per_hour=policy.rate_limit_per_hour,
                 monthly_cost_cap_usd=policy.monthly_cost_cap_usd,
                 cost_cap_behaviour=policy.cost_cap_behaviour,
@@ -209,10 +234,11 @@ class AICategorizer:
                         model=policy.model,
                         outcome=gate.outcome,
                         prompt_hash=hash_prompt_payload(body),
-                        response_text=gate.reason[:500],
+                        response_text=gate.reason[:500] if policy.log_prompts else None,
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             call_provider = gate.provider or ""
@@ -236,10 +262,11 @@ class AICategorizer:
                         model=call_model,
                         outcome="provider_error",
                         prompt_hash=hash_prompt_payload(body),
-                        response_text=str(exc)[:500],
+                        response_text=str(exc)[:500] if policy.log_prompts else None,
                     )
                 )
-                session.commit()
+                if should_commit:
+                    session.commit()
                 return _FALLBACK_RESULT
 
             result = _parse_response(response, fallback_chart=inputs.chart)
@@ -264,20 +291,31 @@ class AICategorizer:
                     response_text=response.text if policy.log_prompts else None,
                 )
             )
-            session.commit()
+            if should_commit:
+                session.commit()
             return result
 
-    def _load_inputs(self, session: Session, household_id: UUID) -> _PromptInputs | None:
+    def _load_inputs(
+        self,
+        session: Session,
+        household_id: UUID,
+        acting_user_id: UUID | None,
+    ) -> _PromptInputs | None:
         household = session.get(Household, household_id)
         if household is None:
             return None
 
-        # Resolve API key: per-user override > household. P6.1 doesn't yet
-        # have an "acting user" passed in via HouseholdContext, so we use
-        # the household-level key. The user-level override surface lands
-        # when HouseholdContext grows an ``acting_user_id`` field — tracked
-        # as a Phase 6 follow-up.
-        api_key = self._decrypt_key(household.ai_keys_encrypted, household.ai_policy)
+        user: User | None = None
+        if acting_user_id is not None:
+            user = session.get(User, (household_id, acting_user_id))
+
+        # Resolve API key (#239): per-user override > household for the
+        # resolved provider. Use the user's key when set for the provider;
+        # otherwise fall back to the household's. Note we look up the
+        # provider from the household policy here (categorize doesn't yet
+        # let users override provider — only severity); a Phase 9 follow-up
+        # might revisit if per-user provider routing becomes a thing.
+        api_key = self._resolve_api_key(household, user)
 
         # Chart of expense + income accounts — categorize doesn't propose
         # asset / liability codes per ADR-0005 §Q3.
@@ -297,19 +335,28 @@ class AICategorizer:
             for a in rows
             if a.code is not None
         ]
-        return _PromptInputs(household=household, api_key=api_key, chart=chart)
+        return _PromptInputs(
+            household=household,
+            user_policy=user.ai_policy if user is not None else None,
+            api_key=api_key,
+            chart=chart,
+        )
 
-    def _decrypt_key(self, blob: bytes | None, ai_policy: dict[str, object]) -> str | None:
-        """Extract the API key for the resolved provider from an encrypted JSON blob.
-
-        ``ai_keys_encrypted`` is JSON ``{provider: api_key}``, encrypted with
-        the master key. Returns ``None`` if no blob or no key for this provider.
-        """
-        if not blob:
-            return None
-        provider = ai_policy.get("default_provider")
+    def _resolve_api_key(self, household: Household, user: User | None) -> str | None:
+        """Per-user key overrides household key for the resolved provider (#239)."""
+        provider = household.ai_policy.get("default_provider")
         if not isinstance(provider, str):
             return None
+        if user is not None and user.ai_keys_encrypted:
+            user_key = self._extract_provider_key(user.ai_keys_encrypted, provider)
+            if user_key is not None:
+                return user_key
+        if household.ai_keys_encrypted:
+            return self._extract_provider_key(household.ai_keys_encrypted, provider)
+        return None
+
+    def _extract_provider_key(self, blob: bytes, provider: str) -> str | None:
+        """Decrypt + extract a single provider's key from a ``{provider: key}`` blob."""
         try:
             decrypted = decrypt_field(blob, master_key=self._master_key).decode("utf-8")
             keys_dict = json.loads(decrypted)

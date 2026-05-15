@@ -18,9 +18,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from tulip_api.auth.rate_limit import auth_rate_limit_handler, limiter
 from tulip_api.config import get_settings
 from tulip_api.errors import install_problem_handlers
 from tulip_api.logging_config import configure_logging
@@ -32,7 +34,9 @@ from tulip_api.routers import (
     csv_profiles,
     envelopes,
     health,
+    households,
     imports,
+    journal,
     notifications,
     periods,
     pools,
@@ -43,6 +47,7 @@ from tulip_api.routers import (
     sinking_funds,
     system,
     transactions,
+    users,
     well_known_errors,
 )
 from tulip_core.reconciliation.categorizer import register_categorizer
@@ -119,6 +124,26 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             settings = get_settings()
             session_maker = _build_session_maker(settings.database_url)
             runner = Runner(session_maker)
+            # H-3 (#235): register the attachment GC handler so orphaned
+            # ciphertext files get swept periodically. The runner reads
+            # ``scheduled_jobs`` for the actual fire cadence; an installer
+            # is expected to seed a daily rrule for ``attachment_gc``.
+            from tulip_storage.runner.handlers import (
+                make_ai_retention_handler,
+                make_attachment_gc_handler,
+            )
+
+            runner.register_handler(
+                "attachment_gc",
+                make_attachment_gc_handler(session_maker, settings.attachment_root),
+            )
+            # H-16 (#243): TTL garbage-collection of ai_invocations. Like
+            # attachment_gc, the runner reads ``scheduled_jobs`` for the
+            # fire cadence; an installer seeds a daily rrule.
+            runner.register_handler(
+                "ai_retention",
+                make_ai_retention_handler(session_maker),
+            )
             app.state.runner = runner
             _register_ai_categorizer(session_maker)
             await runner.start()
@@ -143,6 +168,15 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     # request_id is in scope for every log line emitted during handling.
     app.add_middleware(RequestIdMiddleware)
 
+    # H-4 (#219): slowapi limiter for /v1/auth/* — wires the limiter into
+    # the app state and registers a Problem-Details exception handler for
+    # RateLimitExceeded. Per-route quotas are declared on each endpoint.
+    app.state.limiter = limiter
+    # Starlette types the handler arg as Exception; our narrower
+    # RateLimitExceeded signature is correct at runtime (Starlette
+    # dispatches by isinstance) and clearer at the callsite.
+    app.add_exception_handler(RateLimitExceeded, auth_rate_limit_handler)  # type: ignore[arg-type]
+
     install_problem_handlers(app)
 
     # Top-level health probe — kept off /v1 so monitors don't break across
@@ -152,6 +186,8 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(ai.router)
     app.include_router(well_known_errors.router)
     app.include_router(auth.router)
+    app.include_router(users.router)
+    app.include_router(households.router)
     app.include_router(accounts.router)
     app.include_router(transactions.router)
     app.include_router(periods.router)
@@ -162,6 +198,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
     app.include_router(pools.router)
     app.include_router(refill_schedules.router)
     app.include_router(reports.router)
+    app.include_router(journal.router)
     # csv_profiles must register BEFORE imports — both prefix on
     # /v1/imports, and the more specific /v1/imports/profiles router
     # must win route matching for the profile endpoints. (FastAPI

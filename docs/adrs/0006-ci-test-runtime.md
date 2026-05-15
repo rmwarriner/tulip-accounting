@@ -181,13 +181,22 @@ Powerful but requires storing the testmon DB across runs (S3, cache
 action). High setup cost, brittle, and the savings vanish on
 ``main``-target PRs. Not worth it at the current scale.
 
-### Option 6 — Schemathesis ``max_examples`` cap *(now redundant)*
+### Option 6 — Schemathesis ``max_examples`` cap *(implemented 2026-05-12)*
 
-The schemathesis suite is fast enough that none of its tests appear
-in the top 50 ``--durations``. Capping examples would help in absolute
-total but not visibly. Skip unless it later becomes a long pole.
+Reduce the "ci" hypothesis profile's ``max_examples`` from 25 to 10 in
+``packages/tulip-api/tests/test_openapi_contract.py``. The "thorough"
+profile at 200 remains available for ad-hoc deeper runs via
+``HYPOTHESIS_PROFILE=thorough``.
 
-## Recommendation
+**Status: shipped on top of option 3.** When option 3's matrix split
+landed, the tulip-api shard surfaced as the dominant wall-clock pole
+at ~9:10 — schemathesis (~80 fuzz endpoints × 25 examples = ~2000
+iterations) was carrying most of that cost. Cutting examples to 10
+reduces schemathesis fuzz coverage by ~60% with diminishing returns
+on the bug classes hypothesis catches at this layer (status-code-in-
+declared-set + body-conforms-to-schema; structural bugs surface
+within ~5 examples per endpoint, deeper iterations are extra
+property-test runs against the same hot path).
 
 After the option 2 experiment (2026-05-11):
 

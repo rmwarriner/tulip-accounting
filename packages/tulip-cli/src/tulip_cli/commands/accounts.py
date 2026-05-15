@@ -4,10 +4,12 @@ Read-only commands consume ``GET /v1/accounts`` and
 ``GET /v1/accounts/{id}``. Write paths (``add``, ``deactivate``) land in
 P3.4 (#21).
 
-The ``show`` command resolves an identifier as a UUID first and falls
-back to a code lookup over the listed accounts. ``code`` has no
-uniqueness constraint server-side, so duplicates produce an ambiguous-id
-error rather than silently picking the first match.
+The ``show`` command (and every ``--account`` surface, via
+:func:`_resolve_account`) resolves an identifier in this order: UUID,
+exact ``code``, unique ``name``, hierarchical colon-path. ``code`` and
+``name`` have no uniqueness constraint server-side, so duplicates
+produce an ambiguous-identifier error rather than silently picking the
+first match. See #197.
 """
 
 from __future__ import annotations
@@ -18,10 +20,10 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import typer
-from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import EXIT_USER, CliError
@@ -38,6 +40,24 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
     return TulipClient(config, token_store=default_token_store(), as_json=as_json)
 
 
+#: Account-type tokens accepted as the leading segment of a hierarchical
+#: path, mapped to the canonical singular the API stores. Lets a user
+#: type the plural form they see in journal exports (``assets:cash``)
+#: or the singular (``asset:cash``); both resolve. See #197.
+_TYPE_ALIASES: dict[str, str] = {
+    "asset": "asset",
+    "assets": "asset",
+    "liability": "liability",
+    "liabilities": "liability",
+    "equity": "equity",
+    "equities": "equity",
+    "income": "income",
+    "incomes": "income",
+    "expense": "expense",
+    "expenses": "expense",
+}
+
+
 def _ambiguous_code_problem(identifier: str, count: int) -> dict[str, object]:
     return {
         "type": "/.well-known/errors/account.ambiguous_code",
@@ -52,13 +72,30 @@ def _ambiguous_code_problem(identifier: str, count: int) -> dict[str, object]:
     }
 
 
+def _ambiguous_name_problem(identifier: str, full_paths: list[str]) -> dict[str, object]:
+    listed = "\n  ".join(sorted(full_paths))
+    return {
+        "type": "/.well-known/errors/account.ambiguous_name",
+        "title": "Account identifier matches multiple accounts",
+        "status": 0,
+        "detail": (
+            f"{len(full_paths)} accounts match {identifier!r}. "
+            "Disambiguate with a fuller hierarchical path, the account "
+            f"code, or the UUID:\n  {listed}"
+        ),
+        "instance": "",
+        "code": "account.ambiguous_name",
+    }
+
+
 def _not_found_problem(identifier: str) -> dict[str, object]:
     return {
         "type": "/.well-known/errors/account.not_found",
         "title": "Account not found",
         "status": 0,
         "detail": (
-            f"No account with code or id {identifier!r} is visible to this user. "
+            f"No account matching {identifier!r} (by id, code, name, or "
+            "hierarchical path) is visible to this user. "
             "Run `tulip accounts list` to see what's available."
         ),
         "instance": "",
@@ -66,16 +103,104 @@ def _not_found_problem(identifier: str) -> dict[str, object]:
     }
 
 
-def _resolve_account(client: TulipClient, identifier: str) -> dict[str, Any]:
-    """Return a single account dict by UUID or by ``code``.
+def _account_name_path(account: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> list[str]:
+    """Return the lowercased ``[root_name, …, leaf_name]`` chain for an account.
 
-    UUID-shaped strings are looked up via ``GET /v1/accounts/{id}``.
-    Anything else is matched against the listed accounts' ``code`` field.
+    Walks ``parent_account_id`` to the root. The ``seen`` guard is purely
+    defensive — the server enforces a tree, but a malformed response
+    shouldn't hang the CLI.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    cur: dict[str, Any] | None = account
+    while cur is not None:
+        cur_id = str(cur["id"])
+        if cur_id in seen:
+            break
+        seen.add(cur_id)
+        names.append(str(cur["name"]).lower())
+        parent_id = cur.get("parent_account_id")
+        cur = by_id.get(str(parent_id)) if parent_id else None
+    names.reverse()
+    return names
+
+
+def _account_full_path(account: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> str:
+    """Render an account's ``type:name:…:name`` path for error messages.
+
+    Uses the original-case names so the printed path is something the
+    user can read back; the type segment stays lowercased to match what
+    the API stores.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    cur: dict[str, Any] | None = account
+    while cur is not None:
+        cur_id = str(cur["id"])
+        if cur_id in seen:
+            break
+        seen.add(cur_id)
+        names.append(str(cur["name"]))
+        parent_id = cur.get("parent_account_id")
+        cur = by_id.get(str(parent_id)) if parent_id else None
+    names.reverse()
+    return ":".join([str(account["type"]).lower(), *names])
+
+
+def _match_name_or_path(accounts: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+    """Return accounts matching ``identifier`` as a name or hierarchical path.
+
+    The identifier is split on ``:`` into case-insensitive segments. A
+    leading segment that names an account type (``assets``/``asset``…)
+    constrains the match to that type; the remaining segments must be a
+    suffix of the candidate's root→leaf name chain. A single segment is
+    just a plain (unique) name lookup.
+
+    Empty segments (``::``, a trailing ``:``) make the identifier
+    un-resolvable as a path — returns no matches so the caller falls
+    through to the not-found error.
+    """
+    raw_segments = [seg.strip() for seg in identifier.split(":")]
+    if any(not seg for seg in raw_segments):
+        return []
+    tokens = [seg.lower() for seg in raw_segments]
+
+    type_constraint: str | None = None
+    name_tokens = tokens
+    if len(tokens) > 1 and tokens[0] in _TYPE_ALIASES:
+        type_constraint = _TYPE_ALIASES[tokens[0]]
+        name_tokens = tokens[1:]
+    if not name_tokens:
+        return []
+
+    by_id = {str(a["id"]): a for a in accounts}
+    matches: list[dict[str, Any]] = []
+    for account in accounts:
+        if type_constraint is not None and str(account.get("type", "")).lower() != type_constraint:
+            continue
+        name_path = _account_name_path(account, by_id)
+        if len(name_path) >= len(name_tokens) and name_path[-len(name_tokens) :] == name_tokens:
+            matches.append(account)
+    return matches
+
+
+def _resolve_account(client: TulipClient, identifier: str) -> dict[str, Any]:
+    """Return a single account dict by UUID, code, name, or hierarchical path.
+
+    Resolution order (#197):
+
+    1. UUID — ``GET /v1/accounts/{id}``.
+    2. Exact ``code`` match over the listed accounts. Duplicate codes
+       raise ``account.ambiguous_code``; a no-match falls through.
+    3. Unique ``name`` / hierarchical colon-path match (case-insensitive,
+       type-prefix optional). Multiple matches raise
+       ``account.ambiguous_name`` with the full paths listed.
+    4. Nothing matched — ``account.not_found``.
     """
     try:
         UUID(identifier)
     except ValueError:
-        # Not a UUID — fall through to code lookup.
+        # Not a UUID — fall through to code / name / path lookup.
         pass
     else:
         response = client.get(f"/v1/accounts/{identifier}", authenticated=True)
@@ -83,20 +208,39 @@ def _resolve_account(client: TulipClient, identifier: str) -> dict[str, Any]:
 
     response = client.get("/v1/accounts", authenticated=True)
     accounts = response.json()
-    matches = [a for a in accounts if a.get("code") == identifier]
-    if not matches:
+
+    # 2. Exact code match. Ambiguous codes are a hard error; a clean miss
+    #    falls through to name / path resolution.
+    code_matches = [a for a in accounts if a.get("code") == identifier]
+    if len(code_matches) > 1:
         raise CliError(
-            problem=_not_found_problem(identifier),
+            problem=_ambiguous_code_problem(identifier, len(code_matches)),
             as_json=False,
             exit_code=EXIT_USER,
         )
-    if len(matches) > 1:
+    if len(code_matches) == 1:
+        return dict(code_matches[0])
+
+    # 3. Name / hierarchical-path resolution.
+    name_matches = _match_name_or_path(accounts, identifier)
+    if len(name_matches) > 1:
+        by_id = {str(a["id"]): a for a in accounts}
         raise CliError(
-            problem=_ambiguous_code_problem(identifier, len(matches)),
+            problem=_ambiguous_name_problem(
+                identifier, [_account_full_path(a, by_id) for a in name_matches]
+            ),
             as_json=False,
             exit_code=EXIT_USER,
         )
-    return dict(matches[0])
+    if len(name_matches) == 1:
+        return dict(name_matches[0])
+
+    # 4. Nothing matched.
+    raise CliError(
+        problem=_not_found_problem(identifier),
+        as_json=False,
+        exit_code=EXIT_USER,
+    )
 
 
 def _render_table(accounts: list[dict[str, Any]]) -> None:
@@ -115,7 +259,7 @@ def _render_table(accounts: list[dict[str, Any]]) -> None:
             a.get("currency") or "",
             a.get("visibility") or "",
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 def _render_tree(accounts: list[dict[str, Any]]) -> None:
@@ -159,7 +303,7 @@ def _render_tree(accounts: list[dict[str, Any]]) -> None:
     for a in orphans:
         node = root.add(_label(a) + " [yellow](parent not visible)[/yellow]")
         _attach(node, a)
-    Console().print(root)
+    make_console().print(root)
 
 
 def _has_nesting(accounts: list[dict[str, Any]]) -> bool:

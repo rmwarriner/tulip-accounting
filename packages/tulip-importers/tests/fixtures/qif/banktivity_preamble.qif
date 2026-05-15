@@ -1,0 +1,41 @@
+!Option:AutoSwitch
+!Account
+NChecking
+TBank
+DEveryday checking account
+B10000.00
+^
+!Clear:AutoSwitch
+!Type:Cat
+NGroceries
+E
+^
+NSalary
+I
+^
+NUtilities:Natural Gas
+E
+^
+!Account
+NChecking
+^
+!Type:Bank
+D1/2/26
+T-58.99
+PCenterPoint Energy
+MGas bill
+^
+D1/5/26
+T1500.00
+PEmployer
+MPayroll
+^
+!Type:Security
+NAcme Corp
+SACME
+TStock
+^
+NWidget Inc
+SWGT
+TStock
+^

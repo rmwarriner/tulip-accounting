@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Envelope status · {{ data.household_name }}{% endblock %}
+{% block report_title %}Envelope status{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+  <dt>As of:</dt><dd>{{ data.as_of | isodate }}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Envelope</th>
+      <th class="num">Balance</th>
+      <th>Currency</th>
+      <th class="num">Budget</th>
+      <th>Period</th>
+      <th>Rollover</th>
+      <th class="num">Used %</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td class="num{% if row.balance is negative %} negative{% endif %}">{{ row.balance | money }}</td>
+      <td>{{ row.currency }}</td>
+      <td class="num">{% if row.budget_amount is not none %}{{ row.budget_amount | money }}{% else %}—{% endif %}</td>
+      <td>{{ row.budget_period }}</td>
+      <td>{{ row.rollover_policy }}</td>
+      <td class="num">{% if row.utilization_pct is not none %}{{ row.utilization_pct }}%{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No active envelopes.</p>
+{% endif %}
+{% endblock %}

@@ -151,6 +151,28 @@ class ForbiddenError(TulipProblem):
         )
 
 
+class ReauthRequiredError(TulipProblem):
+    """A sensitive mutation requires re-submitting the caller's current password (#242).
+
+    Raised by ``PATCH /v1/users/me`` when the caller is trying to change
+    their email (the login identifier) without supplying ``current_password``
+    in the body. The bare access token isn't enough.
+    """
+
+    def __init__(self) -> None:
+        """Build the auth.reauth_required problem."""
+        super().__init__(
+            code="auth.reauth_required",
+            title="Re-authentication required",
+            status=401,
+            detail=(
+                "Changing your email requires submitting your current password "
+                "in the same request body. Include a 'current_password' field "
+                "and resubmit."
+            ),
+        )
+
+
 class InvalidCredentialsError(TulipProblem):
     """Login was attempted with an unknown email or wrong password."""
 
@@ -166,6 +188,69 @@ class InvalidCredentialsError(TulipProblem):
             status=401,
             detail="The email or password is incorrect.",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class UserNotFoundError(TulipProblem):
+    """The targeted user does not exist within the caller's household."""
+
+    def __init__(self) -> None:
+        """Build the user.not_found problem."""
+        super().__init__(
+            code="user.not_found",
+            title="User not found",
+            status=404,
+            detail="No user with the given id exists in your household.",
+        )
+
+
+class LastAdminDeletionError(TulipProblem):
+    """Refused: deleting this user would leave the household with no admin."""
+
+    def __init__(self) -> None:
+        """Build the user.last_admin problem."""
+        super().__init__(
+            code="user.last_admin",
+            title="Cannot delete the last admin",
+            status=409,
+            detail=(
+                "This user is the only admin in the household; "
+                "promote another member to admin first."
+            ),
+        )
+
+
+class HouseholdErasureNotRequestedError(TulipProblem):
+    """``DELETE /v1/households/me`` requires a fresh confirmation token."""
+
+    def __init__(self) -> None:
+        """Build the household.erasure_not_requested problem."""
+        super().__init__(
+            code="household.erasure_not_requested",
+            title="Erasure not requested",
+            status=409,
+            detail=(
+                "Issue a confirmation token first via "
+                "POST /v1/households/me/erase-request, then resubmit with "
+                "the token in the X-Erasure-Token header."
+            ),
+        )
+
+
+class HouseholdErasureTokenInvalidError(TulipProblem):
+    """The X-Erasure-Token header is missing, malformed, or doesn't match."""
+
+    def __init__(self) -> None:
+        """Build the household.erasure_token_invalid problem."""
+        super().__init__(
+            code="household.erasure_token_invalid",
+            title="Invalid erasure token",
+            status=401,
+            detail=(
+                "The X-Erasure-Token header is missing, expired, or does "
+                "not match the most recent erasure request. Request a "
+                "fresh token via POST /v1/households/me/erase-request."
+            ),
         )
 
 
@@ -541,6 +626,29 @@ class TransactionNotEditableError(TulipProblem):
         )
 
 
+class TransactionNotRectifiableError(TulipProblem):
+    """PATCH /description was attempted on a PENDING (or otherwise unsupported) transaction (#242).
+
+    GDPR Art. 16 rectification applies to POSTED / RECONCILED transactions
+    whose description / reference / notes need correcting in place. PENDING
+    transactions still have the regular ``PATCH /v1/transactions/{id}`` open
+    to them.
+    """
+
+    def __init__(self) -> None:
+        """Build the transaction.not_rectifiable problem."""
+        super().__init__(
+            code="transaction.not_rectifiable",
+            title="Transaction is not rectifiable",
+            status=409,
+            detail=(
+                "Only POSTED or RECONCILED transactions can have their "
+                "description rectified. PENDING transactions should be "
+                "edited via PATCH /v1/transactions/{id} instead."
+            ),
+        )
+
+
 class TransactionNotDeletableError(TulipProblem):
     """DELETE was attempted on a non-PENDING transaction (P5.0)."""
 
@@ -728,6 +836,55 @@ class SinkingFundNotFoundError(TulipProblem):
         )
 
 
+class AccountNotRedactableError(TulipProblem):
+    """A redact was attempted on an account that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the account.not_redactable problem."""
+        super().__init__(
+            code="account.not_redactable",
+            title="Account not redactable",
+            status=409,
+            detail=(
+                "Only deactivated accounts can be redacted. Delete (deactivate) "
+                "the account first, then redact it to erase its PII."
+            ),
+        )
+
+
+class EnvelopeNotRedactableError(TulipProblem):
+    """A redact was attempted on an envelope that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the envelope.not_redactable problem."""
+        super().__init__(
+            code="envelope.not_redactable",
+            title="Envelope not redactable",
+            status=409,
+            detail=(
+                "Only deactivated envelopes can be redacted. Delete (deactivate) "
+                "the envelope first, then redact it to erase its PII."
+            ),
+        )
+
+
+class SinkingFundNotRedactableError(TulipProblem):
+    """A redact was attempted on a sinking fund that is still active (#236)."""
+
+    def __init__(self) -> None:
+        """Build the sinking_fund.not_redactable problem."""
+        super().__init__(
+            code="sinking_fund.not_redactable",
+            title="Sinking fund not redactable",
+            status=409,
+            detail=(
+                "Only deactivated sinking funds can be redacted. Delete "
+                "(deactivate) the sinking fund first, then redact it to erase "
+                "its PII."
+            ),
+        )
+
+
 class PoolTransferSamePoolError(TulipProblem):
     """A transfer was requested with identical source and destination pools."""
 
@@ -902,8 +1059,10 @@ def _sanitize_for_json(value: Any) -> Any:  # noqa: ANN401 — Pydantic errors a
     """Recursively coerce values to JSON-safe primitives.
 
     Pydantic's error contexts include ``Decimal`` values for numeric
-    constraints. Bytes occasionally show up in URL parsing errors. Coerce
-    both to strings so the validation 422 response can render.
+    constraints, ``bytes`` occasionally from URL parsing errors, and
+    ``Exception`` instances when a ``@model_validator(mode="after")``
+    raises ``ValueError`` (the exception object lands under ``ctx.error``).
+    Coerce all of them to strings so the validation 422 response can render.
     """
     from decimal import Decimal as _Dec  # local to avoid top-of-file import bloat
 
@@ -915,6 +1074,8 @@ def _sanitize_for_json(value: Any) -> Any:  # noqa: ANN401 — Pydantic errors a
         return str(value)
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
+    if isinstance(value, BaseException):
+        return str(value)
     return value
 
 
@@ -1005,6 +1166,80 @@ class ImportQifParseFailedError(TulipProblem):
             title="QIF file could not be parsed",
             status=400,
             detail=reason,
+        )
+
+
+class ImportMultiAccountQifError(TulipProblem):
+    """A multi-account QIF was uploaded without a ``qif_account`` selector (#195).
+
+    The file declares 2+ ``!Account`` blocks; a plain single-account
+    import would silently merge every account's transactions into one
+    tulip account. The ``account_names`` extension lists the QIF account
+    names so the CLI can render a starter ``--account-map``.
+    """
+
+    def __init__(self, *, account_names: list[str]) -> None:
+        """Build the import.multi_account_qif problem (400)."""
+        super().__init__(
+            code="import.multi_account_qif",
+            title="Multi-account QIF requires an account map",
+            status=400,
+            detail=(
+                f"This QIF declares {len(account_names)} accounts. Re-run with "
+                "--account-map to route each one to a tulip account."
+            ),
+            extensions={"account_names": account_names},
+        )
+
+
+class ImportQifAccountNotFoundError(TulipProblem):
+    """The ``qif_account`` selector names an account absent from the file (#195)."""
+
+    def __init__(self, *, qif_account: str, available: list[str]) -> None:
+        """Build the import.qif_account_not_found problem (400)."""
+        super().__init__(
+            code="import.qif_account_not_found",
+            title="QIF account not found in file",
+            status=400,
+            detail=(
+                f"The uploaded QIF has no !Account block named {qif_account!r}. "
+                f"It contains: {', '.join(available) or '(none)'}."
+            ),
+            extensions={"qif_account": qif_account, "available": available},
+        )
+
+
+class ImportQifAccountUnmappedError(TulipProblem):
+    """A multi-account QIF declares accounts the account_map doesn't cover (#195b)."""
+
+    def __init__(self, *, unmapped: list[str]) -> None:
+        """Build the import.qif_account_unmapped problem (400)."""
+        super().__init__(
+            code="import.qif_account_unmapped",
+            title="Account map is missing QIF accounts",
+            status=400,
+            detail=(
+                f"The QIF declares {len(unmapped)} account(s) the --account-map "
+                f"doesn't cover: {', '.join(unmapped)}. Add them to the map so "
+                "every account routes to a tulip account."
+            ),
+            extensions={"unmapped": unmapped},
+        )
+
+
+class ImportAccountMapInvalidError(TulipProblem):
+    """The ``account_map`` form field isn't a JSON object of name→account-id (#195b)."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Build the import.account_map_invalid problem (400)."""
+        super().__init__(
+            code="import.account_map_invalid",
+            title="Invalid account map",
+            status=400,
+            detail=(
+                f"The account_map form field must be a JSON object mapping each "
+                f"QIF account name to a tulip account UUID: {reason}"
+            ),
         )
 
 
@@ -1441,6 +1676,50 @@ class ReconciliationTxNotFoundError(TulipProblem):
             title="Ledger transaction not found",
             status=404,
             detail="No ledger transaction with that ID exists in this household.",
+        )
+
+
+class ReconciliationPaperMatchNotPaperReconError(TulipProblem):
+    """POST /paper-matches called on a reconciliation that has a source batch (#275).
+
+    The paper-statement endpoint is only valid for batch-less recons. For
+    OFX-driven flows the caller must use ``POST /matches`` with a
+    ``statement_line_id``.
+    """
+
+    def __init__(self, *, reconciliation_id: str) -> None:
+        """Build the reconciliation.paper_match_not_paper_recon problem (400)."""
+        super().__init__(
+            code="reconciliation.paper_match_not_paper_recon",
+            title="Paper match not allowed on OFX-driven reconciliation",
+            status=400,
+            detail=(
+                "This reconciliation has a source_import_batch_id, so it uses "
+                "the OFX-driven flow. Paper-statement matches are only valid "
+                "for batch-less reconciliations. Use POST /matches with a "
+                "statement_line_id instead."
+            ),
+            extensions={"reconciliation_id": reconciliation_id},
+        )
+
+
+class ReconciliationTxAlreadyMatchedError(TulipProblem):
+    """The ledger transaction is already matched in this reconciliation (#275)."""
+
+    def __init__(self, *, ledger_transaction_id: str, existing_match_id: str) -> None:
+        """Build the reconciliation.tx_already_matched problem (409)."""
+        super().__init__(
+            code="reconciliation.tx_already_matched",
+            title="Ledger transaction already matched in this reconciliation",
+            status=409,
+            detail=(
+                "The ledger transaction already has a match in this "
+                "reconciliation. Reject the existing match before re-matching."
+            ),
+            extensions={
+                "ledger_transaction_id": ledger_transaction_id,
+                "existing_match_id": existing_match_id,
+            },
         )
 
 

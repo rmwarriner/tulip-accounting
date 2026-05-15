@@ -227,13 +227,18 @@ class AIForecastCapability:
         target_date: date | None,
         recent_inflow_average: Decimal | None,
     ) -> ForecastResult:
-        from tulip_storage.models import Household
+        from tulip_storage.models import Household, User
 
         with self._session_maker() as session:
             household = session.get(Household, household_id)
             if household is None:
                 return ForecastResult(text="", error="household not found")
-            policy = resolve_policy(household.ai_policy, None, "forecast")
+            user_policy: dict[str, object] | None = None
+            if actor_user_id is not None:
+                user = session.get(User, (household_id, actor_user_id))
+                if user is not None:
+                    user_policy = user.ai_policy
+            policy = resolve_policy(household.ai_policy, user_policy, "forecast")
 
             if policy.level == "disabled":
                 self._audit(
@@ -260,7 +265,10 @@ class AIForecastCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "forecast", "envelope_id": str(envelope_id)}
                     ),
-                    response_text="no api key configured for provider",
+                    # H-1 (#234): gate error-path response_text on log_prompts.
+                    response_text=(
+                        "no api key configured for provider" if policy.log_prompts else None
+                    ),
                 )
                 return ForecastResult(text="", error="no api key")
 
@@ -288,7 +296,7 @@ class AIForecastCapability:
                     prompt_hash=hash_prompt_payload(
                         {"task": "forecast", "envelope_id": str(envelope_id)}
                     ),
-                    response_text=gate.reason[:500],
+                    response_text=gate.reason[:500] if policy.log_prompts else None,
                 )
                 return ForecastResult(text="", error=gate.outcome)
 
@@ -325,7 +333,7 @@ class AIForecastCapability:
                 model=call_model,
                 outcome="provider_error",
                 prompt_hash=hash_prompt_payload(payload.to_dict()),
-                response_text=str(exc)[:500],
+                response_text=str(exc)[:500] if policy.log_prompts else None,
             )
             return ForecastResult(text="", error=f"provider error: {exc}")
 

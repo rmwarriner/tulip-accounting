@@ -43,6 +43,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "PeriodClosedError": {"reason": "Period 2025-12-31 is closed."},
     "ProposalAlreadyDecidedError": {"current_status": "approved"},
+    "ProposalNotDeletableError": {"current_status": "pending"},
     "ProposalPayloadInvalidError": {
         "reason": (
             "envelope_budget_update payload must include envelope_id (UUID) "
@@ -50,6 +51,15 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         )
     },
     "UnsupportedProposalKindError": {"kind": "transfer_pools"},
+    "CustomQueryUnsafeError": {"reason": "table 'users' is not in the AI view allowlist"},
+    "JournalParseFailedError": {
+        "errors": [{"line": 7, "message": "malformed posting line"}],
+    },
+    "JournalImportFailedError": {
+        "errors": [
+            {"line": 3, "message": "could not resolve account path 'Expense:9999:Nonexistent'"},
+        ],
+    },
     "PoolNotFoundError": {"pool_id": "<pool-uuid>"},
     "PoolInactiveError": {"pool_id": "<pool-uuid>"},
     "PoolCurrencyMismatchError": {
@@ -73,6 +83,13 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "ImportOfxParseFailedError": {"reason": "could not parse as OFX: ..."},
     "ImportQifParseFailedError": {"reason": "could not parse as QIF: ..."},
+    "ImportMultiAccountQifError": {"account_names": ["Checking", "Savings"]},
+    "ImportQifAccountNotFoundError": {
+        "qif_account": "Checking",
+        "available": ["Savings", "Credit Card"],
+    },
+    "ImportQifAccountUnmappedError": {"unmapped": ["Savings", "Credit Card"]},
+    "ImportAccountMapInvalidError": {"reason": "expected a JSON object, got a list"},
     "ImportCsvParseFailedError": {"reason": "row 7: date '13/45/2026' doesn't match ..."},
     "ImportUnsupportedFormatError": {
         "format_name": "csv",
@@ -132,6 +149,13 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
         "period_end": "2026-05-31",
     },
     # ReconciliationTxNotFoundError takes no args.
+    "ReconciliationPaperMatchNotPaperReconError": {
+        "reconciliation_id": "<reconciliation-uuid>",
+    },
+    "ReconciliationTxAlreadyMatchedError": {
+        "ledger_transaction_id": "<transaction-uuid>",
+        "existing_match_id": "<match-uuid>",
+    },
     "RequestPayloadTooLargeError": {"max_bytes": 26214400},
     "UnsupportedMediaTypeError": {
         "accepted": ("application/x-ofx", "application/octet-stream", "text/xml"),
@@ -147,6 +171,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
             }
         ],
     },
+    "AuthRateLimitedError": {"retry_after_seconds": 60},
 }
 
 

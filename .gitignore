@@ -58,3 +58,6 @@ junit.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code session scratch (transient, never committed)
+.claude/

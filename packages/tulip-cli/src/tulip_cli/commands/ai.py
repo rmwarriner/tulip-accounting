@@ -550,6 +550,13 @@ def config_show(ctx: typer.Context) -> None:
     for name in _HOUSEHOLD_KEYS:
         value = body.get(name)
         typer.echo(f"  {name:24s} = {value if value is not None else '(unset)'}")
+    retention = body.get("invocation_retention_days")
+    if retention is not None:
+        # Read-only — set by the server's ai_retention handler, not via `set`.
+        typer.echo(
+            f"  {'invocation_retention':24s} = {retention} days "
+            "(non-proposal ai_invocations; read-only)"
+        )
     typer.echo("Per-capability overrides:")
     for cap in _CAPABILITIES:
         cfg = (body.get("capabilities") or {}).get(cap) or {}

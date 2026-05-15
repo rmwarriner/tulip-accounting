@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from types import MappingProxyType
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -137,7 +138,11 @@ class TestRegistry:
     def test_register_replaces_default(self):
         class CustomCategorizer:
             async def categorize(
-                self, line: StatementLine, household_context: HouseholdContext
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                session: Any = None,
             ) -> CategorizationResult:
                 return CategorizationResult(account_code="Custom:Account", confidence=0.5)
 
@@ -155,13 +160,21 @@ class TestRegistry:
     def test_re_registration_warns(self):
         class CustomA:
             async def categorize(
-                self, line: StatementLine, household_context: HouseholdContext
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                session: Any = None,
             ) -> CategorizationResult:
                 return CategorizationResult("A", 1.0)
 
         class CustomB:
             async def categorize(
-                self, line: StatementLine, household_context: HouseholdContext
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                session: Any = None,
             ) -> CategorizationResult:
                 return CategorizationResult("B", 1.0)
 

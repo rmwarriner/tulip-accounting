@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Reconciliation summary · {{ data.household_name }}{% endblock %}
+{% block report_title %}Reconciliation summary{% endblock %}
+
+{% block meta %}
+<dl class="meta">
+  <dt>Household:</dt><dd>{{ data.household_name }}</dd>
+</dl>
+{% endblock %}
+
+{% block content %}
+{% if data.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Account</th>
+      <th>Period</th>
+      <th class="num">Starting</th>
+      <th class="num">Ending</th>
+      <th>Currency</th>
+      <th>Status</th>
+      <th class="num">Matches</th>
+      <th class="num">Carried fwd</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data.rows %}
+    <tr>
+      <td>{{ row.account_code or "" }} {{ row.account_name }}</td>
+      <td>{{ row.period_start | isodate }} → {{ row.period_end | isodate }}</td>
+      <td class="num">{{ row.starting_balance | money }}</td>
+      <td class="num">{{ row.ending_balance | money }}</td>
+      <td>{{ row.currency }}</td>
+      <td>{{ row.status }}</td>
+      <td class="num">{{ row.match_count }}</td>
+      <td class="num{% if row.carry_forward_count > 0 %} warning{% endif %}">{{ row.carry_forward_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No reconciliations.</p>
+{% endif %}
+{% endblock %}

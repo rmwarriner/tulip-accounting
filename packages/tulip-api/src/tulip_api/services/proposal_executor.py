@@ -110,6 +110,9 @@ async def _execute_envelope_budget_update(
             "proposal_id": str(proposal.id),
             "proposal_kind": proposal.kind,
             "rationale": proposal.rationale or "",
+            "ai_invocation_id": (
+                str(proposal.ai_invocation_id) if proposal.ai_invocation_id else None
+            ),
         },
     )
 

@@ -27,6 +27,10 @@ import pytest
 from alembic.command import upgrade
 from alembic.config import Config
 
+# Make sibling test-helper modules (e.g. _cli_asserts.py) importable by
+# basename — pytest's importlib mode doesn't put the tests/ dir on sys.path.
+sys.path.insert(0, str(Path(__file__).parent))
+
 # Same base64 of 32 bytes the API conftest uses; never appears outside tests.
 _TEST_MASTER_KEY_B64 = "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="
 _TEST_JWT_SECRET = "test-secret-32bytes-test-secret!!"

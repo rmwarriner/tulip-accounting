@@ -99,3 +99,99 @@ def test_default_token_store_uses_keyring_when_env_var_unset(
     # Don't actually write to the user's keyring during tests; just check
     # that the store reports keyring mode.
     assert store.is_keyring_backed
+
+
+class TestFileBackendMode:
+    """#226: file backend writes 0600, refuses to load looser-mode files."""
+
+    def test_save_writes_mode_0600(self, tmp_path: Path) -> None:
+        path = tmp_path / "tokens.json"
+        store = TokenStore(file_path=path)
+        store.save("https://api.example.com", _tokens())
+        assert path.exists()
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+
+    def test_load_refuses_world_readable_file(self, tmp_path: Path) -> None:
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        path = tmp_path / "tokens.json"
+        store = TokenStore(file_path=path)
+        store.save("https://api.example.com", _tokens())
+        path.chmod(0o644)
+        with pytest.raises(TokenStoreError, match=r"chmod 0600"):
+            store.load("https://api.example.com")
+
+    def test_load_refuses_group_readable_file(self, tmp_path: Path) -> None:
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        path = tmp_path / "tokens.json"
+        store = TokenStore(file_path=path)
+        store.save("https://api.example.com", _tokens())
+        path.chmod(0o640)
+        with pytest.raises(TokenStoreError, match=r"chmod 0600"):
+            store.load("https://api.example.com")
+
+    def test_save_overwrite_preserves_mode_0600(self, tmp_path: Path) -> None:
+        """A second save (atomic replace) must not regress to umask mode."""
+        path = tmp_path / "tokens.json"
+        store = TokenStore(file_path=path)
+        store.save("https://api.example.com", _tokens(access_token="first"))
+        store.save("https://api.example.com", _tokens(access_token="second"))
+        assert (path.stat().st_mode & 0o777) == 0o600
+
+    def test_save_does_not_leave_tmp_files(self, tmp_path: Path) -> None:
+        """Successful atomic-write path cleans up after itself."""
+        path = tmp_path / "tokens.json"
+        store = TokenStore(file_path=path)
+        store.save("https://api.example.com", _tokens())
+        tmps = list(tmp_path.glob("*.tmp"))
+        assert not tmps, f"unexpected tmp files: {tmps}"
+
+
+class TestKeyringUnavailable:
+    """When the OS keyring backend is missing, raise TokenStoreError (#227)."""
+
+    def test_save_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "set_password", _no_keyring)
+        store = TokenStore()  # keyring-backed
+        with pytest.raises(TokenStoreError) as excinfo:
+            store.save("https://api.example.com", _tokens())
+        # Operator guidance must mention how to recover.
+        assert "keyring" in str(excinfo.value).lower()
+
+    def test_load_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "get_password", _no_keyring)
+        store = TokenStore()
+        with pytest.raises(TokenStoreError):
+            store.load("https://api.example.com")
+
+    def test_clear_raises_token_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import keyring
+        import keyring.errors
+
+        from tulip_cli.auth.tokens import TokenStoreError
+
+        def _no_keyring(*_a: object, **_kw: object) -> None:
+            raise keyring.errors.NoKeyringError("no usable backend")
+
+        monkeypatch.setattr(keyring, "delete_password", _no_keyring)
+        store = TokenStore()
+        with pytest.raises(TokenStoreError):
+            store.clear("https://api.example.com")

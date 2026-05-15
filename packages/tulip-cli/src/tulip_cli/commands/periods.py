@@ -13,9 +13,9 @@ from typing import Annotated
 from uuid import UUID
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
@@ -52,7 +52,7 @@ def _render_table(periods: list[dict[str, object]]) -> None:
             status_styled,
             str(p.get("closed_at") or "—"),
         )
-    Console().print(table)
+    make_console().print(table)
 
 
 @periods_app.command("list")
