@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #247 ai.consent_changed audit merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,15 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#246 (M-2)** — `ip_address` + `user_agent` join the
+  `_SENSITIVE_FIELDS` whitelist in `logging_config.py`. Both the
+  structlog pipeline and the stdlib `Logger.makeRecord` redactor scrub
+  these values in any structlog event or `extra={...}` payload. The
+  `sessions.ip_address` and `audit_log.ip_address` rows stay
+  full-precision at rest — the existing `#235` user-erasure scrub is
+  the long-term redaction path. No IP truncation: full-precision DB +
+  redacted logs preserves per-host forensic depth while closing the
+  log-leak hazard.
 - **#247 (M-7)** — consent provenance: every mutation to
   `households.ai_policy` (PUT `/v1/ai/config` and PUT
   `/v1/ai/config/capabilities/{capability}`) now writes an

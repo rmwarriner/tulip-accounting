@@ -51,6 +51,14 @@ _SENSITIVE_FIELDS: Final[frozenset[str]] = frozenset(
         # promise it's redacted-by-default. #220 (H-5).
         "email",
         "user_email",
+        # IP + user-agent are personal data per GDPR Recital 30 / Art. 4(1).
+        # They're captured on every auth event (register / login / MFA /
+        # refresh / logout / recovery) into ``sessions.ip_address`` /
+        # ``audit_log.ip_address`` — that's the at-rest fate. This whitelist
+        # entry keeps the same values from leaking into structlog files in
+        # the clear. #246 (M-2).
+        "ip_address",
+        "user_agent",
     }
 )
 
