@@ -20,6 +20,10 @@ from tulip_storage.runner.handlers.attachment_gc import (
     make_attachment_gc_handler,
     run_attachment_gc,
 )
+from tulip_storage.runner.handlers.audit_retention import (
+    make_audit_retention_handler,
+    run_audit_retention,
+)
 from tulip_storage.runner.handlers.daily_insights import make_daily_insights_handler
 from tulip_storage.runner.handlers.envelope_refill import make_envelope_refill_handler
 
@@ -27,8 +31,10 @@ __all__ = [
     "AI_INVOCATION_RETENTION_DAYS",
     "make_ai_retention_handler",
     "make_attachment_gc_handler",
+    "make_audit_retention_handler",
     "make_daily_insights_handler",
     "make_envelope_refill_handler",
     "run_ai_retention",
     "run_attachment_gc",
+    "run_audit_retention",
 ]

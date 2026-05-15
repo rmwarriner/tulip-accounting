@@ -59,6 +59,14 @@ class Household(Base):
     ai_policy: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
+    # Audit-log retention policy per ARCHITECTURE §4.1 / #245. Mirrors
+    # ``ai_policy``: empty dict means "use code defaults" (7y for ledger
+    # mutations, 90d for auth events, 30d for AI capability actions,
+    # 365d for admin actions, 90d default). The scheduled handler
+    # ``audit_retention`` reads this and prunes accordingly.
+    audit_retention_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
     # Encrypted JSON blob of ``{provider: api_key}``. Encryption mirrors
     # ``users.totp_secret_encrypted`` — same master key, same envelope.
     # NULL means no household-level keys are configured.

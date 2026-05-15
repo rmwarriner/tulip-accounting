@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,21 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#245 (M-1 + M-22 + M-23)** — audit-log tiered retention + backup-leak
+  warning. New `households.audit_retention_policy` JSON column + daily
+  `audit_retention` scheduled handler that ages out `audit_log` rows by
+  tier (ledger 7y / auth 90d / AI 30d / admin 365d / default 90d, all
+  operator-overridable). `tulip admin audit-policy show / set` and
+  `tulip admin audit-prune` CLIs + `GET/PUT /v1/admin/audit-policy` +
+  `POST /v1/admin/audit-prune` endpoints. The prune handler writes an
+  `audit.pruned` summary row with per-tier counts. M-22:
+  `tulip ai config log-prompts on` now warns operators that subsequent
+  backups carry prompt + response bodies in plaintext (backups aren't
+  re-encrypted; only field-encrypted columns are protected at rest).
+  M-23 (docs-only): ARCHITECTURE §7.5 + USER_RIGHTS.md §Erasure +
+  QUICKSTART now document operator-side rotation (cron + `find -mtime`)
+  rather than an in-process rotation handler — operators own the backup
+  archive directory.
 - **#244 (H-17 + M-3 / M-4 / M-5)** — `THREAT_MODEL.md §2` data
   classification refreshed against the deep privacy audit's §11
   recommendations: email moved Medium → High; IP/UA online identifiers

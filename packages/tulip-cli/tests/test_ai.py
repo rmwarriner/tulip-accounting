@@ -196,6 +196,8 @@ def test_ai_config_round_trip(authed: str) -> None:
     log_on = _run_cli("ai", "config", "log-prompts", "on", api_url=authed)
     assert log_on.returncode == 0
     assert "warning" in log_on.stderr.lower()
+    # #245 (M-22): the warning also mentions the backup-leak path.
+    assert "backup" in log_on.stderr.lower()
     body = json.loads(_run_cli("--json", "ai", "config", "show", api_url=authed).stdout)
     assert body["log_prompts"] is True
 

@@ -715,3 +715,16 @@ def config_log_prompts(
             "Forensic value, privacy cost (ADR-0005 §Q6).",
             err=True,
         )
+        # M-22 (#245): backup-leak path. ``prompt_json`` + ``response_text``
+        # are plaintext columns, gated only by this toggle; ``tulip backup``
+        # does not re-encrypt the tarball (only field-encrypted columns
+        # protect at-rest), so any backup taken from now on carries those
+        # bodies in plaintext until rotation or scrub.
+        typer.echo(
+            "NOTE: every `tulip backup` taken from now on will include those "
+            "prompt + response bodies in plaintext (backups are not re-encrypted; "
+            "only field-encrypted columns are protected at rest). Turn `log_prompts` "
+            "back off — or rotate / delete old backups — before sharing or moving "
+            "a backup off-host.",
+            err=True,
+        )
