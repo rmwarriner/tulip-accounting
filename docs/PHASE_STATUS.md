@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #247 ai.consent_changed audit merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,12 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#247 (M-7)** — consent provenance: every mutation to
+  `households.ai_policy` (PUT `/v1/ai/config` and PUT
+  `/v1/ai/config/capabilities/{capability}`) now writes an
+  `ai.consent_changed` audit row with full before / after and
+  `actor_user_id`. No-op PUTs skip the row. ADR-0005 §"Lifecycle
+  controls on ai_invocations" updated with the consent-provenance line.
 - **#239 (H-11 + M-16)** — per-user AI policy + per-user AI keys:
   `users.ai_policy` JSON column (nullable = inherit household);
   `HouseholdContext.acting_user_id` plumbed through all five
