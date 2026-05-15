@@ -89,6 +89,16 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # select is household-scoped; it never writes — same read-only
         # justification as households.py.
         "tulip-api/src/tulip_api/routers/users.py",
+        # Transaction repo's delete_pending (#301) needs to NULL
+        # statement_lines.promoted_transaction_id before the DELETE FROM
+        # transactions, otherwise the RESTRICT FK
+        # fk_statement_lines_promoted_tx blocks the delete. The mutation
+        # is a targeted column-clear, not a row write — the line itself
+        # stays in place (un-promoted, ready for re-promotion). Routing
+        # this through StatementLineRepository.mark_unpromoted would
+        # introduce a circular-import between TransactionRepository and
+        # StatementLineRepository.
+        "tulip-storage/src/tulip_storage/repositories/transaction.py",
     }
 )
 

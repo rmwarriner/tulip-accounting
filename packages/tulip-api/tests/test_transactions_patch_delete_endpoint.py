@@ -245,3 +245,61 @@ class TestDelete:
         bogus = "11111111-1111-1111-1111-111111111111"
         r = client.delete(f"/v1/transactions/{bogus}", headers=auth_h)
         assert_problem(r, code="transaction.not_found", status=404)
+
+    def test_delete_pending_promoted_from_import_unpromotes_statement_line(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        cash_and_food: tuple[str, str],
+        session_maker,
+    ):
+        """#301 + #302: a PENDING tx created via the imports-apply flow can
+        be deleted via the API. The source statement line is un-promoted
+        (re-promotable). Without the fix this returned 500 from an
+        unhandled IntegrityError; with the fix it's 204.
+        """
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import StatementLine
+
+        cash, _food = cash_and_food
+
+        # Upload a minimal QIF that auto-categorizes to Imbalance:Unknown
+        # via the register-time seeded chart entry (so the apply flow
+        # succeeds without seeding extra category accounts).
+        qif_body = b"!Type:Bank\nD1/2/26\nT-12.50\nPCoffee\n^\n"
+        r = client.post(
+            "/v1/imports",
+            headers=auth_h,
+            files={"file": ("coffee.qif", qif_body, "application/qif")},
+            data={
+                "account_id": cash,
+                "source_format": "qif",
+                "no_categorize": "true",
+            },
+        )
+        assert r.status_code == 201, r.text
+        batch_id = r.json()["id"]
+
+        # Apply → one PENDING tx promoted from the single statement line.
+        ap = client.post(f"/v1/imports/{batch_id}/apply", headers=auth_h)
+        assert ap.status_code == 200, ap.text
+        tx_ids = ap.json()["transaction_ids"]
+        assert len(tx_ids) == 1
+        tx_id = tx_ids[0]
+
+        # Confirm the back-reference exists pre-delete.
+        with session_maker() as s:
+            line = s.execute(select(StatementLine)).scalar_one()
+            assert line.promoted_transaction_id == UUID(tx_id)
+
+        # The reproduction case from #301: DELETE on a promoted PENDING tx.
+        r = client.delete(f"/v1/transactions/{tx_id}", headers=auth_h)
+        assert r.status_code == 204, r.text
+
+        # Post-delete: tx gone, line still here but un-promoted.
+        with session_maker() as s:
+            line = s.execute(select(StatementLine)).scalar_one()
+            assert line.promoted_transaction_id is None

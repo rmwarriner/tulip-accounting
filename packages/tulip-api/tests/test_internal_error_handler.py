@@ -86,6 +86,60 @@ def test_internal_error_carries_request_id_when_supplied_by_client(
     assert response.json().get("request_id") == "00000000-0000-0000-0000-000000000abc"
 
 
+def test_integrity_error_renders_data_integrity_constraint_409() -> None:
+    """#302: sqlalchemy.exc.IntegrityError is a classified failure, not a 500.
+
+    The catch-all maps it to a typed 409 ``data.integrity_constraint`` so
+    a client gets a structured response rather than the generic "we don't
+    know what happened" wrapper. The full SQL exception still lands in
+    server logs at error level for diagnosis.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    app = FastAPI()
+    install_problem_handlers(app)
+
+    @app.get("/boom-integrity")
+    def _boom_integrity() -> None:
+        # Synthesize the shape SQLAlchemy raises in production. Constructor
+        # is (statement, params, orig); ``orig`` is the DBAPI exception.
+        raise IntegrityError("DELETE FROM x", {}, Exception("FK constraint failed"))
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/boom-integrity")
+
+    assert response.status_code == 409
+    assert response.headers["content-type"] == PROBLEM_CONTENT_TYPE
+    body = response.json()
+    assert body["code"] == "data.integrity_constraint"
+    assert body["status"] == 409
+    # SQL text must not leak.
+    assert "DELETE FROM" not in response.text
+    assert "FK constraint" not in response.text
+
+
+def test_integrity_error_does_not_fall_through_to_internal_server_error() -> None:
+    """The IntegrityError-specific handler must outrank the bare ``Exception`` catch-all.
+
+    Starlette dispatches by MRO; this asserts the registration order +
+    specificity actually wins, not by accident.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    app = FastAPI()
+    install_problem_handlers(app)
+
+    @app.get("/boom")
+    def _boom() -> None:
+        raise IntegrityError("UPDATE x", {}, Exception("uniqueness violation"))
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/boom")
+    assert response.json()["code"] == "data.integrity_constraint"
+    # Specifically NOT the 500 catch-all code.
+    assert response.json()["code"] != "server.internal_error"
+
+
 def test_typed_problem_handler_still_wins_over_catchall(panic_client: TestClient) -> None:
     """Registering an Exception handler must not shadow the TulipProblem handler.
 

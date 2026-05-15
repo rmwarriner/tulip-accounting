@@ -1848,20 +1848,58 @@ class InternalServerError(TulipProblem):
         )
 
 
+class DataIntegrityConstraintError(TulipProblem):
+    """A database constraint blocked the request (#302).
+
+    Caught by the global ``sqlalchemy.exc.IntegrityError`` handler in
+    :func:`install_problem_handlers`. The detail is intentionally
+    generic — the specific constraint (UNIQUE / FOREIGN KEY / CHECK /
+    NOT NULL) is in the server logs; the client gets a classified 409
+    rather than a generic 500. Endpoint code that *foresees* a specific
+    IntegrityError condition should raise its own more-actionable
+    ``TulipProblem`` subclass instead of relying on this catch-all (the
+    transaction-delete path is the motivating example — its FK issue
+    is fixed at the source in #301 so this catch-all is the long-tail
+    safety net, not the user's normal path).
+    """
+
+    def __init__(self) -> None:
+        """Build the data.integrity_constraint problem (no SQL leaked)."""
+        super().__init__(
+            code="data.integrity_constraint",
+            title="Database constraint violation",
+            status=409,
+            detail=(
+                "The request violated a database constraint (foreign key, "
+                "unique, check, or not-null). The request_id below identifies "
+                "the specific row + constraint in the server logs. If this "
+                "looks like a user-facing error rather than a server bug, "
+                "please file a bug — the endpoint should be raising a typed "
+                "Problem Detail instead of falling through to this catch-all."
+            ),
+        )
+
+
 def install_problem_handlers(app: FastAPI) -> None:
     """Register the :class:`TulipProblem` handler on ``app``.
 
-    Wires up four handlers, in order of specificity (Starlette dispatches
+    Wires up five handlers, in order of specificity (Starlette dispatches
     by MRO, picking the most specific match):
 
     * :class:`TulipProblem` — typed domain errors raised by route code.
     * :class:`fastapi.exceptions.RequestValidationError` — Pydantic 422.
+    * :class:`sqlalchemy.exc.IntegrityError` (#302) — DB constraint
+      violations (FK, UNIQUE, CHECK, NOT NULL) get a typed 409 rather
+      than the generic 500 the bare ``Exception`` handler would emit.
+      Endpoint code that *foresees* a specific IntegrityError should
+      catch it locally and raise a more-actionable ``TulipProblem``;
+      this handler is the long-tail safety net.
     * :class:`starlette.exceptions.HTTPException` — framework-level
       400 (malformed body), 404 (no route), 405 (wrong method), 415, etc.
     * :class:`Exception` — last-resort catch-all so an unhandled
       exception never escapes as the default ``text/plain`` 500.
 
-    With all four registered, every non-2xx response is RFC 9457
+    With all five registered, every non-2xx response is RFC 9457
     ``application/problem+json``. Schemathesis's contract test asserts
     this for documented endpoints; the catch-all closes the
     "unhandled-exception" gap that schemathesis can't see (production
@@ -1870,6 +1908,7 @@ def install_problem_handlers(app: FastAPI) -> None:
     """
     import structlog
     from fastapi.exceptions import RequestValidationError
+    from sqlalchemy.exc import IntegrityError
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
     log = structlog.get_logger("tulip_api.errors")
@@ -1885,6 +1924,21 @@ def install_problem_handlers(app: FastAPI) -> None:
         # JSONResponse can't serialize. Coerce them to strings recursively.
         sanitized = [_sanitize_for_json(e) for e in exc.errors()]
         return _render(request, ValidationFailedError(errors=sanitized))
+
+    @app.exception_handler(IntegrityError)
+    def _handle_integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        # #302: DB constraint violations are a classified failure, not
+        # the "we don't know what happened" 500 the bare Exception
+        # handler would emit. We log the full SQL exception server-side
+        # for diagnosis (same shape as _handle_unhandled below) but the
+        # client sees a stable 409 ``data.integrity_constraint`` code.
+        log.exception(
+            "integrity_error",
+            exc_info=exc,
+            exc_type=type(exc).__name__,
+            path=request.url.path,
+        )
+        return _render(request, DataIntegrityConstraintError())
 
     @app.exception_handler(Exception)
     def _handle_unhandled(request: Request, exc: Exception) -> JSONResponse:

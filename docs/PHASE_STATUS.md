@@ -622,6 +622,21 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#301 + #302 (bugs)** — fixed two coupled bugs surfaced by the
+  Banktivity migration. **#301**: `TransactionRepository.delete_pending`
+  now NULLs the back-reference in `statement_lines.promoted_transaction_id`
+  before the DELETE — the RESTRICT FK `fk_statement_lines_promoted_tx`
+  previously blocked deletion of any PENDING tx that came from an
+  imports-apply flow, surfacing as a generic 500. The line is left in
+  the unmatched pool (re-promotable). **#302**: new
+  `DataIntegrityConstraintError` (409, `data.integrity_constraint`) +
+  a `sqlalchemy.exc.IntegrityError` handler in
+  `install_problem_handlers` so unhandled DB constraint violations
+  return a typed Problem Detail instead of the generic 500
+  catch-all. Five exception handlers now (TulipProblem,
+  RequestValidationError, IntegrityError, StarletteHTTPException,
+  Exception); the IntegrityError-specific handler outranks the bare
+  Exception catch-all by Starlette's MRO dispatch.
 - **#297 (bug)** — QIF split records now import as **one
   ParsedStatementLine with a structured splits tuple** instead of
   fanning out into N siblings. The `_finalize_split_record` rewrite +
