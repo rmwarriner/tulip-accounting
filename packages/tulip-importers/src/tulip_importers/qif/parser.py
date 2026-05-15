@@ -25,8 +25,8 @@ Date parsing handles three common dialects:
 - US 2-digit: ``5/12/26`` (rolls to 20YY — no QIF-emitting bank issues
   19xx files in 2026+).
 
-Split records (#270)
---------------------
+Split records (#270, #297)
+--------------------------
 
 Banktivity and most legacy desktop apps (Quicken, Moneydance, …) encode
 a multi-category transaction as one record carrying:
@@ -35,18 +35,21 @@ a multi-category transaction as one record carrying:
 - N ``S<category>`` / ``$<amount>`` / ``E<memo>`` triples — one per
   category. The ``$``-amounts must sum to ``T``.
 
-We emit **one ``ParsedStatementLine`` per split** rather than one line
-with the consolidated total. Each split inherits the parent record's
-date, payee, and reference; ``raw["L"]`` carries the split category for
-the categorizer; the per-split ``E`` memo is folded into ``description``
-so operator-facing renders surface the split's own purpose, not the
-parent record's generic memo. Splits whose amounts don't sum to ``T``
-are rejected with :class:`QifParseError` — silently dropping or
-rebalancing would lose money in either direction.
+Per #297, we emit **one ``ParsedStatementLine`` per split-bearing
+record** with the consolidated parent total in ``amount`` and the
+per-category breakdown in a ``splits`` tuple of :class:`ParsedSplit`.
+Each ``ParsedSplit`` carries its category (the ``S`` line) + amount
+(the ``$`` line) + optional memo (the ``E`` line). Promoting the line
+later yields a single transaction with ``1 + len(splits)`` postings:
+one bank-side at ``T`` and one per split — preserving double-entry's
+"one external event = one transaction" invariant and keeping the bank
+statement reconciliation 1:1.
 
-A non-split record (no ``S``/``$`` lines) still emits exactly one
-``ParsedStatementLine``, preserving the existing two-posting promotion
-shape.
+Splits whose amounts don't sum to ``T`` are rejected with
+:class:`QifParseError` — silently dropping or rebalancing would lose
+money in either direction. A non-split record (no ``S``/``$`` lines)
+still emits exactly one ``ParsedStatementLine`` with an empty
+``splits`` tuple, preserving the existing two-posting promotion shape.
 
 Section skipping (#198)
 -----------------------
@@ -80,7 +83,7 @@ from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
 
 from tulip_core.money import Money
-from tulip_core.reconciliation import ParsedStatementLine
+from tulip_core.reconciliation import ParsedSplit, ParsedStatementLine
 
 #: Each transaction record ends with this single-character line.
 _RECORD_TERMINATOR = "^"
@@ -216,13 +219,16 @@ def _finalize_split_record(
     posted_date: date_type,
     total: Decimal,
 ) -> list[ParsedStatementLine]:
-    """Expand a split record into one ParsedStatementLine per S/$/E triple.
+    """Emit a single ParsedStatementLine carrying every split in ``splits`` (#297).
 
-    Each split inherits the parent's date, payee, and reference. The
-    split's category lives in ``raw["L"]`` (where downstream's
-    categorizer already looks for category hints); the split memo is
-    folded into the per-line description so operator-facing renders
-    surface the split's own purpose.
+    Per #297 the parser no longer fans a split record out into N lines —
+    that broke "one external event = one transaction" and produced N
+    statement-line rows for a single bank-cleared payment. Instead, one
+    :class:`ParsedStatementLine` is emitted with ``amount`` equal to the
+    parent total (the ``T`` line) and a ``splits`` tuple holding one
+    :class:`ParsedSplit` per ``S``/``$``/``E`` triple. The apply path
+    promotes this to a transaction with ``1 + len(splits)`` postings:
+    one bank-side at the total + one per split.
 
     Raises:
         QifParseError: a split is missing its ``$`` amount, or the
@@ -233,15 +239,15 @@ def _finalize_split_record(
     if account_type:
         base_raw["TYPE"] = account_type
     # Strip the running ``$``/``S``/``E`` last-write-wins residue from the
-    # parent ``raw`` — each emitted line carries its own per-split values
-    # via the loop below, so leaving the parent's noise would confuse
-    # downstream consumers reading ``raw``.
+    # parent ``raw`` — the per-split values live in the ``splits`` tuple
+    # below, so leaving the parent's noise would confuse downstream
+    # consumers reading ``raw``.
     for stale in ("$", "S", "E"):
         base_raw.pop(stale, None)
 
-    out: list[ParsedStatementLine] = []
+    parsed_splits: list[ParsedSplit] = []
     running = Decimal("0")
-    for idx, split in enumerate(rec.splits, start=0):
+    for split in rec.splits:
         if split.amount_str is None:
             raise QifParseError(
                 f"line {split.opened_at}: split for category {split.category!r} "
@@ -249,29 +255,11 @@ def _finalize_split_record(
             )
         split_amount = _parse_amount(split.amount_str, source_line=split.opened_at)
         running += split_amount
-
-        split_raw = dict(base_raw)
-        # ``L`` is the conventional QIF category field on a non-split
-        # record; reusing it here means the categorizer doesn't need a
-        # split-aware code path to read the per-split category.
-        split_raw["L"] = split.category
-        if split.memo is not None:
-            split_raw["E"] = split.memo
-
-        description = _compose_description(
-            rec.payee,
-            split.memo if split.memo is not None else rec.memo,
-        )
-
-        out.append(
-            ParsedStatementLine(
-                line_number=start_line_number + idx,
-                posted_date=posted_date,
+        parsed_splits.append(
+            ParsedSplit(
                 amount=Money(split_amount, currency),
-                description=description,
-                counterparty=(rec.payee or None) if rec.payee else None,
-                reference=rec.reference,
-                raw=split_raw,
+                category=split.category,
+                memo=split.memo,
             )
         )
 
@@ -282,7 +270,20 @@ def _finalize_split_record(
             "splits don't reconcile (one or more $ lines were dropped, or "
             "the file was hand-edited)"
         )
-    return out
+
+    description = _compose_description(rec.payee, rec.memo)
+    return [
+        ParsedStatementLine(
+            line_number=start_line_number,
+            posted_date=posted_date,
+            amount=Money(total, currency),
+            description=description,
+            counterparty=(rec.payee or None) if rec.payee else None,
+            reference=rec.reference,
+            raw=base_raw,
+            splits=tuple(parsed_splits),
+        )
+    ]
 
 
 def _finalize_record(

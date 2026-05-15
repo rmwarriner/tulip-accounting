@@ -26,14 +26,22 @@ log row + the promoted-tx rows land atomically.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from tulip_core.money import Money
 from tulip_core.reconciliation.categorizer import HouseholdContext
-from tulip_core.reconciliation.statement_line import StatementLine as DomainStatementLine
+from tulip_core.reconciliation.statement_line import (
+    ParsedSplit,
+    ParsedStatementLine,
+)
+from tulip_core.reconciliation.statement_line import (
+    StatementLine as DomainStatementLine,
+)
 from tulip_core.transactions import (
     Posting as DomainPosting,
 )
@@ -63,6 +71,84 @@ if TYPE_CHECKING:
 # so journal export → external tool → re-import round-trips cleanly.
 _IMBALANCE_NAME = "Imbalance:Unknown"
 _IMBALANCE_CODE_PREFIX = "9999"  # 9999.<CURRENCY>, e.g. 9999.USD
+
+# Key under which the structured splits envelope lives inside the
+# statement-line ``raw_json`` blob (#297). The full shape on disk is::
+#
+#   {"raw": {"<QIF-key>": "<value>", ...},
+#    "__splits__": [
+#        {"amount": "-45.27", "currency": "USD",
+#         "category": "Needs:Utilities:...", "memo": "Current gas charges"},
+#        ...
+#    ]}
+#
+# Lines with no splits omit the ``__splits__`` key. The choice of a
+# reserved double-underscore prefix avoids collision with any
+# format-native field name on the ``raw`` side.
+_RAW_JSON_SPLITS_KEY = "__splits__"
+
+
+def serialize_parsed_line_raw_json(parsed: ParsedStatementLine) -> str:
+    """Serialize a parsed line's ``raw`` + ``splits`` for ``statement_lines.raw_json`` (#297).
+
+    Single chokepoint so the QIF, OFX, CSV upload paths all use the
+    same envelope. Lines with no splits get a minimal ``{"raw": {...}}``
+    blob (proper JSON, not the legacy ``str(dict)`` repr — old format
+    was never parsed back, see #297).
+    """
+    payload: dict[str, object] = {"raw": dict(parsed.raw)}
+    if parsed.splits:
+        payload[_RAW_JSON_SPLITS_KEY] = [
+            {
+                "amount": str(s.amount.amount),
+                "currency": s.amount.currency,
+                "category": s.category,
+                "memo": s.memo,
+            }
+            for s in parsed.splits
+        ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _extract_splits_from_raw_json(raw_json: str, *, currency: str) -> tuple[ParsedSplit, ...]:
+    """Read the splits tuple back out of a persisted ``raw_json`` blob (#297).
+
+    Returns an empty tuple for lines with no splits, malformed JSON
+    (legacy ``str(dict)`` repr from before #297 — already-applied
+    rows that won't re-enter the promotion path), or any missing /
+    invalid field. ``currency`` is the statement line's currency; we
+    use it as a safety check that every split's currency matches the
+    parent line (the parser already enforces this at parse time, but
+    a hand-edited DB row could violate it).
+    """
+    try:
+        payload = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    raw_splits = payload.get(_RAW_JSON_SPLITS_KEY)
+    if not isinstance(raw_splits, list) or not raw_splits:
+        return ()
+    out: list[ParsedSplit] = []
+    for entry in raw_splits:
+        if not isinstance(entry, dict):
+            return ()
+        try:
+            amount_str = entry["amount"]
+            split_currency = entry["currency"]
+            category = entry["category"]
+        except KeyError:
+            return ()
+        memo = entry.get("memo")
+        if split_currency != currency:
+            return ()
+        try:
+            amount = Money(Decimal(str(amount_str)), split_currency)
+        except (ValueError, TypeError):
+            return ()
+        out.append(ParsedSplit(amount=amount, category=category, memo=memo))
+    return tuple(out)
 
 
 def _get_or_create_imbalance_account(
@@ -196,6 +282,59 @@ async def promote_statement_line(
     if bank_account is None:  # pragma: no cover - bank account is FK-enforced
         raise LookupError(f"batch.account_id {batch.account_id} not found")
 
+    splits = _extract_splits_from_raw_json(line.raw_json, currency=line.currency)
+    tx_status = DomainTxStatus.POSTED if as_posted else DomainTxStatus.PENDING
+
+    if splits:
+        # #297: split-bearing line promotes to one transaction with
+        # ``1 + len(splits)`` postings — one bank-side at the parent
+        # total + one per split. Per-split categories come from the
+        # QIF ``S`` field (encoded in ``ParsedSplit.category``); we
+        # try ``accounts.get_by_code`` first and fall back to the
+        # Imbalance account for unknown categories so a missing chart
+        # entry doesn't block the whole batch. ``no_categorize`` is
+        # not honoured for splits — the source format already
+        # categorized them, the operator's "skip categorization" toggle
+        # is moot.
+        postings: list[DomainPosting] = [
+            DomainPosting(
+                id=uuid4(),
+                account_id=bank_account.id,
+                amount=Money(line.amount, line.currency),
+            )
+        ]
+        for split in splits:
+            split_account = accounts.get_by_code(split.category)
+            if split_account is None:
+                split_account = _get_or_create_imbalance_account(
+                    session=session,
+                    household_id=household_id,
+                    currency=line.currency,
+                    actor_user_id=actor_user_id,
+                )
+            postings.append(
+                DomainPosting(
+                    id=uuid4(),
+                    account_id=split_account.id,
+                    amount=Money(-split.amount.amount, line.currency),
+                    memo=split.memo,
+                )
+            )
+        domain_tx = DomainTransaction(
+            id=uuid4(),
+            household_id=household_id,
+            date=line.posted_date,
+            description=line.description,
+            postings=tuple(postings),
+            status=tx_status,
+            created_by_user_id=actor_user_id,
+        )
+        tx = TransactionRepository(session, household_id).save_balanced(
+            domain_tx, imported_from_id=batch.id
+        )
+        StatementLineRepository(session, household_id).mark_promoted(line.id, tx.id)
+        return tx
+
     if no_categorize:
         other_account = _get_or_create_imbalance_account(
             session=session,
@@ -221,7 +360,6 @@ async def promote_statement_line(
 
     bank_amount = Money(line.amount, line.currency)
     other_amount = Money(-line.amount, line.currency)
-    tx_status = DomainTxStatus.POSTED if as_posted else DomainTxStatus.PENDING
     domain_tx = DomainTransaction(
         id=uuid4(),
         household_id=household_id,

@@ -73,6 +73,7 @@ from tulip_api.services.import_apply import (
     LineExcludedError,
     apply_batch,
     promote_statement_line,
+    serialize_parsed_line_raw_json,
 )
 from tulip_api.services.qif_multi_account import pair_transfers
 from tulip_core.reconciliation.categorizer import get_categorizer
@@ -375,7 +376,7 @@ async def upload_import(
                 "counterparty": parsed.counterparty,
                 "reference": parsed.reference,
                 "fitid": parsed.fitid,
-                "raw_json": str(dict(parsed.raw)),
+                "raw_json": serialize_parsed_line_raw_json(parsed),
             }
             for parsed in parsed_lines
         ],
@@ -592,7 +593,7 @@ async def upload_multi_account_qif(
                     "counterparty": p.counterparty,
                     "reference": p.reference,
                     "fitid": p.fitid,
-                    "raw_json": str(dict(p.raw)),
+                    "raw_json": serialize_parsed_line_raw_json(p),
                 }
                 for p in parsed
             ],
