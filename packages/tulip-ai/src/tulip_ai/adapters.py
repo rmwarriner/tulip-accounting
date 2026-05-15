@@ -48,13 +48,41 @@ class ProviderAdapter(Protocol):
         ...
 
 
+def _pin_litellm_safety_defaults() -> None:
+    """Disable litellm's optional telemetry + callback hooks at first use (#248).
+
+    Tulip never enables any of these — but litellm's package-default for
+    ``telemetry`` is ``True`` (a startup version-check against PyPI), and
+    a future default that adds a callback could silently begin egressing
+    data without any Tulip code change. ADR-0005's "AI is the only
+    egress, and only when you explicitly use it" promise has to be
+    actively defended, not just hoped for.
+
+    Idempotent — safe to call once per ``LitellmAdapter()``.
+    """
+    import litellm
+
+    litellm.telemetry = False
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm.callbacks = []
+    litellm.suppress_debug_info = True
+
+
 class LitellmAdapter:
     """Production adapter routing through ``litellm.acompletion``.
 
     Pulls minimal data out of the litellm response — enough to populate
-    an ``ai_invocations`` row, no more. ``litellm`` is imported lazily
-    so the module is cheap to import in tests that never call it.
+    an ``ai_invocations`` row, no more. ``litellm`` is imported lazily —
+    the module stays cheap to import in tests that never instantiate
+    this class. Construction pins the library's telemetry / callback
+    surface off (#248) so a future litellm-default flip can't silently
+    add an egress.
     """
+
+    def __init__(self) -> None:
+        """Pin litellm telemetry + callbacks off (#248)."""
+        _pin_litellm_safety_defaults()
 
     async def chat(
         self,
