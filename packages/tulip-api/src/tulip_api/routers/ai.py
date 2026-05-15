@@ -195,6 +195,36 @@ def list_ai_keys(
     return AIKeysList(providers=sorted(keys.keys()))
 
 
+def _write_consent_audit(
+    *,
+    session: Session,
+    claims: Claims,
+    request: Request,
+    before: dict[str, object],
+    after: dict[str, object],
+) -> None:
+    """Record an ``ai.consent_changed`` audit row on household policy mutation (#247).
+
+    GDPR Art. 7(1) needs "when and by whom" answerable. Skipped on no-op
+    PUTs (``before == after``) so a client that fetches+puts the same
+    blob doesn't fill the log with noise.
+    """
+    if before == after:
+        return
+    AuditLogWriter(session, claims.household_id).write(
+        action="ai.consent_changed",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="household",
+        entity_id=claims.household_id,
+        before=before,
+        after=after,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+
 def _set_user_key(
     *,
     session: Session,
@@ -756,6 +786,7 @@ def _apply_household_patch(ai_policy: dict[str, object], patch: AIConfigPatch) -
 )
 def put_ai_config(
     body: AIConfigPatch,
+    request: Request,
     claims: Claims = Depends(require_role("admin")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AIConfigRead:
@@ -767,10 +798,18 @@ def put_ai_config(
     """
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
-    ai_policy: dict[str, object] = dict(household.ai_policy or {})
-    was_logging = bool(ai_policy.get("log_prompts", False))
-    household.ai_policy = _apply_household_patch(ai_policy, body)
-    now_logging = bool(household.ai_policy.get("log_prompts", False))
+    before_policy: dict[str, object] = dict(household.ai_policy or {})
+    was_logging = bool(before_policy.get("log_prompts", False))
+    after_policy = _apply_household_patch(dict(before_policy), body)
+    household.ai_policy = after_policy
+    now_logging = bool(after_policy.get("log_prompts", False))
+    _write_consent_audit(
+        session=session,
+        claims=claims,
+        request=request,
+        before=before_policy,
+        after=after_policy,
+    )
     if was_logging and not now_logging:
         # GDPR Art. 17(1)(b): withdrawing log_prompts consent retroactively
         # scrubs the prompt + response bodies logged while it was on. The
@@ -803,6 +842,7 @@ def put_ai_config(
 def put_ai_capability_config(
     capability: str,
     body: AIConfigCapabilityPatch,
+    request: Request,
     claims: Claims = Depends(require_role("admin")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AIConfigRead:
@@ -860,7 +900,8 @@ def put_ai_capability_config(
 
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
-    ai_policy: dict[str, object] = dict(household.ai_policy or {})
+    before_policy: dict[str, object] = dict(household.ai_policy or {})
+    ai_policy: dict[str, object] = dict(before_policy)
     raw_caps = ai_policy.get("capabilities") or {}
     capabilities: dict[str, object] = dict(raw_caps) if isinstance(raw_caps, dict) else {}
     raw_settings = capabilities.get(capability) or {}
@@ -890,6 +931,13 @@ def put_ai_capability_config(
         ai_policy.pop("capabilities", None)
 
     household.ai_policy = ai_policy
+    _write_consent_audit(
+        session=session,
+        claims=claims,
+        request=request,
+        before=before_policy,
+        after=ai_policy,
+    )
     session.commit()
     log.info(
         "ai.capability_config_set",

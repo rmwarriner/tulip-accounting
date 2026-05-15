@@ -273,6 +273,108 @@ class TestConfigPut:
         assert len(audit) == 1
         assert audit[0].after_snapshot["rows_scrubbed"] == 2
 
+    def test_put_config_writes_consent_changed_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """#247: any mutation through PUT /v1/ai/config records an audit row.
+
+        Carries full before/after of the household ``ai_policy`` blob and
+        ``actor_user_id`` so GDPR Art. 7(1) "when did consent change and
+        by whom" is answerable.
+        """
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": True}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.entity_type == "household"
+        assert row.actor_user_id is not None
+        # Empty before — the household was newly registered with default policy.
+        assert row.before_snapshot == {}
+        assert row.after_snapshot == {"log_prompts": True}
+
+    def test_put_capability_config_writes_consent_changed_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """The per-capability PUT also records a consent audit row (#247)."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        r = client.put(
+            "/v1/ai/config/capabilities/nl_query",
+            headers=auth_h,
+            json={"policy": "disabled"},
+        )
+        assert r.status_code == 200, r.text
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].before_snapshot == {}
+        assert rows[0].after_snapshot == {
+            "capabilities": {"nl_query": {"policy": "disabled"}},
+        }
+
+    def test_put_config_no_change_emits_no_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """A no-op PUT (every field matches existing state) writes no row."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        # Default household ai_policy is {} — sending a body of {} is a no-op.
+        client.put("/v1/ai/config", headers=auth_h, json={}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(select(AuditLog).where(AuditLog.action == "ai.consent_changed"))
+                .scalars()
+                .all()
+            )
+        assert rows == []
+
+    def test_consent_audit_captures_log_prompts_flip(
+        self, client: TestClient, auth_h: dict[str, str], session_maker
+    ) -> None:
+        """Toggling log_prompts on then off writes two distinct audit rows."""
+        from sqlalchemy import select
+
+        from tulip_storage.models import AuditLog
+
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": True}).raise_for_status()
+        client.put("/v1/ai/config", headers=auth_h, json={"log_prompts": False}).raise_for_status()
+
+        with session_maker() as s:
+            rows = list(
+                s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.action == "ai.consent_changed")
+                    .order_by(AuditLog.occurred_at)
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 2
+        assert rows[0].before_snapshot == {}
+        assert rows[0].after_snapshot == {"log_prompts": True}
+        assert rows[1].before_snapshot == {"log_prompts": True}
+        assert rows[1].after_snapshot == {"log_prompts": False}
+
     def test_no_scrub_when_log_prompts_not_a_true_to_false_transition(
         self, client: TestClient, auth_h: dict[str, str], session_maker
     ) -> None:
