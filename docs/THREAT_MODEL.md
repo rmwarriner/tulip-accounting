@@ -32,17 +32,82 @@ Today's deployment is single-tenant, single-machine, no network exposure beyond 
 
 ## 2. Data classification
 
-Five tiers, highest to lowest confidentiality:
+Refreshed against the deep privacy audit (2026-05-13) findings H-17 +
+M-3..M-5. Confidentiality tiers, highest to lowest:
 
-| Tier | Data | Where it lives today | Notes |
-|---|---|---|---|
-| **Critical** | Master key, password hashes, TOTP secrets, recovery codes, JWT secret | env / process memory; `users.password_hash`; `users.totp_secret_encrypted`; `mfa_recovery_codes.code_hash`; `Settings.jwt_secret` | TOTP secrets are the only field-level-encrypted item today. Passwords + recovery codes are argon2id-hashed (one-way, not encrypted). Master key + JWT secret are in process memory only. |
-| **High** | Account balances, transaction descriptions, transaction references, account codes/names, audit log entries | unencrypted SQLite columns | This is "the ledger" — the actual financial data. Nothing about it is encrypted at rest today (Layer 1 SQLCipher deferred). Whoever can read the DB file reads the ledger. |
-| **High (integrity)** | `audit_log` rows | unencrypted SQLite | Append-only via `AuditLogWriter` (single chokepoint). Confidentiality is medium; integrity is high — a tampered audit log invalidates forensics. No DB-level immutability yet (deferred to the Postgres phase per ARCHITECTURE.md §1.1). |
-| **Medium** | Email addresses, household / display names, periods, account hierarchy structure | unencrypted SQLite | PII-ish but largely user-chosen labels. Logging redaction list (`logging_config.py`) keeps emails out of logs by default. |
-| **Highest (Phase 6)** | AI prompt bodies (proposed transactions, NL queries, household financial context fed to LLMs) | `ai_invocations.prompt_json` (NULL by default) + `prompt_hash` always populated | Phase 6 shipped 2026-05-11. Prompts never persisted by default; metadata + SHA-256 hash give forensics-light. Full prompt logging is opt-in via `tulip ai config log-prompts on` (warns the operator) — see §5.3. |
+| Tier | Data | Where it lives today | Multi-presence (count of surfaces) | Notes |
+|---|---|---|---|---|
+| **Critical** | Master key, password hashes, TOTP secrets, recovery codes, JWT secret | env / process memory; `users.password_hash`; `users.totp_secret_encrypted`; `mfa_recovery_codes.code_hash`; `Settings.jwt_secret` | 1 each | TOTP secrets are field-level-encrypted. Passwords + recovery codes are argon2id-hashed (one-way). Master key + JWT secret are in process memory only. |
+| **Critical (free-text content)** | User-typed free text: `transactions.description`, `.reference`, `.notes_encrypted`; `postings.memo`; `accounts.notes_encrypted`; `allocation_pools.name`; `pending_proposals.decision_note` / `.rationale`; `notifications.body`; `shadow_transactions.description`; `shadow_postings.memo`; `statement_lines.description` / `.counterparty` | unencrypted SQLite columns (except `*_encrypted` fields under master-key AES-256-GCM) | 12 columns across 8 tables | **Inference risk under GDPR Art. 9(1).** A user typing `"Payment to Planned Parenthood — $40"` introduces special-category data (health) by inference; `"Tithe to <church>"` does the same for religion. No content classifier today; minimisation is the only mitigation. Free-text fields *cannot* be tier-classified ahead of time — they take whatever tier the user's input pushes them to. |
+| **Critical (when populated)** | AI prompt bodies + response text | `ai_invocations.prompt_json` (NULL unless `households.ai_policy.log_prompts=true`); `ai_invocations.response_text` (same gate) | 1 column each | Per ADR-0005, opt-in retention only; default is NULL. Withdrawing consent atomically scrubs every existing row in the same commit as the policy flip (#243); consent-changed audit row (#247) records the toggle. |
+| **High** | Account balances, account codes/names, period dates, account hierarchy structure, audit log entries (confidentiality) | unencrypted SQLite columns | derived from postings | This is "the ledger." Nothing encrypted at rest today (Layer 1 SQLCipher deferred). Whoever reads the DB file reads the ledger. |
+| **High (pseudonymous)** | `ai_invocations.prompt_hash` (SHA-256 over redacted prompt); `audit_log.actor_user_id` + `entity_id` for deleted users (Art. 17(3)(e) carve-out) | unencrypted SQLite | always populated | Different retention curve from the prompt bodies — the hashes survive consent withdrawal so "was the same prompt sent twice" stays answerable. The 90-day `AI_INVOCATION_RETENTION_DAYS` TTL bounds long-term accumulation. |
+| **High (PII identifiers)** | Email addresses | `users.email`; embedded in `audit_log.metadata_` rows (`login_failed`, `register`) | 2 surfaces | GDPR Art. 4(1) — "an identified or identifiable natural person." Redacted in structlog by default (#220). Scrubbed from `audit_log` on user erasure (#235). **Previously misclassified as Medium.** |
+| **High (online identifiers)** | IP address, user agent | `sessions.ip_address`, `sessions.user_agent`; `audit_log.ip_address`, `audit_log.user_agent` | 2 tables × 2 columns | GDPR Recital 30 names IP as a personal identifier. Captured on every auth event (nine sites in `routers/auth.py`). Redacted in structlog (#246). At-rest in DB stays full precision; scrubbed from `audit_log` on user erasure (#235). **Previously missing from the table.** |
+| **High (integrity, mixed confidentiality)** | `audit_log.before_snapshot` / `audit_log.after_snapshot` | unencrypted SQLite (JSON) | 2 columns | **Integrity is High** (single `AuditLogWriter` chokepoint, no other mutator). **Confidentiality inherits the highest field tier of the snapshot's content** — `description_rectified` rows embed Critical free-text, `profile_updated` rows embed High-PII emails, etc. Treat as Critical-when-populated. Nulled on user erasure via the redaction pass (#235). |
+| **Medium** | Household / display names | `households.name`, `users.display_name` | 1 each | User-chosen labels, low inference risk on their own, but flow through into `audit_log` snapshots which then inherit. |
 
-Classification informs constraints in [§5](#5-constraints-for-phase-46-work).
+### 2.1 Explicitly absent categories
+
+Tulip does **not** structure-collect any of the following. A future audit
+that flags their absence is wasting cycles — minimisation is the design.
+
+- **Date of birth, age, age range.** Not collected at registration or
+  during use. The user's `created_at` is platform-side metadata, not
+  birth-related.
+- **Phone numbers, postal addresses.** Not collected. Statement-line
+  imports may contain merchant addresses but that's *merchant* data,
+  not subject data.
+- **Government IDs** (SSN, tax ID, passport, driver's licence). Not
+  collected. Operators who want to record one are doing it in
+  free-text fields and inherit the Critical (free-text) tier.
+- **Gender, sexual orientation, racial or ethnic origin.** Not
+  collected. GDPR Art. 9(1) special category; absent by design.
+- **Biometric or genetic data.** Not collected. Art. 9(1) special
+  category; absent by design.
+- **Health data.** Not collected. Art. 9(1) special category; the
+  Critical (free-text) tier acknowledges the *inference* risk a user
+  could introduce by typing it, which is qualitatively different from
+  structure-collecting it.
+- **Children's data (under-13 / under-16 depending on jurisdiction).**
+  Tulip has no minor-targeted features; the registration flow assumes
+  an adult operator. There is no age-verification gate.
+- **Geolocation beyond IP.** GPS, cell-tower triangulation, etc. not
+  collected. IP is the only location-adjacent signal (see High (online
+  identifiers) above).
+- **Behavioural advertising profiles.** Not collected, not derived,
+  not transmitted to advertising third parties. The AI provider call
+  is the only outbound — see §5.3 + ADR-0005.
+
+If any of these become relevant for a future capability, the
+classification table is updated *before* the migration that introduces
+the column lands.
+
+### 2.2 Multi-presence and the deletion-cascade chain
+
+The Multi-presence column is load-bearing for the right-to-erasure
+implementation (Wave-1 #235): a field that lives in eight surfaces
+needs eight cascade rules. Today the load-bearing footprints are:
+
+- `transactions.description` and the rectified copies it produces:
+  the source row, the void reversal's quoted copy (rewritten to
+  `[redacted]` on rectification per #242), the user's exported JSON
+  (#241), the audit-log before/after snapshots for both create and
+  rectify, and the journal export. Eight surfaces total when all are
+  populated; the rectification + erasure paths together drain the
+  ones the controller controls.
+- `users.email` flows into `audit_log.metadata_` for `register` and
+  `login_failed`; the user-erasure path nulls those snapshots in the
+  same commit as the row delete.
+- `ai_invocations.prompt_json` is opt-in; the consent-withdrawal scrub
+  (#243) is its erasure path.
+
+The audit `2026-05-13-deep-privacy-audit.md §6` "Data-subject rights
+gap analysis" is the canonical map; this section just calls out the
+cascade dimension classification doesn't otherwise expose.
+
+Classification informs constraints in [§5](#5-constraints-for-phase-46-work)
+and the operator-facing commands map in [USER_RIGHTS.md](USER_RIGHTS.md).
 
 ## 3. Threat actors and attack surface (current)
 
