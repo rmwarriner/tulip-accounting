@@ -207,7 +207,11 @@ async def promote_statement_line(
         domain_line = _to_domain_line(line)
         suggestion = await categorizer.categorize(
             domain_line,
-            HouseholdContext(household_id=household_id, account_whitelist=frozenset()),
+            HouseholdContext(
+                household_id=household_id,
+                account_whitelist=frozenset(),
+                acting_user_id=actor_user_id,
+            ),
             session=session,
         )
         resolved = accounts.get_by_code(suggestion.account_code)

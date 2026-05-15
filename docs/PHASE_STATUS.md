@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-14 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#242 GDPR Art. 16 rectification merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,18 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#239 (H-11 + M-16)** — per-user AI policy + per-user AI keys:
+  `users.ai_policy` JSON column (nullable = inherit household);
+  `HouseholdContext.acting_user_id` plumbed through all five
+  `resolve_policy` callsites (categorize / nl_query / proposals /
+  forecast / `routers/ai.py` × 3) so members can ratchet up severity
+  from the household floor; `PUT /v1/users/{me,user_id}/ai-policy`
+  endpoints; per-user key precedence in `routers/ai.py`
+  (`_resolve_provider_key` helper); six new key endpoints under
+  `/v1/ai/keys/{me,users/{user_id}}/{provider}`. New audit actions:
+  `user.ai_policy_set` / `user.ai_key_set` / `user.ai_key_forgotten`
+  (no key bytes in audit rows). `users.ai_policy` exposed in
+  `UserRecordExport` for #241 Art. 15 completeness.
 - **#242 (H-14)** — GDPR Art. 16 rectification:
   `PATCH /v1/transactions/{id}/description` rewrites a POSTED /
   RECONCILED transaction's `description` / `reference` / `notes` in
@@ -635,8 +647,7 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   `description_rectified` / `profile_updated` / `password_changed`.
 
 Remaining privacy Wave-1: #237 (cross-user-within-household visibility
-filter, gated on multi-user invite) and #239 (per-user AI policy +
-per-user AI keys, finishing the half-wired `resolve_policy`). All other
+filter) — dormant, gated on multi-user invite landing first. All other
 issues in the #236–#243 range have closed.
 
 ### Post-audit CLI + importers usability bundle — ✅

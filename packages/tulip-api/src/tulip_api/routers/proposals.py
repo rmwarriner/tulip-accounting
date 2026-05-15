@@ -403,7 +403,7 @@ async def suggest_envelope_budget(
 
     from tulip_ai import AIProposalCapability, LitellmAdapter
     from tulip_api.config import get_settings
-    from tulip_storage.models import Household
+    from tulip_storage.models import Household, User
     from tulip_storage.repositories import EnvelopeRepository, ShadowTransactionRepository
 
     found = EnvelopeRepository(session, claims.household_id).get(body.envelope_id)
@@ -429,14 +429,18 @@ async def suggest_envelope_budget(
     settings = get_settings()
     household = session.get(Household, claims.household_id)
     assert household is not None  # noqa: S101
+    user = session.get(User, (claims.household_id, claims.user_id))
     api_key: str | None = None
-    if household.ai_keys_encrypted:
-        from tulip_api.routers.ai import _load_household_keys
+    provider = household.ai_policy.get("default_provider")
+    if isinstance(provider, str):
+        from tulip_api.routers.ai import _resolve_provider_key
 
-        keys = _load_household_keys(household, settings.master_key)
-        provider = household.ai_policy.get("default_provider")
-        if isinstance(provider, str):
-            api_key = keys.get(provider)
+        api_key = _resolve_provider_key(
+            household=household,
+            user=user,
+            provider=provider,
+            master_key=settings.master_key,
+        )
 
     bind = session.get_bind()
     cap_session_maker = _sessionmaker(bind, expire_on_commit=False)

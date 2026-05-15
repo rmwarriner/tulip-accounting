@@ -16,7 +16,7 @@ Admin-only; refuses when the target is the last admin in the household.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
@@ -42,6 +42,8 @@ from tulip_api.schemas.user import (
     RecoveryCodesStatusExport,
     SessionExport,
     TransactionExport,
+    UserAIPolicyPatchRequest,
+    UserAIPolicyRead,
     UserDataExport,
     UserMeRead,
     UserProfilePatchRequest,
@@ -215,6 +217,109 @@ def patch_own_profile(
     )
 
 
+def _apply_ai_policy(
+    *,
+    session: Session,
+    request: Request,
+    actor_claims: Claims,
+    target_user: User,
+    body: UserAIPolicyPatchRequest,
+) -> UserAIPolicyRead:
+    """Replace the target user's ``ai_policy`` and emit an audit row (#239).
+
+    Empty body clears the override (NULL = inherit household). Otherwise
+    we store the validated JSON shape verbatim. Returns the new policy
+    shape; the audit row carries before/after snapshots.
+    """
+    before = target_user.ai_policy
+    new_policy: dict[str, Any] | None
+    if body.capabilities is None:
+        new_policy = None
+    else:
+        # Dump via Pydantic so Literals coerce to plain strings and any
+        # explicit ``None`` capability keys drop out cleanly.
+        dumped = body.model_dump(exclude_none=True)
+        new_policy = dumped if dumped else None
+    target_user.ai_policy = new_policy
+
+    AuditLogWriter(session, actor_claims.household_id).write(
+        action="user.ai_policy_set",
+        actor_kind="user",
+        actor_user_id=actor_claims.user_id,
+        entity_type="user",
+        entity_id=target_user.id,
+        before=before,
+        after=new_policy,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    return UserAIPolicyRead(user_id=target_user.id, ai_policy=new_policy)
+
+
+@router.put(
+    "/me/ai-policy",
+    response_model=UserAIPolicyRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        422: problem_response("validation.failed"),
+    },
+)
+def put_own_ai_policy(
+    body: UserAIPolicyPatchRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> UserAIPolicyRead:
+    """Set the caller's own per-user AI policy override (#239).
+
+    Members can ratchet the household's policy *up* (stricter). The merge
+    happens at read time in ``tulip_ai.policy.resolve_policy``; this
+    endpoint just stores the override JSON.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        raise UserNotFoundError()
+    return _apply_ai_policy(
+        session=session,
+        request=request,
+        actor_claims=claims,
+        target_user=user,
+        body=body,
+    )
+
+
+@router.put(
+    "/{user_id}/ai-policy",
+    response_model=UserAIPolicyRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("user.not_found"),
+        422: problem_response("validation.failed"),
+    },
+)
+def put_user_ai_policy(
+    user_id: UUID,
+    body: UserAIPolicyPatchRequest,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> UserAIPolicyRead:
+    """Admin: set the AI policy override for any user in the caller's household (#239)."""
+    user = session.get(User, (claims.household_id, user_id))
+    if user is None:
+        raise UserNotFoundError()
+    return _apply_ai_policy(
+        session=session,
+        request=request,
+        actor_claims=claims,
+        target_user=user,
+        body=body,
+    )
+
+
 def _build_user_export(session: Session, user: User) -> UserDataExport:
     """Assemble the full data-subject-access envelope for ``user`` (#241).
 
@@ -363,6 +468,7 @@ def _build_user_export(session: Session, user: User) -> UserDataExport:
             last_login_at=user.last_login_at,
             created_at=user.created_at,
             updated_at=user.updated_at,
+            ai_policy=user.ai_policy,
         ),
         sessions=sessions,
         audit_log_where_actor=audit,

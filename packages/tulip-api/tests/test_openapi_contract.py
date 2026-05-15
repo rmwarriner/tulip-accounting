@@ -171,6 +171,8 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     #     /v1/ai/proposals/{proposal_id} (#240) → 422 (bad UUID), not 405.
     #   - DELETE /v1/users/me → routes to DELETE /v1/users/{user_id} (#242)
     #     → 401, not 405.
+    #   - POST /v1/ai/keys/me → routes to POST /v1/ai/keys/{provider} (#239)
+    #     where ``me`` is a valid {provider} → 401, not 405.
     # Each collision is harmless. Map every shadowed static path to the one
     # method it actually documents; skip schemathesis cases targeting the
     # other methods, and (for the documented method's own case) exclude
@@ -181,6 +183,7 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
         "/v1/imports/multi-account": "POST",
         "/v1/ai/proposals/kinds": "GET",
         "/v1/users/me": "PATCH",
+        "/v1/ai/keys/me": "GET",
     }
     documented_method = _SHADOWED_STATIC_PATHS.get(str(case.path))
     if documented_method is not None and case.method.upper() != documented_method:
