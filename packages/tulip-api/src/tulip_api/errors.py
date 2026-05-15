@@ -151,6 +151,28 @@ class ForbiddenError(TulipProblem):
         )
 
 
+class ReauthRequiredError(TulipProblem):
+    """A sensitive mutation requires re-submitting the caller's current password (#242).
+
+    Raised by ``PATCH /v1/users/me`` when the caller is trying to change
+    their email (the login identifier) without supplying ``current_password``
+    in the body. The bare access token isn't enough.
+    """
+
+    def __init__(self) -> None:
+        """Build the auth.reauth_required problem."""
+        super().__init__(
+            code="auth.reauth_required",
+            title="Re-authentication required",
+            status=401,
+            detail=(
+                "Changing your email requires submitting your current password "
+                "in the same request body. Include a 'current_password' field "
+                "and resubmit."
+            ),
+        )
+
+
 class InvalidCredentialsError(TulipProblem):
     """Login was attempted with an unknown email or wrong password."""
 
@@ -604,6 +626,29 @@ class TransactionNotEditableError(TulipProblem):
         )
 
 
+class TransactionNotRectifiableError(TulipProblem):
+    """PATCH /description was attempted on a PENDING (or otherwise unsupported) transaction (#242).
+
+    GDPR Art. 16 rectification applies to POSTED / RECONCILED transactions
+    whose description / reference / notes need correcting in place. PENDING
+    transactions still have the regular ``PATCH /v1/transactions/{id}`` open
+    to them.
+    """
+
+    def __init__(self) -> None:
+        """Build the transaction.not_rectifiable problem."""
+        super().__init__(
+            code="transaction.not_rectifiable",
+            title="Transaction is not rectifiable",
+            status=409,
+            detail=(
+                "Only POSTED or RECONCILED transactions can have their "
+                "description rectified. PENDING transactions should be "
+                "edited via PATCH /v1/transactions/{id} instead."
+            ),
+        )
+
+
 class TransactionNotDeletableError(TulipProblem):
     """DELETE was attempted on a non-PENDING transaction (P5.0)."""
 
@@ -1014,8 +1059,10 @@ def _sanitize_for_json(value: Any) -> Any:  # noqa: ANN401 — Pydantic errors a
     """Recursively coerce values to JSON-safe primitives.
 
     Pydantic's error contexts include ``Decimal`` values for numeric
-    constraints. Bytes occasionally show up in URL parsing errors. Coerce
-    both to strings so the validation 422 response can render.
+    constraints, ``bytes`` occasionally from URL parsing errors, and
+    ``Exception`` instances when a ``@model_validator(mode="after")``
+    raises ``ValueError`` (the exception object lands under ``ctx.error``).
+    Coerce all of them to strings so the validation 422 response can render.
     """
     from decimal import Decimal as _Dec  # local to avoid top-of-file import bloat
 
@@ -1027,6 +1074,8 @@ def _sanitize_for_json(value: Any) -> Any:  # noqa: ANN401 — Pydantic errors a
         return str(value)
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
+    if isinstance(value, BaseException):
+        return str(value)
     return value
 
 

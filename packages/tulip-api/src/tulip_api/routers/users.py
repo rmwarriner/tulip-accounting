@@ -21,11 +21,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from tulip_api.auth.deps import get_current_claims, require_role
+from tulip_api.auth.passwords import verify_password
 from tulip_api.deps import get_session
 from tulip_api.errors import (
+    DuplicateEmailError,
+    InvalidCredentialsError,
     LastAdminDeletionError,
+    ReauthRequiredError,
     UserNotFoundError,
     problem_response,
 )
@@ -38,6 +43,8 @@ from tulip_api.schemas.user import (
     SessionExport,
     TransactionExport,
     UserDataExport,
+    UserMeRead,
+    UserProfilePatchRequest,
     UserRecordExport,
 )
 from tulip_storage.models import (
@@ -130,6 +137,82 @@ def delete_user(
 
     session.delete(user)
     session.commit()
+
+
+@router.patch(
+    "/me",
+    response_model=UserMeRead,
+    responses={
+        401: problem_response(
+            "auth.unauthorized", "auth.invalid_credentials", "auth.reauth_required"
+        ),
+        409: problem_response("auth.duplicate_email"),
+        422: problem_response("validation.failed"),
+    },
+)
+def patch_own_profile(
+    body: UserProfilePatchRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> UserMeRead:
+    """Rectify the caller's own display name and/or email (GDPR Art. 16, #242).
+
+    Changing ``email`` is gated on re-auth: the caller must include
+    ``current_password`` in the same request body. ``display_name`` may
+    be updated without re-auth. The audit row records cleartext
+    before/after snapshots of the fields actually changed — these get
+    nulled when the user is later erased (right-to-erasure cascades to
+    audit-PII per :func:`delete_user`).
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        raise UserNotFoundError()
+
+    fields_set = body.model_fields_set
+
+    before_snapshot: dict[str, object] = {}
+    after_snapshot: dict[str, object] = {}
+
+    if "email" in fields_set:
+        if "current_password" not in fields_set or body.current_password is None:
+            raise ReauthRequiredError()
+        if not verify_password(body.current_password, user.password_hash):
+            raise InvalidCredentialsError()
+        before_snapshot["email"] = user.email
+        after_snapshot["email"] = body.email
+        user.email = body.email  # type: ignore[assignment]
+
+    if "display_name" in fields_set:
+        before_snapshot["display_name"] = user.display_name
+        after_snapshot["display_name"] = body.display_name
+        user.display_name = body.display_name  # type: ignore[assignment]
+
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise DuplicateEmailError() from exc
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="profile_updated",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="user",
+        entity_id=user.id,
+        before=before_snapshot,
+        after=after_snapshot,
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    return UserMeRead(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role.value,
+    )
 
 
 def _build_user_export(session: Session, user: User) -> UserDataExport:

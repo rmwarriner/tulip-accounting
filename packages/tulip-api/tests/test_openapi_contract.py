@@ -169,12 +169,18 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     #     (`multi-account` is a valid {batch_id}) → 401 on auth, not 405.
     #   - DELETE /v1/ai/proposals/kinds → routes to DELETE
     #     /v1/ai/proposals/{proposal_id} (#240) → 422 (bad UUID), not 405.
+    #   - DELETE /v1/users/me → routes to DELETE /v1/users/{user_id} (#242)
+    #     → 401, not 405.
     # Each collision is harmless. Map every shadowed static path to the one
-    # method it actually documents; skip schemathesis probes of the rest.
+    # method it actually documents; skip schemathesis cases targeting the
+    # other methods, and (for the documented method's own case) exclude
+    # the unsupported-method check so the probe-driven 405 expectation
+    # doesn't false-positive on the parametric sibling's response.
     _SHADOWED_STATIC_PATHS = {
         "/v1/imports/profiles/import": "POST",
         "/v1/imports/multi-account": "POST",
         "/v1/ai/proposals/kinds": "GET",
+        "/v1/users/me": "PATCH",
     }
     documented_method = _SHADOWED_STATIC_PATHS.get(str(case.path))
     if documented_method is not None and case.method.upper() != documented_method:
@@ -182,4 +188,8 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
             "path-collision: an undocumented method on a static path routes to "
             "a parameterised sibling; harmless — see comment."
         )
-    case.call_and_validate()
+
+    from schemathesis.specs.openapi.checks import unsupported_method
+
+    excluded = [unsupported_method] if documented_method is not None else None
+    case.call_and_validate(excluded_checks=excluded)

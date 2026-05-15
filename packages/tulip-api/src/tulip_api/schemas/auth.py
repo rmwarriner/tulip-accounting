@@ -112,3 +112,16 @@ class MfaRecoveryStatusResponse(BaseModel):
 
     remaining: int
     total: int
+
+
+class PasswordChangeRequest(BaseModel):
+    """Body for POST /v1/auth/password/change (#242).
+
+    Requires the caller's current password as proof of possession and
+    a new password meeting the same length floor as register's password
+    field. All outstanding refresh tokens for the user are revoked when
+    the change succeeds.
+    """
+
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=12, max_length=200)

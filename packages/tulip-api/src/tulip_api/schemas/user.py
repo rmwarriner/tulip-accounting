@@ -10,10 +10,10 @@ uploader, plus their own user record (with ``password_hash`` masked).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class UserRecordExport(BaseModel):
@@ -117,6 +117,42 @@ class TransactionExport(BaseModel):
     reference: str | None
     status: str
     created_at: datetime
+
+
+class UserProfilePatchRequest(BaseModel):
+    """PATCH /v1/users/me body — GDPR Art. 16 profile rectification (#242).
+
+    Updates ``display_name`` and/or ``email`` on the caller's own row.
+    Changing ``email`` is gated on re-auth: the caller must include
+    ``current_password`` in the same request body. ``current_password``
+    alone (with no email/display_name change) is ignored. At least one of
+    ``display_name`` / ``email`` must be present.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    email: EmailStr | None = None
+    current_password: str | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_mutation(self) -> Self:
+        if not (self.model_fields_set & {"display_name", "email"}):
+            raise ValueError("At least one of 'display_name' or 'email' must be provided.")
+        return self
+
+
+class UserMeRead(BaseModel):
+    """Response shape for ``PATCH /v1/users/me`` (#242).
+
+    A trimmed user record — no password hash, no MFA enrollment timestamps.
+    Anything richer goes through ``GET /v1/users/me/export``.
+    """
+
+    id: UUID
+    email: str
+    display_name: str
+    role: str
 
 
 class UserDataExport(BaseModel):

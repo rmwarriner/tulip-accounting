@@ -9,12 +9,12 @@ structlog instead.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from tulip_api.auth.deps import get_current_claims
@@ -77,6 +77,7 @@ from tulip_api.schemas.auth import (
     MfaRecoveryStatusResponse,
     MfaRegenerateRequest,
     MfaVerifyRequest,
+    PasswordChangeRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -102,6 +103,7 @@ from tulip_storage.repositories import (
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.orm import Session
 
 
@@ -465,6 +467,68 @@ def logout(
             user_agent=request.headers.get("user-agent"),
         )
         session.commit()
+
+
+@router.post(
+    "/password/change",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized", "auth.invalid_credentials"),
+        400: problem_response("request.body_invalid"),
+        422: problem_response("validation.failed"),
+    },
+)
+def change_password(
+    body: PasswordChangeRequest,
+    request: Request,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Rotate the caller's password and revoke their refresh tokens (#242).
+
+    Verifies ``current_password`` against the stored Argon2id hash, then
+    replaces the hash with a fresh one over ``new_password``. Every
+    outstanding (non-revoked) session for the user is revoked — a stale
+    refresh token shouldn't survive a credential rotation. The caller's
+    bare access token still works for its remaining TTL; their next
+    ``/v1/auth/refresh`` will need a fresh login.
+
+    The audit row carries no password material — only the count of
+    sessions revoked.
+    """
+    user = session.get(User, (claims.household_id, claims.user_id))
+    if user is None:
+        raise UnauthorizedError("Your account no longer exists.")
+    if not verify_password(body.current_password, user.password_hash):
+        raise InvalidCredentialsError()
+
+    user.password_hash = hash_password(body.new_password)
+
+    now = datetime.now(tz=UTC)
+    result = session.execute(
+        update(SessionRow)
+        .where(
+            SessionRow.household_id == user.household_id,
+            SessionRow.user_id == user.id,
+            SessionRow.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    sessions_revoked = int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    AuditLogWriter(session, user.household_id).write(
+        action="password_changed",
+        actor_kind="user",
+        actor_user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={"sessions_revoked": sessions_revoked},
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info("user.password_changed", user_id=str(user.id), sessions_revoked=sessions_revoked)
 
 
 @router.post(

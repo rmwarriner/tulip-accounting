@@ -26,6 +26,7 @@ from tulip_api.errors import (
     TransactionNotDeletableError,
     TransactionNotEditableError,
     TransactionNotFoundError,
+    TransactionNotRectifiableError,
     TransactionNotVoidableError,
     TransactionUnbalancedError,
     problem_response,
@@ -34,6 +35,7 @@ from tulip_api.schemas.transaction import (
     PostingRead,
     TransactionCreate,
     TransactionRead,
+    TransactionRectifyRequest,
     TransactionUpdate,
     TransactionVoidRequest,
     TransactionVoidResponse,
@@ -81,6 +83,9 @@ from tulip_storage.repositories.transaction import (
 )
 from tulip_storage.repositories.transaction import (
     TransactionNotEditableError as RepoNotEditableError,
+)
+from tulip_storage.repositories.transaction import (
+    TransactionNotRectifiableError as RepoNotRectifiableError,
 )
 
 if TYPE_CHECKING:
@@ -537,6 +542,106 @@ def patch_transaction(
     )
     session.commit()
     log.info("transaction.updated", tx_id=str(tx_id))
+    return _read_response(tx_id, claims.household_id, session)
+
+
+@router.patch(
+    "/{tx_id}/description",
+    response_model=TransactionRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.not_rectifiable"),
+        422: problem_response("validation.failed"),
+    },
+)
+def rectify_transaction_description(
+    tx_id: UUID,
+    body: TransactionRectifyRequest,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionRead:
+    """Rectify a POSTED / RECONCILED transaction's header fields (GDPR Art. 16, #242).
+
+    Mutates ``description`` / ``reference`` / ``notes_encrypted`` in place
+    on the original row; postings, status, and date are unchanged. When the
+    transaction has been voided, the reversal sibling's description (which
+    the void route built as ``f"Reversal of {old}: {reason}"``) is
+    rewritten in place so the source's pre-rectification description does
+    not survive at rest in the reversal row.
+
+    The OLD values are written verbatim into the audit row's
+    ``before_snapshot``. Per the Art. 17(3)(e) integrity carve-out, the
+    audit row preserves them until the user is later erased (at which
+    point :func:`tulip_api.routers.users.delete_user` nulls the
+    ``before_snapshot`` / ``after_snapshot`` blobs for rows referencing
+    that user).
+    """
+    settings = get_settings()
+    tx_repo = TransactionRepository(session, claims.household_id, master_key=settings.master_key)
+    existing = tx_repo.get(tx_id)
+    if existing is None:
+        raise TransactionNotFoundError()
+
+    fields_set = body.model_fields_set
+
+    before_snapshot: dict[str, object] = {}
+    if "description" in fields_set:
+        before_snapshot["description"] = existing.description
+    if "reference" in fields_set:
+        before_snapshot["reference"] = existing.reference
+    if "notes" in fields_set:
+        before_snapshot["notes_present"] = existing.notes_encrypted is not None
+
+    # The schema validator forbids body.description being None when the
+    # key is set; assert for type-narrowing.
+    description_arg: str | object
+    if "description" in fields_set:
+        assert body.description is not None  # noqa: S101 — guaranteed by schema validator
+        description_arg = body.description
+    else:
+        description_arg = UNSET
+    try:
+        _, reversal_id_rewritten = tx_repo.rectify_posted(
+            tx_id,
+            description=description_arg,
+            reference=body.reference if "reference" in fields_set else UNSET,
+            notes=body.notes if "notes" in fields_set else UNSET,
+        )
+    except RepoNotRectifiableError as exc:
+        raise TransactionNotRectifiableError() from exc
+
+    after_snapshot: dict[str, object] = {}
+    if "description" in fields_set:
+        after_snapshot["description"] = body.description
+    if "reference" in fields_set:
+        after_snapshot["reference"] = body.reference
+    if "notes" in fields_set:
+        after_snapshot["notes_present"] = body.notes is not None
+
+    metadata: dict[str, object] | None = None
+    if reversal_id_rewritten is not None:
+        metadata = {"reversal_id_rewritten": str(reversal_id_rewritten)}
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="description_rectified",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before=before_snapshot,
+        after=after_snapshot,
+        metadata=metadata,
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "transaction.description_rectified",
+        tx_id=str(tx_id),
+        reversal_id_rewritten=str(reversal_id_rewritten) if reversal_id_rewritten else None,
+    )
     return _read_response(tx_id, claims.household_id, session)
 
 
