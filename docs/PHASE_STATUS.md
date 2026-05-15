@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,11 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#248 (M-19)** — `LitellmAdapter.__init__` now pins
+  `litellm.telemetry=False`, clears `success_callback` / `failure_callback`
+  / `callbacks`, and sets `suppress_debug_info=True`. ADR-0005's "AI is
+  the only egress" promise is actively defended rather than hoped for;
+  THREAT_MODEL §5.3 carries a "do not unwind during upgrade" note.
 - **#246 (M-2)** — `ip_address` + `user_agent` join the
   `_SENSITIVE_FIELDS` whitelist in `logging_config.py`. Both the
   structlog pipeline and the stdlib `Logger.makeRecord` redactor scrub
