@@ -41,7 +41,7 @@ from tulip_ai.redaction import (
 )
 from tulip_core.reconciliation.categorizer import CategorizationResult
 from tulip_storage.encryption import decrypt_field
-from tulip_storage.models import Account, AccountType, Household
+from tulip_storage.models import Account, AccountType, Household, User
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -63,6 +63,7 @@ class _PromptInputs:
     """What we gathered from the DB to build the prompt + audit the call."""
 
     household: Household
+    user_policy: dict[str, object] | None
     api_key: str | None
     chart: list[ChartEntry]
 
@@ -145,12 +146,16 @@ class AICategorizer:
     ) -> CategorizationResult:
         """Inner categorize body — caller wraps in a broad exception guard."""
         with use_session_or_make_one(session, self._session_maker) as (session, should_commit):
-            inputs = self._load_inputs(session, household_context.household_id)
+            inputs = self._load_inputs(
+                session,
+                household_context.household_id,
+                household_context.acting_user_id,
+            )
             if inputs is None:
                 # Household vanished mid-call (shouldn't happen) — fall back silently.
                 return _FALLBACK_RESULT
 
-            policy = resolve_policy(inputs.household.ai_policy, None, "categorize")
+            policy = resolve_policy(inputs.household.ai_policy, inputs.user_policy, "categorize")
             writer = AIInvocationWriter(session)
 
             if policy.level == "disabled":
@@ -209,7 +214,7 @@ class AICategorizer:
             gate = enforce_pre_call(
                 session,
                 household_id=household_context.household_id,
-                user_id=None,  # importer-driven; no acting user surfaced yet
+                user_id=household_context.acting_user_id,
                 rate_limit_per_hour=policy.rate_limit_per_hour,
                 monthly_cost_cap_usd=policy.monthly_cost_cap_usd,
                 cost_cap_behaviour=policy.cost_cap_behaviour,
@@ -290,17 +295,27 @@ class AICategorizer:
                 session.commit()
             return result
 
-    def _load_inputs(self, session: Session, household_id: UUID) -> _PromptInputs | None:
+    def _load_inputs(
+        self,
+        session: Session,
+        household_id: UUID,
+        acting_user_id: UUID | None,
+    ) -> _PromptInputs | None:
         household = session.get(Household, household_id)
         if household is None:
             return None
 
-        # Resolve API key: per-user override > household. P6.1 doesn't yet
-        # have an "acting user" passed in via HouseholdContext, so we use
-        # the household-level key. The user-level override surface lands
-        # when HouseholdContext grows an ``acting_user_id`` field — tracked
-        # as a Phase 6 follow-up.
-        api_key = self._decrypt_key(household.ai_keys_encrypted, household.ai_policy)
+        user: User | None = None
+        if acting_user_id is not None:
+            user = session.get(User, (household_id, acting_user_id))
+
+        # Resolve API key (#239): per-user override > household for the
+        # resolved provider. Use the user's key when set for the provider;
+        # otherwise fall back to the household's. Note we look up the
+        # provider from the household policy here (categorize doesn't yet
+        # let users override provider — only severity); a Phase 9 follow-up
+        # might revisit if per-user provider routing becomes a thing.
+        api_key = self._resolve_api_key(household, user)
 
         # Chart of expense + income accounts — categorize doesn't propose
         # asset / liability codes per ADR-0005 §Q3.
@@ -320,19 +335,28 @@ class AICategorizer:
             for a in rows
             if a.code is not None
         ]
-        return _PromptInputs(household=household, api_key=api_key, chart=chart)
+        return _PromptInputs(
+            household=household,
+            user_policy=user.ai_policy if user is not None else None,
+            api_key=api_key,
+            chart=chart,
+        )
 
-    def _decrypt_key(self, blob: bytes | None, ai_policy: dict[str, object]) -> str | None:
-        """Extract the API key for the resolved provider from an encrypted JSON blob.
-
-        ``ai_keys_encrypted`` is JSON ``{provider: api_key}``, encrypted with
-        the master key. Returns ``None`` if no blob or no key for this provider.
-        """
-        if not blob:
-            return None
-        provider = ai_policy.get("default_provider")
+    def _resolve_api_key(self, household: Household, user: User | None) -> str | None:
+        """Per-user key overrides household key for the resolved provider (#239)."""
+        provider = household.ai_policy.get("default_provider")
         if not isinstance(provider, str):
             return None
+        if user is not None and user.ai_keys_encrypted:
+            user_key = self._extract_provider_key(user.ai_keys_encrypted, provider)
+            if user_key is not None:
+                return user_key
+        if household.ai_keys_encrypted:
+            return self._extract_provider_key(household.ai_keys_encrypted, provider)
+        return None
+
+    def _extract_provider_key(self, blob: bytes, provider: str) -> str | None:
+        """Decrypt + extract a single provider's key from a ``{provider: key}`` blob."""
         try:
             decrypted = decrypt_field(blob, master_key=self._master_key).decode("utf-8")
             keys_dict = json.loads(decrypted)

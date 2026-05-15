@@ -225,13 +225,18 @@ class AINLQueryCapability:
         actor_user_id: UUID | None,
         api_key: str | None,
     ) -> NLAnswer:
-        from tulip_storage.models import Household
+        from tulip_storage.models import Household, User
 
         with self._session_maker() as session:
             household = session.get(Household, household_id)
             if household is None:
                 return NLAnswer(summary="", rows=[], sql=None, error="household not found")
-            policy = resolve_policy(household.ai_policy, None, "nl_query")
+            user_policy: dict[str, object] | None = None
+            if actor_user_id is not None:
+                user = session.get(User, (household_id, actor_user_id))
+                if user is not None:
+                    user_policy = user.ai_policy
+            policy = resolve_policy(household.ai_policy, user_policy, "nl_query")
             writer = AIInvocationWriter(session)
 
             if policy.level == "disabled":

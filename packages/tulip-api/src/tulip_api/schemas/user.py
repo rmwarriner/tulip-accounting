@@ -10,14 +10,18 @@ uploader, plus their own user record (with ``password_hash`` masked).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class UserRecordExport(BaseModel):
-    """The ``users`` row itself. ``password_hash`` is always masked."""
+    """The ``users`` row itself. ``password_hash`` is always masked.
+
+    ``ai_policy`` (#239) is included so the Art. 15 export reflects any
+    per-user policy override the system holds about the subject.
+    """
 
     id: UUID
     email: str
@@ -28,6 +32,7 @@ class UserRecordExport(BaseModel):
     last_login_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    ai_policy: dict[str, Any] | None = None
 
 
 class SessionExport(BaseModel):
@@ -140,6 +145,48 @@ class UserProfilePatchRequest(BaseModel):
         if not (self.model_fields_set & {"display_name", "email"}):
             raise ValueError("At least one of 'display_name' or 'email' must be provided.")
         return self
+
+
+class UserAIPolicyCapability(BaseModel):
+    """Per-capability ratchet — only severity and redaction-profile (#239).
+
+    Provider / cost-cap / rate-limit remain household-scope per ADR-0005 §Q5.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    policy: Literal["permissive", "requires_approval", "disabled"] | None = None
+    profile: Literal["default", "strict", "local_only"] | None = None
+
+
+class UserAIPolicyPatchRequest(BaseModel):
+    """Body for ``PUT /v1/users/{me,user_id}/ai-policy`` (#239).
+
+    An empty body clears the per-user override (resets to "inherit
+    household"). When ``capabilities`` is present, each known capability
+    can carry a ``policy`` (severity ratchet) and ``profile`` (redaction
+    ratchet); both are optional.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    capabilities: (
+        dict[
+            Literal["categorize", "nl_query", "forecast", "agentic"],
+            UserAIPolicyCapability,
+        ]
+        | None
+    ) = None
+
+
+class UserAIPolicyRead(BaseModel):
+    """Response for ``PUT /v1/users/{me,user_id}/ai-policy`` (#239).
+
+    ``ai_policy`` is the raw stored JSON (or ``None`` when no override).
+    """
+
+    user_id: UUID
+    ai_policy: dict[str, Any] | None
 
 
 class UserMeRead(BaseModel):

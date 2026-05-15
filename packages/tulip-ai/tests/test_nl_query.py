@@ -190,6 +190,46 @@ async def test_ask_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_ask_threads_user_policy_disabled_blocks_call(
+    session_maker: sessionmaker[Session],
+    configured_household: Household,
+    household_and_user: tuple[Household, object],
+) -> None:
+    """#239: when the user's ai_policy disables nl_query but household is
+    permissive, the resolved policy is disabled and no provider call fires.
+    """
+    _, user = household_and_user
+    with session_maker() as s:
+        u = s.get(type(user), (configured_household.id, user.id))  # type: ignore[arg-type]
+        assert u is not None
+        u.ai_policy = {"capabilities": {"nl_query": {"policy": "disabled"}}}
+        s.commit()
+
+    adapter = _two_turn_adapter(turn1_sql="unused", turn2_summary="unused")
+    capability = AINLQueryCapability(session_maker=session_maker, adapter=adapter)
+    answer = await capability.ask(
+        "How much did I spend on groceries?",
+        household_id=configured_household.id,
+        actor_user_id=user.id,  # type: ignore[attr-defined]
+        api_key="sk-test",
+    )
+
+    assert answer.error == "NL query is disabled for this household."
+    assert answer.sql is None
+    assert answer.rows == []
+    assert adapter.calls == [], "no provider call should fire when disabled"
+    with session_maker() as s:
+        rows = (
+            s.execute(select(AIInvocation).where(AIInvocation.capability == "nl_query"))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].outcome == "policy_disabled"
+        assert rows[0].policy_resolved == "disabled"
+
+
+@pytest.mark.asyncio
 async def test_ask_rejects_unsafe_emitted_sql(
     session_maker: sessionmaker[Session],
     configured_household: Household,

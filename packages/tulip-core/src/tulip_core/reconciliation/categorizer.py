@@ -52,11 +52,17 @@ class HouseholdContext:
     inputs (recent transactions, learned rules, account preferences),
     and that's where ``HouseholdContext`` will grow. Adding fields with
     defaults won't break existing callers.
+
+    ``acting_user_id`` (#239) is the optional id of the user on whose
+    behalf the categorization runs. When set, downstream AI capabilities
+    read that user's ``ai_policy`` and per-user keys; when ``None`` the
+    household-level policy is dispositive.
     """
 
     household_id: UUID
     account_whitelist: frozenset[UUID]
     existing_rules: tuple[object, ...] = field(default=())
+    acting_user_id: UUID | None = None
 
 
 @runtime_checkable

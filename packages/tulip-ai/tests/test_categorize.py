@@ -119,6 +119,128 @@ async def test_categorize_happy_path_returns_model_choice(
         assert rows[0].capability == "categorize"
 
 
+class _KeyCapturingAdapter(RecordingAdapter):
+    """Test-only adapter that records the actual ``api_key`` value passed (#239).
+
+    The shared ``RecordingAdapter`` deliberately only records a boolean
+    ``api_key_was_passed`` for privacy; this subclass stores the cleartext
+    so per-user-key-precedence tests can assert which key got through.
+    """
+
+    api_keys_seen: list[str | None]
+
+    def __init__(self, *, canned_reply: str) -> None:
+        super().__init__(canned_reply=canned_reply)
+        self.api_keys_seen = []
+
+    async def chat(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.api_keys_seen.append(kwargs.get("api_key"))
+        return await super().chat(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_categorize_uses_user_key_over_household_when_set(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: per-user ai_keys_encrypted overrides household for the resolved provider."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    # Household key + user key, both for anthropic but different values.
+    _set_ai_keys(
+        session_maker, household.id, keys={"anthropic": "sk-household"}, master_key=master_key
+    )
+    from tulip_storage.encryption import encrypt_field
+
+    with session_maker() as s:
+        u = s.get(type(user), (household.id, user.id))
+        assert u is not None
+        u.ai_keys_encrypted = encrypt_field(b'{"anthropic": "sk-user-only"}', master_key=master_key)
+        s.commit()
+
+    adapter = _KeyCapturingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.9}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    assert adapter.api_keys_seen == ["sk-user-only"]
+
+
+@pytest.mark.asyncio
+async def test_categorize_falls_back_to_household_key_when_user_has_none(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: if user has no key for the provider, the household's is used."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    _set_ai_keys(
+        session_maker, household.id, keys={"anthropic": "sk-household"}, master_key=master_key
+    )
+    # Note: NOT setting user.ai_keys_encrypted.
+
+    adapter = _KeyCapturingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.9}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    assert adapter.api_keys_seen == ["sk-household"]
+
+
+@pytest.mark.asyncio
+async def test_categorize_threads_user_policy_via_acting_user_id(
+    session_maker: sessionmaker[Session], household_and_user, master_key: bytes
+) -> None:
+    """#239: user-level ai_policy disables categorize when household is permissive."""
+    household, user = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[("5100", "Groceries", AccountType.EXPENSE)],
+    )
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    with session_maker() as s:
+        u = s.get(type(user), (household.id, user.id))
+        assert u is not None
+        u.ai_policy = {"capabilities": {"categorize": {"policy": "disabled"}}}
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply='{"account_code": "5100"}')
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    result = await categorizer.categorize(
+        _make_statement_line(description="WHOLE FOODS", amount="-12.00"),
+        HouseholdContext(
+            household_id=household.id,
+            account_whitelist=frozenset(),
+            acting_user_id=user.id,
+        ),
+    )
+    # Categorize falls back; adapter not called.
+    assert result.account_code == "Imbalance:Unknown"
+    assert adapter.calls == []
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].outcome == "policy_disabled"
+        assert rows[0].policy_resolved == "disabled"
+
+
 @pytest.mark.asyncio
 async def test_categorize_falls_back_when_policy_disabled(
     session_maker: sessionmaker[Session], household_and_user, master_key: bytes

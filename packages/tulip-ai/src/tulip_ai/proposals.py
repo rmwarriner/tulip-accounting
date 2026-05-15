@@ -124,13 +124,18 @@ class AIProposalCapability:
         current_budget: Decimal | None,
         recent_spend_series: list[tuple[date, Decimal]],
     ) -> SuggestionResult:
-        from tulip_storage.models import Household
+        from tulip_storage.models import Household, User
 
         with self._session_maker() as session:
             household = session.get(Household, household_id)
             if household is None:
                 return SuggestionResult(proposal=None, error="household not found")
-            policy = resolve_policy(household.ai_policy, None, "agentic")
+            user_policy: dict[str, object] | None = None
+            if actor_user_id is not None:
+                user = session.get(User, (household_id, actor_user_id))
+                if user is not None:
+                    user_policy = user.ai_policy
+            policy = resolve_policy(household.ai_policy, user_policy, "agentic")
 
             if policy.level == "disabled":
                 self._audit(
