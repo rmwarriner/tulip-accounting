@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
 
 ---
 
@@ -622,6 +622,14 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   redaction), two-step `DELETE /v1/households/me` (token-confirmed),
   `AttachmentRepository.delete()` with refcount, and an `attachment_gc`
   scheduler handler. New `pending_household_erasures` table.
+- **#249 (M-28)** — new operator-facing
+  [`docs/USER_RIGHTS.md`](USER_RIGHTS.md) maps GDPR/CCPA data-subject
+  rights (Art. 15 access / 16 rectification / 17 erasure / 18
+  restriction / 20 portability / 21 objection / 7 consent withdrawal /
+  12 information) to the concrete `tulip` CLI commands and API
+  endpoints that honour them today. Cross-linked from README + QUICKSTART.
+  Carries a "doc/code drift convention" note so future Wave-1 PRs land
+  doc updates in the same commit.
 - **#248 (M-19)** — `LitellmAdapter.__init__` now pins
   `litellm.telemetry=False`, clears `success_callback` / `failure_callback`
   / `callbacks`, and sets `suppress_debug_info=True`. ADR-0005's "AI is

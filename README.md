@@ -197,6 +197,7 @@ This project follows test-driven development. Every feature ships with tests wri
 - [Architecture](docs/ARCHITECTURE.md) — full system design, data model, phase roadmap, error-handling standard (§7.8)
 - [Phase Status](docs/PHASE_STATUS.md) — what's shipped, what's queued
 - [Threat Model](docs/THREAT_MODEL.md) — security checkpoint, kept current with the Phase 8 audits
+- [User Rights](docs/USER_RIGHTS.md) — operator-facing map from GDPR / CCPA data-subject rights to the Tulip commands that honour them
 - [Audits](docs/audits/) — the Phase 8 deep security audit (2026-05-12) and deep privacy audit (2026-05-13), finding-by-finding
 - [ADRs](docs/adrs/) — architectural decision records (envelope shadow ledger, scheduler primitive, mutation testing, reconciliation, AI integration / privacy contract)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — TDD discipline, coverage gates, signed commits, manual smoke test format
@@ -209,7 +210,7 @@ This project follows test-driven development. Every feature ships with tests wri
 - **Master key** is sourced from `TULIP_MASTER_KEY` (env var) or `TULIP_KEY_FILE` (0600 file); never written to disk by Tulip itself.
 - **MFA (TOTP)** required for admin users by default; optional for household members. TOTP secrets are encrypted at rest; recovery codes are argon2id-hashed with an 80-bit entropy floor; the MFA-login flow uses a single-use challenge token that can't be replayed.
 - **Online-auth hardening (Phase 8 Wave-1):** per-IP rate limiting on the four `/v1/auth/*` abuse surfaces, a constant-time login path that closes the user-enumeration timing oracle, and email/IP redaction in structured logs by default.
-- **Right to erasure (GDPR Art. 17 / CCPA):** `DELETE /v1/users/{id}` and the two-step household-erasure flow cascade-delete the subject's data, garbage-collect attachment ciphertext from disk, and redact PII from audit-log snapshots.
+- **Right to erasure (GDPR Art. 17 / CCPA):** `DELETE /v1/users/{id}` and the two-step household-erasure flow cascade-delete the subject's data, garbage-collect attachment ciphertext from disk, and redact PII from audit-log snapshots. See [docs/USER_RIGHTS.md](docs/USER_RIGHTS.md) for the full subject-rights map (access, rectification, erasure, restriction, portability, objection, consent withdrawal).
 - **AI privacy posture** is per-tenant + per-user policy, with audit logging of every model invocation, a server-enforced monthly cost cap, and a per-user sliding-window rate limit. Defaults to permissive but a fresh household has no provider key — no provider is contacted until an admin opts in via `tulip ai set-key`. Users can dial up restrictions (per-capability `disabled` / `requires_approval`, `strict` / `local_only` redaction profiles) or switch to local-only models (Ollama). Prompt bodies are never stored by default; only metadata (model, latency, cost, success/fail) lands in `ai_invocations`. Full forensic prompt logging is opt-in via `tulip ai config log-prompts on`.
 
 The threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); the Phase 8 deep security and deep privacy audits ([docs/audits/](docs/audits/)) are document-only multi-agent reviews — their highest-severity findings have shipped as Wave-1 follow-ups, with the remainder tracked as issues.

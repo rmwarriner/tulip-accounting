@@ -511,6 +511,10 @@ toggle on and off as you experiment.
 - Read [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) if you want to
   understand *why* the shape of the code looks the way it does;
   [`docs/THREAT_MODEL.md`](THREAT_MODEL.md) for the security model.
+- If you're operating Tulip as a controller and need to honour a
+  data-subject request (access / rectification / erasure / portability /
+  restriction), [`docs/USER_RIGHTS.md`](USER_RIGHTS.md) maps each GDPR /
+  CCPA right to the concrete Tulip command(s) that satisfy it.
 
 ---
 
