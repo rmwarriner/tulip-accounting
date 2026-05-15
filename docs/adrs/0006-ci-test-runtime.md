@@ -198,22 +198,17 @@ declared-set + body-conforms-to-schema; structural bugs surface
 within ~5 examples per endpoint, deeper iterations are extra
 property-test runs against the same hot path).
 
-## Recommendation
+After the option 2 experiment (2026-05-11):
 
-After options 3 + 6 shipped (2026-05-12):
-
-1. **Option 3 (CI matrix)** shipped. First run: 14 min → 10 min wall-
-   clock, dominated by tulip-api at ~9:10 due to schemathesis fuzz.
-2. **Option 6 (schemathesis max_examples 25 → 10)** shipped on top of
-   option 3. Cuts the tulip-api shard proportionally; expected total
-   CI ~5 min.
-3. **Option 4 (coverage shard)** remains available if further wall-
-   clock reduction is needed. Independent of options 3 + 6.
-4. **Option 2 (session-scoped uvicorn)** is **not recommended** —
-   measured a 50% sequential speedup but introduced a ~25-50% flake
-   rate under xdist due to argon2id + SQLite contention. Worth
-   revisiting only if paired with argon2 test parameters,
-   ``pytest-rerunfailures``, or uvicorn multi-worker.
+1. **Option 3 (CI matrix)** is now the highest-ROI next step. Zero
+   code changes, no flake risk, modest wall-clock win. Layered with
+   option 4 it could reasonably hit 4-6 min CI without touching tests.
+2. **Option 2 (session-scoped uvicorn)** is **not recommended as-is**
+   — see the "What broke" subsection above. Worth revisiting only if
+   paired with one of the three mitigations listed there (argon2 test
+   parameters, ``pytest-rerunfailures``, or uvicorn multi-worker).
+3. **Option 4 (coverage shard)** is independent and complementary to
+   either of the above.
 
 **Do NOT do Option 1** (template-DB). Measured negative under xdist;
 the documentation here is to prevent rediscovering this.
@@ -225,15 +220,19 @@ If revisiting CI runtime:
 1. **First, re-measure.** The baseline shifts as tests are added.
    ``time just test`` and ``time uv run pytest packages/tulip-cli/tests/
    -n auto --maxprocesses 4 -q`` against current ``main``.
-2. **If wall-clock is dominated by a single package** (likely
-   ``tulip-cli``): option 2 is the target.
-3. **If wall-clock is spread roughly evenly across packages**:
-   option 3 is the target.
-4. **If both look similar**: option 2 first (it reduces real CPU work,
-   not just parallelism), then option 3 if needed.
-5. **Always re-measure after each change.** xdist behaviour is
+2. **Default next step: Option 3** (CI matrix). It's the only
+   remaining option that has no flake risk and requires no test
+   refactoring. Start there.
+3. **If option 3 plus option 4 (coverage shard) isn't enough** to hit
+   the desired wall-clock: revisit option 2 *but only after*
+   introducing argon2 test-mode parameters or
+   ``pytest-rerunfailures``. The plain session-scoped fixture is
+   measurably flaky.
+4. **Always re-measure after each change.** xdist behaviour is
    counter-intuitive; "obvious" optimisations like option 1 can
-   regress.
+   regress. The 2026-05-11 option-2 attempt looked like a 50%
+   wall-clock win in single runs but degraded into a flake parade
+   across repeated runs.
 
 ## Consequences
 
