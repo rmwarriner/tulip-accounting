@@ -10,10 +10,26 @@ from __future__ import annotations
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-# OWASP 2024 minimum: m=19MiB, t=2, p=1. argon2-cffi defaults are stricter
-# than that already (m=64MiB, t=3, p=4) — keep them. If we re-tune later,
-# `needs_rehash` will flag old hashes for upgrade-on-next-login.
-_HASHER = PasswordHasher()
+from tulip_api.auth.argon2_params import (
+    HASH_LEN,
+    MEMORY_COST,
+    PARALLELISM,
+    SALT_LEN,
+    TIME_COST,
+)
+
+# Parameters pinned explicitly per security audit M-24 (#328). Current
+# values match the argon2-cffi defaults at audit time (m=64MiB, t=3, p=4)
+# and exceed OWASP 2024 minimums (m=19MiB, t=2, p=1). Tune by editing
+# ``argon2_params.py``; ``needs_rehash`` will flag stale hashes for
+# upgrade-on-next-login per #224.
+_HASHER = PasswordHasher(
+    time_cost=TIME_COST,
+    memory_cost=MEMORY_COST,
+    parallelism=PARALLELISM,
+    hash_len=HASH_LEN,
+    salt_len=SALT_LEN,
+)
 
 
 def hash_password(plain: str) -> str:

@@ -27,6 +27,14 @@ from typing import Final
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
+from tulip_api.auth.argon2_params import (
+    HASH_LEN,
+    MEMORY_COST,
+    PARALLELISM,
+    SALT_LEN,
+    TIME_COST,
+)
+
 #: RFC 4648 base32 alphabet (A-Z + 2-7), excluding 0/1/8/9 by construction.
 _ALPHABET: Final[str] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
@@ -38,9 +46,15 @@ _GROUP_LEN: Final[int] = 4
 _GROUP_COUNT: Final[int] = 4
 _CODE_CHARS: Final[int] = _GROUP_LEN * _GROUP_COUNT
 
-# Reuse argon2-cffi defaults — same parameters used for passwords. The
-# CPU cost during enrollment-verify (8 hashes) is bounded and acceptable.
-_HASHER = PasswordHasher()
+# Pinned parameters per security audit M-24 (#328). Same parameters as
+# password hashing — see ``argon2_params.py``.
+_HASHER = PasswordHasher(
+    time_cost=TIME_COST,
+    memory_cost=MEMORY_COST,
+    parallelism=PARALLELISM,
+    hash_len=HASH_LEN,
+    salt_len=SALT_LEN,
+)
 
 
 def generate_recovery_codes(count: int = DEFAULT_CODE_COUNT) -> list[str]:
