@@ -147,6 +147,7 @@ jobs:
           - tulip-storage
           - tulip-api
           - tulip-cli
+          - tulip-tui
           - tulip-ai
           - tulip-importers
           # tulip-reports has 0 tests today; exclude rather than run a
