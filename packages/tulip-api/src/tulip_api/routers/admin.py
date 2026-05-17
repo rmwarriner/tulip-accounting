@@ -28,7 +28,10 @@ from tulip_api.schemas.admin import (
     AuditPruneResult,
     AuditRetentionPolicyPatch,
     AuditRetentionPolicyRead,
+    GrepPiiMatchRead,
+    GrepPiiResult,
 )
+from tulip_storage.grep_pii import run_grep_pii
 from tulip_storage.models import Household
 from tulip_storage.repositories import AuditLogWriter
 from tulip_storage.runner.handlers.audit_retention import (
@@ -182,6 +185,104 @@ def post_audit_prune(
         household_id=claims.household_id,
         deleted_per_tier=per_tier,
         total_deleted=total,
+    )
+
+
+@router.get(
+    "/grep-pii",
+    response_model=GrepPiiResult,
+    status_code=status.HTTP_200_OK,
+    responses={
+        400: problem_response("request.body_invalid"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+    },
+)
+def get_grep_pii(
+    request: Request,
+    user_id: UUID | None = None,
+    email: str | None = None,
+    display_name: str | None = None,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> GrepPiiResult:
+    """Scan household-scoped text/JSON columns for PII identifiers (#346).
+
+    Post-delete erasure verification: after ``DELETE /v1/users/{id}``
+    the operator runs this to prove "yes, the deleted user's PII is
+    actually gone" — or to surface what still needs scrubbing.
+
+    At least one of ``user_id`` / ``email`` / ``display_name`` must be
+    supplied. The scan is tenant-scoped to the caller's household;
+    cross-household visibility is intentionally absent.
+
+    The scan itself is recorded as ``admin.grep_pii_run`` so the audit
+    chain captures the operator's verification step — the row carries
+    needle *types* but not their values (no PII in the audit body).
+    """
+    try:
+        matches = run_grep_pii(
+            session,
+            household_id=claims.household_id,
+            user_id=user_id,
+            email=email,
+            display_name=display_name,
+        )
+    except ValueError as exc:
+        from tulip_api.errors import TulipProblem
+
+        raise TulipProblem(
+            code="request.body_invalid",
+            title="grep-pii requires at least one needle",
+            status=400,
+            detail=str(exc),
+        ) from exc
+
+    needles_provided = [
+        kind
+        for kind, value in (
+            ("user_id", user_id),
+            ("email", email),
+            ("display_name", display_name),
+        )
+        if value
+    ]
+    AuditLogWriter(session, claims.household_id).write(
+        action="admin.grep_pii_run",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="household",
+        entity_id=claims.household_id,
+        # No PII bytes in the audit body — just the structural fact +
+        # the match count.
+        metadata={
+            "needle_kinds": needles_provided,
+            "match_count": len(matches),
+        },
+        request_id=_request_uuid(request),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.commit()
+    log.info(
+        "admin.grep_pii",
+        household_id=str(claims.household_id),
+        needle_kinds=needles_provided,
+        match_count=len(matches),
+    )
+    return GrepPiiResult(
+        household_id=claims.household_id,
+        needles=needles_provided,
+        matches=[
+            GrepPiiMatchRead(
+                table=m.table,
+                column=m.column,
+                row_id=m.row_id,
+                snippet=m.snippet,
+                needle=m.needle,
+            )
+            for m in matches
+        ],
     )
 
 
