@@ -1922,7 +1922,14 @@ def install_problem_handlers(app: FastAPI) -> None:
         # Pydantic's error structure can contain Decimal values (e.g. inside
         # ``ctx`` for ``ge`` / ``gt`` / ``le`` / ``lt`` constraints) that
         # JSONResponse can't serialize. Coerce them to strings recursively.
-        sanitized = [_sanitize_for_json(e) for e in exc.errors()]
+        # Privacy audit M-14 (#342): also strip the per-error ``input`` field
+        # — Pydantic echoes the rejected value back, but request bodies can
+        # carry PII or accidentally-misposted secrets. The ``loc`` + ``msg``
+        # + ``type`` triple identifies the failure without re-emitting the
+        # value.
+        sanitized = [
+            _sanitize_for_json({k: v for k, v in e.items() if k != "input"}) for e in exc.errors()
+        ]
         return _render(request, ValidationFailedError(errors=sanitized))
 
     @app.exception_handler(IntegrityError)
