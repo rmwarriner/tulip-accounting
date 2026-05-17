@@ -161,6 +161,11 @@ class Settings:
     back to ephemeral values. In ``prod`` mode (``TULIP_ENV=prod``) the
     constructor refuses to materialise a Settings instance if either the
     master key or the JWT secret is ephemeral — see #223 (M-2 + M-3).
+
+    ``__repr__`` redacts the secret-bearing fields (security audit L-14,
+    #350) so a traceback / debug-print can't leak the master key, the
+    JWT secret, or a DB URL that may carry inline credentials. Access
+    the actual values through attribute access, not ``repr(settings)``.
     """
 
     database_url: str = field(default_factory=_default_db_url)
@@ -185,6 +190,20 @@ class Settings:
                 "TULIP_ENV=prod: refusing to boot with an ephemeral JWT secret. "
                 "Set TULIP_JWT_SECRET before starting the API.",
             )
+
+    def __repr__(self) -> str:
+        """Return a debug representation with secret fields redacted (L-14, #350)."""
+        return (
+            "Settings("
+            "database_url='<redacted>', "
+            "jwt_secret='<redacted>', "
+            f"jwt_secret_source={self.jwt_secret_source!r}, "
+            "master_key=<redacted bytes>, "
+            f"master_key_source={self.master_key_source!r}, "
+            f"attachment_root={self.attachment_root!r}, "
+            f"deployment_mode={self.deployment_mode!r}"
+            ")"
+        )
 
 
 _SINGLETON: Settings | None = None
