@@ -24,8 +24,8 @@ from tulip_ai.adapters import ProviderAdapter
 from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_payload
 from tulip_ai.cost import PreCallApproval, enforce_pre_call
 from tulip_ai.errors import AIProviderError
-from tulip_ai.forecast import bucket_time_series
 from tulip_ai.policy import resolve_policy
+from tulip_ai.redaction import PromptRedactor
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -201,7 +201,8 @@ class AIProposalCapability:
         call_model = gate.model or ""
         call_api_key = api_key if not gate.degraded else None
 
-        bucketed = bucket_time_series(recent_spend_series, profile=policy.profile)
+        redactor = PromptRedactor(policy.profile)
+        bucketed = redactor.bucket_time_series(recent_spend_series)
         prompt_body: dict[str, object] = {
             "task": "suggest_envelope_budget",
             "envelope_id": str(envelope_id),
@@ -209,8 +210,9 @@ class AIProposalCapability:
             "current_budget": str(current_budget) if current_budget is not None else None,
             "recent_spend_series": [{"date": d.isoformat(), "amount": str(a)} for d, a in bucketed],
         }
-        if policy.profile != "strict":
-            prompt_body["envelope_name"] = envelope_name
+        name_for_prompt = redactor.proposal_envelope_name(envelope_name)
+        if name_for_prompt is not None:
+            prompt_body["envelope_name"] = name_for_prompt
         messages = [
             {
                 "role": "system",

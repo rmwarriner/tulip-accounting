@@ -16,8 +16,15 @@ Column is nullable — users who have never verified a TOTP have NULL,
 and the verify path treats NULL as "no replay history yet."
 
 Revision ID: c2a9f4b7e1d8
-Revises: a6f1c9b3d8e4
+Revises: c7a3f9e2b1d8
 Create Date: 2026-05-17 19:00:00.000000+00:00
+
+Down-revision was originally ``a6f1c9b3d8e4``; rebased to
+``c7a3f9e2b1d8`` in #347 because the audit_log composite-PK migration
+(c7a3f9e2b1d8) landed in parallel from a different branch and the two
+created a multi-head tree. Both migrations only depend on schema-state
+that exists after ``a6f1c9b3d8e4``; chaining them is order-independent
+for the actual DDL.
 """
 
 from __future__ import annotations
@@ -28,7 +35,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c2a9f4b7e1d8"
-down_revision: str | None = "a6f1c9b3d8e4"
+down_revision: str | None = "c7a3f9e2b1d8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

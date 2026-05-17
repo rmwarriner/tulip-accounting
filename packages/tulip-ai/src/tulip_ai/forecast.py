@@ -31,7 +31,7 @@ from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_p
 from tulip_ai.cost import PreCallApproval, enforce_pre_call
 from tulip_ai.errors import AIProviderError
 from tulip_ai.policy import resolve_policy
-from tulip_ai.redaction import RedactionProfile
+from tulip_ai.redaction import PromptRedactor, RedactionProfile
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -81,35 +81,17 @@ class ForecastResult:
     error: str | None = None
 
 
-def _round_to_bucket(amount: Decimal, bucket_size: Decimal) -> Decimal:
-    """Round ``amount`` to the nearest multiple of ``bucket_size``.
-
-    Bucket size of zero (degenerate input — all amounts are zero)
-    passes the input through unchanged.
-    """
-    if bucket_size == 0:
-        return amount
-    return (amount / bucket_size).to_integral_value() * bucket_size
-
-
 def bucket_time_series(
     series: list[tuple[date, Decimal]], *, profile: RedactionProfile
 ) -> list[tuple[date, Decimal]]:
-    """Bucket a time-series per ADR-0005 §Q3.
+    """Bucket a per-day series per ADR-0005 §Q3.
 
-    ``default``: each amount rounded to the nearest 5% of the series'
-    maximum absolute value.
-    ``strict``: 25%.
-    ``local_only``: pass-through (the local model already sees raw data).
+    Thin shim over :meth:`PromptRedactor.bucket_time_series` — kept as
+    a module-level export for back-compat callers and for the proposals
+    capability that imports it directly. Audit M-8 consolidated the
+    bucketing logic into ``PromptRedactor``; this is the single source.
     """
-    if profile == "local_only" or not series:
-        return list(series)
-    max_abs = max((abs(amt) for _, amt in series), default=Decimal("0"))
-    if max_abs == 0:
-        return list(series)
-    pct = Decimal("0.05") if profile == "default" else Decimal("0.25")
-    bucket = max_abs * pct
-    return [(d, _round_to_bucket(amt, bucket)) for d, amt in series]
+    return PromptRedactor(profile).bucket_time_series(series)
 
 
 def build_forecast_prompt(
@@ -129,9 +111,9 @@ def build_forecast_prompt(
     see the same bytes — tests can assert the byte-faithful preview
     equals what the capability actually sends.
     """
-    bucketed = bucket_time_series(time_series, profile=profile)
-    # Strict elides the envelope name (ADR-0005 §Q3 — "id only").
-    name_for_prompt = envelope_name if profile != "strict" else None
+    redactor = PromptRedactor(profile)
+    bucketed = redactor.bucket_time_series(time_series)
+    name_for_prompt = redactor.forecast_envelope_name(envelope_name)
     return ForecastPromptPayload(
         envelope_id=envelope_id,
         envelope_name=name_for_prompt,
