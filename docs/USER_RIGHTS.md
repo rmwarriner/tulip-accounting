@@ -327,16 +327,26 @@ and journal export shipped in Phase 7.
 
 ---
 
-## Right of objection (Art. 21)
+## Right of objection (Art. 21) — and Art. 22 framing
 
 > "The data subject shall have the right to object … to processing of
 > personal data concerning him or her … including profiling based on those
 > provisions."
 
+> "The data subject shall have the right not to be subject to a decision
+> based solely on automated processing … which produces legal effects
+> concerning him or her or similarly significantly affects him or her."
+> (Art. 22(1))
+
 Tulip's AI-driven automated decisions ("propose this category" / "propose
 this budget" / "propose this refill") are gated **by construction** behind
 human approval — no AI proposal mutates state without an
 `approve` / `reject` decision recorded as an `audit_log` row.
+
+Art. 22(1) — "no solely automated decision" — is satisfied by construction:
+pending-by-default, byte-faithful preview before any send, explicit-approve /
+explicit-reject. See [ADR-0005 §Compliance posture — GDPR Art. 22(1) by
+construction](adrs/0005-ai-integration.md) for the design framing.
 
 ```bash
 # List proposals waiting on you:

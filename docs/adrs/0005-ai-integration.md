@@ -356,6 +356,18 @@ P6.1 is the high-risk slice — it lays down the redactor, the audit writer, the
 - **Consent provenance.** Every mutation to `households.ai_policy` via `PUT /v1/ai/config` or `PUT /v1/ai/config/capabilities/{capability}` writes an `audit_log` row with `action="ai.consent_changed"` carrying `actor_user_id` and full before / after of the policy blob (GDPR Art. 7(1) "when and by whom"). No-op PUTs (`before == after`) skip the row to avoid log noise; #247 is the issue that closed this gap.
 - **TTL garbage collection.** The `ai_retention` scheduled handler deletes non-proposal-linked `ai_invocations` older than `AI_INVOCATION_RETENTION_DAYS` (90). A row is preserved while any `pending_proposals` row references it via `pending_proposals.ai_invocation_id`; once the proposal is gone (e.g. rejected + deleted per #240) the invocation becomes collectable. This also bounds the accumulation of pseudonymous `prompt_hash` rows even for households that never enable `log_prompts`. The policy is surfaced read-only in `GET /v1/ai/config` (`invocation_retention_days`) and `tulip ai config show`.
 
+### Compliance posture — GDPR Art. 22(1) by construction (added #339, deep privacy audit M-24)
+
+GDPR Art. 22(1) bars a "decision based solely on automated processing" with legal or similarly significant effects on the data subject. Tulip's design clears that bar **by construction**, not by policy:
+
+- **Pending-by-default chokepoint.** Every AI capability that mutates ledger state — categorisation suggestions, agentic proposals, even daily-insights notifications — writes through `pending_proposals.status = 'PENDING'`. Nothing reaches the ledger until an authenticated human invokes `POST /v1/ai/proposals/{id}/approve` (or the CLI equivalent). The `executor` registry refuses any non-`APPROVED` row at the database layer; no code path bypasses the approval step.
+- **Byte-faithful preview before any send.** `POST /v1/ai/preview` runs the exact prompt construction + redaction pipeline the live capability uses and returns the bytes that *would* be sent to the provider — without making the provider call. A user evaluating "what is this thing about to share?" gets a verbatim answer. The `test_preview_byte_faithful.py` test asserts `recorded == preview` per capability (drift would surface in CI).
+- **Explicit-approve, explicit-reject.** Rejection is a first-class state with its own audit row (`proposal.reject`, landed via #311). The `tulip ai propose` flow is symmetric: approve writes a `proposal.approve` audit row plus an `actor_kind="ai_agent"` ledger entry; reject writes `proposal.reject` and drops the proposal without any side effect on the ledger.
+
+The combination — pending-by-default + byte-faithful preview + explicit-approve / explicit-reject — means no "solely automated" decision lands in the ledger. The human-in-the-loop is enforced at the schema layer, surfaced at the API, and observable in `audit_log`. Cross-link: [`docs/USER_RIGHTS.md`](../USER_RIGHTS.md) Art. 22 row.
+
+Art. 21(1) "right to object to profiling" is a related but separable concern (a *persistent* "I objected" state, not just a one-shot reject) and is not satisfied by this design alone. The privacy audit's M-24 tracks the Art. 21 framing separately; the gap is documentation-acknowledged rather than wired today, since the household admin already controls the AI policy.
+
 ## Alternatives considered
 
 ### Q1 — `tulip-ai` lives inside `tulip-api`
