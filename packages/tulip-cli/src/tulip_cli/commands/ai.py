@@ -186,6 +186,11 @@ def status(ctx: typer.Context) -> None:
             f"    {name:14s} level={cfg.get('level')} profile={cfg.get('profile')} "
             f"provider={cfg.get('provider') or '(inherit)'}"
         )
+        if name == "forecast":
+            typer.echo(
+                "      background daily fire: not scheduled "
+                "(synchronous use only; ADR-0005 §Daily-insights handler registration)"
+            )
 
 
 @ai_app.command("ask")
