@@ -85,3 +85,56 @@ class TestTulipProblem:
         assert r.headers["www-authenticate"] == "Bearer"
         # Content-Type for the body must still be application/problem+json.
         assert r.headers["content-type"].startswith("application/problem+json")
+
+
+class TestValidationErrorInputStripped:
+    """#342 / privacy audit M-14: ``errors[N].input`` is removed from 422
+    Problem Details responses to avoid echoing rejected request-body
+    values (which may carry PII, secrets sent to the wrong endpoint, or
+    arbitrary user input). The ``loc`` + ``msg`` + ``type`` triple
+    identifies the failing field without re-emitting its value.
+    """
+
+    @staticmethod
+    def _app_with_validated_body():
+        from pydantic import BaseModel, Field
+
+        class _Body(BaseModel):
+            description: str = Field(max_length=10)
+
+        app = FastAPI()
+        install_problem_handlers(app)
+
+        @app.post("/echo")
+        def echo(body: _Body) -> dict[str, str]:
+            return {"description": body.description}
+
+        return TestClient(app)
+
+    def test_long_string_input_is_not_echoed_in_response(self):
+        client = self._app_with_validated_body()
+        rejected = "A" * 500
+        r = client.post("/echo", json={"description": rejected})
+        assert r.status_code == 422
+        body = r.json()
+        # The rejected value must not appear anywhere in the response body.
+        assert rejected not in r.text, "rejected request-body value must not echo"
+        # The structured loc / msg / type triple is preserved.
+        first_error = body["errors"][0]
+        assert "loc" in first_error
+        assert "msg" in first_error
+        assert "type" in first_error
+        # The ``input`` field must be stripped.
+        assert "input" not in first_error
+
+    def test_email_secret_value_is_not_echoed(self):
+        """Scenario: a client accidentally posts a password where an email
+        is expected. The rejected ``input`` value must not survive into
+        the 422 response (it might land in proxy logs, browser dev-tools,
+        etc.).
+        """
+        client = self._app_with_validated_body()
+        secret = "this-is-not-a-description-it-is-a-secret"
+        r = client.post("/echo", json={"description": secret})
+        assert r.status_code == 422
+        assert secret not in r.text
