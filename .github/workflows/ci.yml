@@ -27,7 +27,10 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  UV_VERSION: "latest"
+  # Pinned per security audit L-19. Bump explicitly + verify locally
+  # first; "latest" has silently changed CI behaviour before. Matches
+  # the Homebrew-installed uv at the time of bumping.
+  UV_VERSION: "0.11.11"
 
 jobs:
 
@@ -52,9 +55,9 @@ jobs:
       ci: ${{ steps.filter.outputs.ci }}
       docker: ${{ steps.filter.outputs.docker }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         with:
           filters: |
             python:
@@ -80,10 +83,10 @@ jobs:
     name: Lint & format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -106,10 +109,10 @@ jobs:
     if: github.event_name == 'push' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -153,10 +156,10 @@ jobs:
           # tulip-reports has 0 tests today; exclude rather than run a
           # no-tests-collected job that would exit 5.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Cache apt packages (SQLCipher)
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: /var/cache/apt/archives
           key: apt-sqlcipher-${{ runner.os }}-v1
@@ -174,7 +177,7 @@ jobs:
               libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libfontconfig1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -203,7 +206,7 @@ jobs:
 
       - name: Upload partial coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-partial-${{ matrix.package }}
           path: .coverage.${{ matrix.package }}
@@ -212,7 +215,7 @@ jobs:
 
       - name: Upload JUnit results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: junit-${{ matrix.package }}
           path: junit-${{ matrix.package }}.xml
@@ -232,10 +235,10 @@ jobs:
       (github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -246,7 +249,7 @@ jobs:
         run: uv sync --all-packages --dev
 
       - name: Download all partial coverage artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: coverage-partial-*
           path: .coverage-partials
@@ -264,7 +267,7 @@ jobs:
 
       - name: Upload combined coverage XML
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-xml
           path: coverage.xml
@@ -274,7 +277,7 @@ jobs:
         # HTML report is for human inspection on `main` post-merge; PR runs
         # don't need to upload it (saves ~10-20s and a few MB per PR run).
         if: always() && github.event_name == 'push'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-html
           path: htmlcov/
@@ -287,7 +290,7 @@ jobs:
     name: Secrets scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0  # gitleaks scans full history on PRs
 
@@ -315,10 +318,10 @@ jobs:
     if: github.event_name == 'push' || needs.changes.outputs.deps == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -348,10 +351,10 @@ jobs:
     if: github.event_name == 'push' || needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Cache apt packages (SQLCipher)
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: /var/cache/apt/archives
           key: apt-sqlcipher-${{ runner.os }}-v1
@@ -362,7 +365,7 @@ jobs:
           sudo apt-get install -y libsqlcipher-dev sqlcipher
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -377,7 +380,7 @@ jobs:
 
       - name: Upload benchmark results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-results
           path: benchmark-results.json
@@ -399,7 +402,7 @@ jobs:
       github.event_name == 'push' ||
       needs.changes.outputs.docker == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Generate ephemeral secrets
         run: |
