@@ -27,6 +27,7 @@ from tulip_cli.backup import (
     restore_backup,
     snapshot_sqlite_db,
     write_backup,
+    write_backup_audit_rows,
 )
 
 # ---- Manifest + envelope --------------------------------------------------
@@ -515,6 +516,110 @@ def test_cli_restore_wrong_key_exits_2(tmp_path: Path):
     result = _run_cli("restore", str(backup_path), env=restore_env)
     assert result.returncode == 2
     assert "envelope" in (result.stdout + result.stderr).lower()
+
+
+def _audit_log_seeded_db(tmp_path: Path, household_ids: list[str]) -> Path:
+    """SQLite DB with a minimal households + audit_log schema for the audit-row helper tests."""
+    db = tmp_path / "audit-seed.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("CREATE TABLE households (id TEXT NOT NULL PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE audit_log ("
+            "id TEXT NOT NULL PRIMARY KEY, "
+            "household_id TEXT NOT NULL, "
+            "occurred_at TEXT NOT NULL, "
+            "actor_user_id TEXT, "
+            "actor_kind TEXT NOT NULL, "
+            "action TEXT NOT NULL, "
+            "entity_type TEXT NOT NULL, "
+            "entity_id TEXT NOT NULL, "
+            "before_snapshot TEXT, "
+            "after_snapshot TEXT, "
+            "request_id TEXT, "
+            "ip_address TEXT, "
+            "user_agent TEXT, "
+            "metadata TEXT"
+            ")"
+        )
+        for hh_id in household_ids:
+            conn.execute("INSERT INTO households (id) VALUES (?)", (hh_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+class TestWriteBackupAuditRows:
+    def test_writes_one_row_per_household(self, tmp_path: Path):
+        db = _audit_log_seeded_db(tmp_path, ["hh-1", "hh-2"])
+        write_backup_audit_rows(
+            db_path=db,
+            action="backup.created",
+            metadata={"out": "x.tar.gz"},
+        )
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute(
+                "SELECT household_id, action, actor_kind, entity_type, entity_id, metadata "
+                "FROM audit_log ORDER BY household_id"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 2
+        assert {r[0] for r in rows} == {"hh-1", "hh-2"}
+        assert all(r[1] == "backup.created" for r in rows)
+        assert all(r[2] == "system" for r in rows)
+        assert all(r[3] == "household" for r in rows)
+        # entity_id == household_id (the household IS the entity scope of a backup).
+        assert all(r[4] == r[0] for r in rows)
+        # metadata round-trips as JSON.
+        for r in rows:
+            assert json.loads(r[5]) == {"out": "x.tar.gz"}
+
+    def test_missing_db_is_noop(self, tmp_path: Path):
+        # No exception even though file doesn't exist.
+        write_backup_audit_rows(
+            db_path=tmp_path / "missing.db",
+            action="backup.created",
+            metadata={},
+        )
+
+    def test_missing_audit_log_table_is_silent(self, tmp_path: Path):
+        # A DB that doesn't have the audit_log table (e.g. pre-migration)
+        # must not raise — best-effort.
+        db = tmp_path / "schemaless.db"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute("CREATE TABLE households (id TEXT PRIMARY KEY)")
+            conn.execute("INSERT INTO households (id) VALUES ('hh-x')")
+            conn.commit()
+        finally:
+            conn.close()
+        write_backup_audit_rows(db_path=db, action="backup.restored", metadata={"k": "v"})
+
+    def test_no_households_means_no_rows(self, tmp_path: Path):
+        db = _audit_log_seeded_db(tmp_path, [])
+        write_backup_audit_rows(db_path=db, action="backup.created", metadata={})
+        conn = sqlite3.connect(str(db))
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        finally:
+            conn.close()
+        assert n == 0
+
+    def test_action_string_is_passed_through(self, tmp_path: Path):
+        db = _audit_log_seeded_db(tmp_path, ["hh-1"])
+        write_backup_audit_rows(
+            db_path=db, action="backup.restored", metadata={"in_path": "b.tar.gz"}
+        )
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute("SELECT action, metadata FROM audit_log").fetchone()
+        finally:
+            conn.close()
+        assert row[0] == "backup.restored"
+        assert json.loads(row[1]) == {"in_path": "b.tar.gz"}
 
 
 @pytest.mark.integration

@@ -7,6 +7,7 @@ secrets via the field-encryption helper in ``tulip-storage``.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Final
 
 import pyotp
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
 
 #: Default issuer name shown in authenticator apps.
 DEFAULT_ISSUER: Final[str] = "Tulip Accounting"
+
+#: TOTP step size in seconds per RFC 6238. Hard-coded; changing this
+#: would invalidate every enrolled secret.
+_STEP_SECONDS: Final[int] = 30
 
 #: ±1 30-second windows of slack tolerated when verifying codes — i.e.
 #: the previous and next windows count as valid. Standard practice for
@@ -35,14 +40,37 @@ def build_provisioning_uri(*, secret: str, email: str, issuer: str = DEFAULT_ISS
     return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name=issuer)
 
 
-def verify_totp_code(secret: str, code: str) -> bool:
-    """Return True if ``code`` is a currently-valid TOTP for ``secret``.
+def verify_totp_code(
+    secret: str, code: str, *, last_step: int | None = None
+) -> tuple[bool, int | None]:
+    """Return ``(verified, step)`` for a candidate TOTP.
 
-    Tolerates ±1 window of clock skew.
+    ``step`` is the Unix-epoch-seconds / 30 of the matched window, so
+    callers can persist it in ``users.last_totp_step`` to defeat replays
+    (security audit M-5, #330). When ``last_step`` is provided, any
+    candidate step ``<= last_step`` is treated as a replay and rejected
+    even if the code matches.
+
+    The valid window is ``[current - VERIFY_WINDOW, current + VERIFY_WINDOW]``;
+    the loop checks each step explicitly so we can both honour the
+    replay gate AND learn which step matched (``pyotp.TOTP.verify``'s
+    bool answer doesn't tell us).
+
+    Returns ``(False, None)`` on malformed input, replay, or no match.
     """
     if not code or not code.isdigit():
-        return False
-    return pyotp.TOTP(secret).verify(code, valid_window=_VERIFY_WINDOW)
+        return (False, None)
+    totp = pyotp.TOTP(secret)
+    current_step = int(time.time()) // _STEP_SECONDS
+    for offset in range(-_VERIFY_WINDOW, _VERIFY_WINDOW + 1):
+        candidate_step = current_step + offset
+        if last_step is not None and candidate_step <= last_step:
+            continue
+        # ``totp.at`` takes a Unix timestamp (seconds), not a step number,
+        # so multiply back to seconds for the lookup.
+        if totp.at(candidate_step * _STEP_SECONDS) == code:
+            return (True, candidate_step)
+    return (False, None)
 
 
 def _totp_aad(*, household_id: UUID, user_id: UUID) -> bytes:

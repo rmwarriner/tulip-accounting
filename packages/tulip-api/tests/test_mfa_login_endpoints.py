@@ -342,3 +342,52 @@ class TestAuthRateLimit:
         assert last is not None
         assert_problem(last, code="auth.rate_limited", status=429)
         assert "Retry-After" in last.headers
+
+
+class TestLoginMfaReplayDefence:
+    """#330 / security audit M-5: a successful login-mfa burns the TOTP
+    step. A captured TOTP code can't be re-submitted in a second login
+    within the same window — even with a valid mfa_token.
+    """
+
+    def test_replay_after_login_mfa_success_rejected(
+        self,
+        client: TestClient,
+        registered: dict[str, str],
+        session_maker: sessionmaker[Session],
+    ):
+        # Enroll-verify so the user has a TOTP secret.
+        access = _login(client, registered["email"]).json()["access_token"]
+        secret = _enroll_and_verify(client, access)
+
+        # Issue two MFA-challenge tokens (the simulated "captured" case
+        # uses one) by calling login twice. Both should be valid for
+        # different login attempts.
+        challenge1 = _login(client, registered["email"]).json()
+        challenge2 = _login(client, registered["email"]).json()
+        mfa_token1 = challenge1["mfa_token"]
+        mfa_token2 = challenge2["mfa_token"]
+
+        code = pyotp.TOTP(secret).now()
+        # First submission succeeds and burns the step.
+        r1 = client.post(
+            "/v1/auth/login/mfa",
+            json={"mfa_token": mfa_token1, "code": code},
+        )
+        assert r1.status_code == 200, r1.text
+
+        # Second submission with the SAME TOTP code on the second valid
+        # mfa_token must fail with auth.mfa_invalid_code — the replay
+        # gate trips even though the code is window-valid.
+        r2 = client.post(
+            "/v1/auth/login/mfa",
+            json={"mfa_token": mfa_token2, "code": code},
+        )
+        assert_problem(r2, code="auth.mfa_invalid_code", status=401)
+
+        # And a mfa.code_rejected audit row landed.
+        from tulip_storage.models import AuditLog
+
+        with session_maker() as s:
+            rejections = s.query(AuditLog).filter(AuditLog.action == "mfa.code_rejected").all()
+            assert len(rejections) >= 1

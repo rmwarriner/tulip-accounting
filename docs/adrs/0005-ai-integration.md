@@ -285,6 +285,8 @@ A new table `ai_invocations`, written by `tulip_ai.audit.AIInvocationWriter`. Ar
 
 Estimated cost is a heuristic from token counts × per-million rate. Post-call, the row's `cost_estimate_usd` is updated with the actual; the reservation is released and the actual is debited. Atomic via a single transaction that writes the `ai_invocations` row.
 
+**Atomicity under concurrent callers (#334, audit M-23).** The cost-cap + rate-limit gate is a read-then-act on `ai_invocations`; two concurrent capabilities can otherwise both observe `spent < cap` and both commit success rows. `tulip_ai.cost._acquire_household_gate_lock` runs at the top of `enforce_pre_call` and takes a write lock on the household row — on SQLite via a no-op `UPDATE households SET id = id WHERE id = :hid` that escalates the transaction to RESERVED; on PostgreSQL (Phase 9) via `SELECT 1 FROM households ... FOR UPDATE`. Callers MUST commit (or rollback) the same session after writing the matching `ai_invocations` row so the lock releases. The concurrency regression tests in `packages/tulip-ai/tests/test_cost.py::TestHouseholdGateLockSerialization` demonstrate the serialization.
+
 **Rate limit is per-user, sliding window.** Default 60 invocations/hour per user across all capabilities. Sliding window because monthly aggregates obscure runaway loops; the bound is "no more than a hot stove" not "no more than a budget."
 
 **At cap.** Per `households.ai_policy.cost_cap_behaviour` (new field, default `degrade`):

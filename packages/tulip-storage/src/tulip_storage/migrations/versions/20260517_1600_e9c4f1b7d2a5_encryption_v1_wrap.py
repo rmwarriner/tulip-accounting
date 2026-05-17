@@ -24,7 +24,7 @@ Idempotent: re-running this migration is safe because
 starts with a recognised version byte.
 
 Revision ID: e9c4f1b7d2a5
-Revises: a6f1c9b3d8e4
+Revises: c2a9f4b7e1d8
 Create Date: 2026-05-17 16:00:00.000000+00:00
 """
 
@@ -36,7 +36,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e9c4f1b7d2a5"
-down_revision: str | None = "a6f1c9b3d8e4"
+down_revision: str | None = "c2a9f4b7e1d8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
