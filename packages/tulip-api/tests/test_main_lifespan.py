@@ -68,4 +68,9 @@ def test_daily_insights_handler_is_not_registered_by_default(monkeypatch, tmp_pa
             "ADR-0005 §'Daily-insights handler registration' / privacy audit M-17"
         )
         # Positive control — the three handlers we do register.
-        assert {"attachment_gc", "ai_retention", "audit_retention"} <= registered
+        assert {
+            "attachment_gc",
+            "ai_retention",
+            "audit_retention",
+            "session_retention",
+        } <= registered
