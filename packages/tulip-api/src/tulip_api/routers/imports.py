@@ -38,6 +38,7 @@ from tulip_api.errors import (
     ForbiddenError,
     ImportAccountMapInvalidError,
     ImportAlreadyAppliedError,
+    ImportBatchHasPromotedLinesError,
     ImportBatchNotFoundError,
     ImportCategorizeUnknownAccountError,
     ImportCsvParseFailedError,
@@ -1045,3 +1046,80 @@ def get_import_batch(
             for line in lines
         ],
     )
+
+
+@router.delete(
+    "/{batch_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("import_batch.not_found"),
+        409: problem_response("import.batch_has_promoted_lines"),
+    },
+)
+def delete_import_batch(
+    batch_id: UUID,
+    request: Request,
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> None:
+    """Delete an import batch and its statement lines (#345).
+
+    Refuses with 409 ``import.batch_has_promoted_lines`` if any of the
+    batch's ``statement_lines`` have been promoted to ledger
+    transactions (``promoted_transaction_id IS NOT NULL``) — the caller
+    must void / delete those transactions first so the back-reference
+    nulls itself out (see #301 for the back-reference plumbing).
+
+    Otherwise cascades ``statement_lines`` via the existing FK
+    ``ondelete="CASCADE"``. The ``attachments`` row stays — the
+    attachment is content-addressed and may be referenced by other
+    batches; the household-erasure path (#235) handles attachment
+    cleanup on its broader unlink-orphans sweep.
+
+    Admin-only per the issue (#345) — bulk delete is operator-grade.
+
+    Audit row: ``import_batch.deleted`` with the batch's source format,
+    line count, and promotion count snapshot. No PII from the lines
+    themselves; just structural metadata.
+    """
+    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch = batch_repo.get(batch_id)
+    if batch is None:
+        raise ImportBatchNotFoundError()
+
+    lines_repo = StatementLineRepository(session, claims.household_id)
+    lines = lines_repo.list_for_batch(batch_id)
+    promoted = [line for line in lines if line.promoted_transaction_id is not None]
+    if promoted:
+        raise ImportBatchHasPromotedLinesError(batch_id=str(batch_id), promoted_count=len(promoted))
+
+    AuditLogWriter(session, claims.household_id).write(
+        action="import_batch.deleted",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="import_batch",
+        entity_id=batch.id,
+        before={
+            "source_format": batch.source_format.value,
+            "source_filename": batch.source_filename,
+            "line_count": len(lines),
+            "promoted_count": 0,  # validated above
+            "status": batch.status.value,
+        },
+        request_id=_request_uuid(request),
+    )
+
+    from sqlalchemy import delete as sa_delete
+
+    from tulip_storage.models import ImportBatch as ImportBatchModel
+
+    session.execute(
+        sa_delete(ImportBatchModel).where(
+            ImportBatchModel.household_id == claims.household_id,
+            ImportBatchModel.id == batch_id,
+        )
+    )
+    session.commit()
+    log.info("import_batch.deleted", batch_id=str(batch_id), line_count=len(lines))

@@ -909,3 +909,127 @@ class TestListImports:
         r = client.get("/v1/imports", headers=other_headers)
         assert r.status_code == 200
         assert r.json()["items"] == []
+
+
+class TestDeleteImportBatch:
+    """#345: DELETE /v1/imports/{batch_id} admin-only, refuses if any
+    line is already promoted to a ledger transaction.
+    """
+
+    def test_admin_can_delete_unpromoted_batch(
+        self, client: TestClient, auth_h: dict[str, str], checking_account: str
+    ) -> None:
+        upload = _upload(client, auth_h, checking_account).json()
+        batch_id = upload["id"]
+        r = client.delete(f"/v1/imports/{batch_id}", headers=auth_h)
+        assert r.status_code == 204, r.text
+        # Subsequent GET should 404.
+        follow = client.get(f"/v1/imports/{batch_id}", headers=auth_h)
+        assert follow.status_code == 404
+        assert follow.json()["code"] == "import_batch.not_found"
+
+    def test_delete_cascades_statement_lines(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        session_maker,
+    ) -> None:
+        upload = _upload(client, auth_h, checking_account).json()
+        batch_id = upload["id"]
+        # Verify lines exist before delete.
+        from uuid import UUID
+
+        from tulip_storage.models import StatementLine
+
+        with session_maker() as s:
+            count_before = s.query(StatementLine).filter_by(import_batch_id=UUID(batch_id)).count()
+            assert count_before > 0
+
+        client.delete(f"/v1/imports/{batch_id}", headers=auth_h)
+
+        with session_maker() as s:
+            count_after = s.query(StatementLine).filter_by(import_batch_id=UUID(batch_id)).count()
+            assert count_after == 0
+
+    def test_unknown_batch_returns_404(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        from uuid import uuid4
+
+        r = client.delete(f"/v1/imports/{uuid4()}", headers=auth_h)
+        assert_problem(r, code="import_batch.not_found", status=404)
+
+    def test_promoted_lines_block_delete_with_409(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+    ) -> None:
+        """If any line was promoted to a ledger transaction, refuse with a
+        typed 409 carrying the promoted_count.
+        """
+        upload = _upload(client, auth_h, checking_account).json()
+        batch_id = upload["id"]
+        # Apply (promotes all lines into PENDING transactions).
+        apply_resp = client.post(
+            f"/v1/imports/{batch_id}/apply?no_categorize=true",
+            headers=auth_h,
+        )
+        assert apply_resp.status_code == 200, apply_resp.text
+        assert apply_resp.json()["created_count"] > 0
+
+        r = client.delete(f"/v1/imports/{batch_id}", headers=auth_h)
+        assert_problem(r, code="import.batch_has_promoted_lines", status=409)
+        body = r.json()
+        assert body["promoted_count"] >= 1
+        assert body["batch_id"] == batch_id
+
+    def test_member_returns_403(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        session_maker,
+    ) -> None:
+        from sqlalchemy import update
+
+        from tulip_storage.models import User, UserRole
+
+        upload = _upload(client, auth_h, checking_account).json()
+        batch_id = upload["id"]
+        # Demote admin to member, re-login.
+        with session_maker() as s:
+            s.execute(update(User).values(role=UserRole.MEMBER))
+            s.commit()
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": "admin@example.com", "password": "correct horse battery staple"},
+        )
+        member_h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        r = client.delete(f"/v1/imports/{batch_id}", headers=member_h)
+        assert_problem(r, code="auth.forbidden", status=403)
+
+    def test_audit_row_written(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        checking_account: str,
+        session_maker,
+    ) -> None:
+        upload = _upload(client, auth_h, checking_account).json()
+        batch_id = upload["id"]
+        client.delete(f"/v1/imports/{batch_id}", headers=auth_h)
+
+        from tulip_storage.models import AuditLog
+
+        with session_maker() as s:
+            row = (
+                s.query(AuditLog)
+                .filter(AuditLog.action == "import_batch.deleted")
+                .order_by(AuditLog.occurred_at.desc())
+                .first()
+            )
+            assert row is not None
+            assert row.before_snapshot is not None
+            assert row.before_snapshot["source_format"] == "ofx"
+            assert row.before_snapshot["line_count"] >= 1
+            assert row.before_snapshot["promoted_count"] == 0

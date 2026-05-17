@@ -79,6 +79,7 @@ _RETENTION_TIER_BY_ACTION: dict[str, str] = {
     "redact": "ledger_days",
     "import_create": "ledger_days",
     "import_apply": "ledger_days",
+    "import_batch.deleted": "ledger_days",  # #345 per-batch erasure
     "statement_line_promote": "ledger_days",
     "reconciliation_create": "ledger_days",
     "reconciliation_revert": "ledger_days",
