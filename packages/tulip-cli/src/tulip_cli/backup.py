@@ -60,6 +60,62 @@ _DB_PATH_PREFIX = "db/"
 _ATTACHMENTS_PATH_PREFIX = "attachments/"
 
 
+def write_backup_audit_rows(
+    *,
+    db_path: Path,
+    action: str,
+    metadata: dict[str, object],
+) -> None:
+    """Write one ``audit_log`` row per household via raw sqlite3 (#368, audit L-24).
+
+    The CLI can't import SQLAlchemy (arch test), so this uses stdlib
+    sqlite3 + hand-written SQL. Best-effort — a failure here logs and
+    returns rather than blocking the backup itself.
+
+    Targets the file at ``db_path``:
+    - For ``tulip backup`` (action="backup.created"), this is the LIVE
+      database — the audit row lands in the running app's DB and is
+      included in the *next* backup.
+    - For ``tulip restore`` (action="backup.restored"), this is the
+      RESTORED database — the audit row joins the post-restore state.
+    """
+    import uuid as _uuid
+
+    if not db_path.exists():
+        return  # nothing to write to
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            now_iso = datetime.now(UTC).isoformat(sep=" ", timespec="microseconds")
+            now_iso = now_iso.replace("+00:00", "")
+            metadata_json = json.dumps(metadata, ensure_ascii=False)
+            for (hh_id,) in conn.execute("SELECT id FROM households"):
+                conn.execute(
+                    "INSERT INTO audit_log "
+                    "(household_id, id, occurred_at, actor_user_id, actor_kind, "
+                    "action, entity_type, entity_id, request_id, "
+                    "ip_address, user_agent, before_snapshot, after_snapshot, metadata) "
+                    "VALUES (?, ?, ?, NULL, 'system', ?, 'household', ?, "
+                    "NULL, NULL, NULL, NULL, NULL, ?)",
+                    (
+                        hh_id,
+                        str(_uuid.uuid4()),
+                        now_iso,
+                        action,
+                        hh_id,
+                        metadata_json,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        # Best-effort: never block the backup on an audit-row failure.
+        # The user-facing tarball / restore action is the load-bearing
+        # output; the audit row is the trace.
+        return
+
+
 class BackupError(Exception):
     """Raised when backup creation fails for a recoverable reason."""
 
