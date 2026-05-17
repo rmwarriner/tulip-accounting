@@ -60,4 +60,8 @@ junit.xml
 Thumbs.db
 
 # Claude Code session scratch (transient, never committed)
+# — except for settings.json, which is the committed project config
+#   (shared agent permissions, hooks, etc.). settings.local.json stays
+#   ignored so per-developer overrides don't leak.
 .claude/
+!.claude/settings.json

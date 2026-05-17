@@ -78,6 +78,15 @@ def decrypt_field(blob: bytes, master_key: bytes) -> bytes:
 def derive_master_key(passphrase: str, salt: bytes) -> bytes:
     """Derive a 32-byte AES-256 master key from a passphrase via PBKDF2-HMAC-SHA256.
 
+    .. warning::
+       **Not wired into any production code path today.** ``TULIP_MASTER_KEY``
+       / ``TULIP_KEY_FILE`` carry a pre-derived 32-byte key directly; the
+       passphrase-derivation path is reserved for a future Phase-10 KMS /
+       passphrase-unlock flow. The helper has hypothesis-style unit tests
+       so it stays correct against the PBKDF2 contract — security audit L-8
+       (#352) called this out so a future wiring doesn't ship a regressed
+       derivation.
+
     The salt should be at least 16 bytes and persisted across restarts (it
     is not secret; it just defeats rainbow tables). Iterations follow OWASP
     2024 guidance.
