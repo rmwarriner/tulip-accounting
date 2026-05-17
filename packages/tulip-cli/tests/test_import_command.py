@@ -878,3 +878,78 @@ def test_imports_list_invalid_status_rejected(authed_session: str) -> None:
     """`tulip imports list --status bogus` exits with a usage error."""
     result = _run_cli("imports", "list", "--status", "bogus", api_url=authed_session)
     assert_cli_usage_error(result)
+
+
+@pytest.mark.integration
+def test_import_ofx_with_apply_creates_pending_transactions(authed_session: str) -> None:
+    """`tulip import ofx FILE --account 1110 --apply` (#299): parse + apply
+    in one command. Resulting transactions land as PENDING (the default
+    landing state for apply).
+    """
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    result = _run_cli(
+        "import",
+        "ofx",
+        str(fixture),
+        "--account",
+        "1110",
+        "--apply",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Imported" in result.stdout
+    assert "Applied batch" in result.stdout
+    assert "created 2 PENDING transactions" in result.stdout
+
+
+@pytest.mark.integration
+def test_import_ofx_with_apply_posted_lands_posted(authed_session: str) -> None:
+    """`--apply --posted` composes (#299): lines land as POSTED directly."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    result = _run_cli(
+        "import",
+        "ofx",
+        str(fixture),
+        "--account",
+        "1110",
+        "--apply",
+        "--posted",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "created 2 POSTED transactions" in result.stdout
+
+
+@pytest.mark.integration
+def test_import_ofx_apply_json_envelope_has_both_halves(authed_session: str) -> None:
+    """`--json import ... --apply` returns a combined {imported, applied} envelope."""
+    _seed_checking(authed_session)
+    fixture = _OFX_FIXTURES / "minimal_ofx2.ofx"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tulip_cli",
+            "--json",
+            "--api-url",
+            authed_session,
+            "import",
+            "ofx",
+            str(fixture),
+            "--account",
+            "1110",
+            "--apply",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    body = json.loads(result.stdout)
+    assert "imported" in body
+    assert "applied" in body
+    assert body["imported"]["statement_line_count"] == 2
+    assert body["applied"]["created_count"] == 2

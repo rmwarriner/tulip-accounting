@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import typer
 
 from tulip_cli._picker import is_interactive, pick
@@ -55,12 +56,22 @@ def _do_import(
     source_format: str,
     content_type: str,
     extra_form: dict[str, str] | None = None,
+    apply: bool = False,
+    no_categorize: bool = False,
+    posted: bool = False,
 ) -> None:
     """Shared upload flow: resolve account, read file, multipart POST.
 
     ``extra_form`` carries format-specific form fields (e.g.,
     ``profile_id`` for CSV uploads) merged with the standard
     ``account_id``/``source_format`` pair.
+
+    When ``apply=True`` (#299), follow the parse-POST with a second
+    call to ``/v1/imports/{batch_id}/apply``. The two calls are
+    orchestrated client-side; if the apply fails, the batch is left
+    in PARSED state and recoverable via standalone ``tulip imports
+    apply <BATCH_ID>``. ``no_categorize`` and ``posted`` compose with
+    ``apply`` to mirror the standalone apply command's flags.
     """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
@@ -82,14 +93,60 @@ def _do_import(
                 data=data,
                 authenticated=True,
             )
+            import_body = response.json()
+            if apply:
+                # The /v1/imports response carries the new batch UUID as
+                # ``id`` (ImportBatchSummary schema), not ``batch_id``.
+                batch_id = str(import_body["id"])
+                apply_response = _apply_call(
+                    client,
+                    batch_id=batch_id,
+                    no_categorize=no_categorize,
+                    posted=posted,
+                )
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
 
     if as_json:
-        sys.stdout.write(response.text + "\n")
+        if apply:
+            # Combined envelope so callers can dispatch on both halves.
+            combined = {
+                "imported": import_body,
+                "applied": apply_response.json(),
+            }
+            sys.stdout.write(json.dumps(combined) + "\n")
+        else:
+            sys.stdout.write(response.text + "\n")
         return
-    _render_summary(response.json())
+    _render_summary(import_body)
+    if apply:
+        apply_body = apply_response.json()
+        landed_as = "POSTED" if posted else "PENDING"
+        typer.echo(
+            f"Applied batch {apply_body['batch_id']}: created "
+            f"{apply_body['created_count']} {landed_as} transactions, "
+            f"skipped {apply_body['skipped_count']} lines."
+        )
+
+
+def _apply_call(
+    client: TulipClient,
+    *,
+    batch_id: str,
+    no_categorize: bool,
+    posted: bool,
+) -> httpx.Response:
+    """Issue the apply call with the same query-string shape as `tulip imports apply`."""
+    path = f"/v1/imports/{batch_id}/apply"
+    query: list[str] = []
+    if no_categorize:
+        query.append("no_categorize=true")
+    if posted:
+        query.append("as_posted=true")
+    if query:
+        path += "?" + "&".join(query)
+    return client.post(path, authenticated=True)
 
 
 def _resolve_profile_id(client: TulipClient, profile: str) -> str:
@@ -122,6 +179,31 @@ def import_ofx(
             ),
         ),
     ],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "After parsing, immediately apply the batch — every "
+                "non-excluded line becomes a ledger transaction in one "
+                "command (#299). Composes with --no-categorize and --posted."
+            ),
+        ),
+    ] = False,
+    no_categorize: Annotated[
+        bool,
+        typer.Option(
+            "--no-categorize",
+            help="With --apply: skip the AI categorizer (see `tulip imports apply --help`).",
+        ),
+    ] = False,
+    posted: Annotated[
+        bool,
+        typer.Option(
+            "--posted",
+            help="With --apply: land lines as POSTED instead of PENDING.",
+        ),
+    ] = False,
 ) -> None:
     """Upload an OFX file; the API parses it and persists a batch."""
     _do_import(
@@ -130,6 +212,9 @@ def import_ofx(
         account=account,
         source_format="ofx",
         content_type="application/x-ofx",
+        apply=apply,
+        no_categorize=no_categorize,
+        posted=posted,
     )
 
 
@@ -166,6 +251,30 @@ def import_csv(
             ),
         ),
     ],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "After parsing, immediately apply the batch (#299). "
+                "Composes with --no-categorize and --posted."
+            ),
+        ),
+    ] = False,
+    no_categorize: Annotated[
+        bool,
+        typer.Option(
+            "--no-categorize",
+            help="With --apply: skip the AI categorizer.",
+        ),
+    ] = False,
+    posted: Annotated[
+        bool,
+        typer.Option(
+            "--posted",
+            help="With --apply: land lines as POSTED instead of PENDING.",
+        ),
+    ] = False,
 ) -> None:
     """Upload a CSV file with the named profile; the API parses it."""
     config: Config = ctx.obj["config"]
@@ -184,6 +293,9 @@ def import_csv(
         source_format="csv",
         content_type="text/csv",
         extra_form={"profile_id": profile_id},
+        apply=apply,
+        no_categorize=no_categorize,
+        posted=posted,
     )
 
 
@@ -633,6 +745,33 @@ def import_qif(
             readable=True,
         ),
     ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "After parsing, immediately apply the batch (#299). "
+                "Single-account QIF only — multi-account (--account-map) "
+                "produces N batches and apply-per-batch is left to the "
+                "explicit `tulip imports apply` flow. Composes with "
+                "--no-categorize and --posted."
+            ),
+        ),
+    ] = False,
+    no_categorize: Annotated[
+        bool,
+        typer.Option(
+            "--no-categorize",
+            help="With --apply: skip the AI categorizer.",
+        ),
+    ] = False,
+    posted: Annotated[
+        bool,
+        typer.Option(
+            "--posted",
+            help="With --apply: land lines as POSTED instead of PENDING.",
+        ),
+    ] = False,
 ) -> None:
     """Upload a QIF file; the API parses it and persists a batch.
 
@@ -646,6 +785,11 @@ def import_qif(
     if account is None and account_map is None:
         raise typer.BadParameter(
             "pass --account (single-account QIF) or --account-map (multi-account QIF)"
+        )
+    if apply and account_map is not None:
+        raise typer.BadParameter(
+            "--apply is single-account-QIF only; use `tulip imports apply <BATCH_ID>` "
+            "per batch returned from a multi-account import"
         )
 
     config: Config = ctx.obj["config"]
@@ -661,6 +805,15 @@ def import_qif(
                 summary = _post_qif_single(
                     client, file_path, raw_bytes, account_id=str(account_record["id"])
                 )
+                apply_summary: dict[str, Any] | None = None
+                if apply:
+                    apply_response = _apply_call(
+                        client,
+                        batch_id=str(summary["id"]),
+                        no_categorize=no_categorize,
+                        posted=posted,
+                    )
+                    apply_summary = dict(apply_response.json())
         except CliError as err:
             if err.problem.get("code") == "import.multi_account_qif" and not as_json:
                 _render_starter_map(list(err.problem.get("account_names", [])))
@@ -668,9 +821,19 @@ def import_qif(
             err.render()
             raise typer.Exit(err.exit_code) from None
         if as_json:
-            sys.stdout.write(json.dumps(summary) + "\n")
+            if apply_summary is not None:
+                sys.stdout.write(json.dumps({"imported": summary, "applied": apply_summary}) + "\n")
+            else:
+                sys.stdout.write(json.dumps(summary) + "\n")
             return
         _render_summary(summary)
+        if apply_summary is not None:
+            landed_as = "POSTED" if posted else "PENDING"
+            typer.echo(
+                f"Applied batch {apply_summary['batch_id']}: created "
+                f"{apply_summary['created_count']} {landed_as} transactions, "
+                f"skipped {apply_summary['skipped_count']} lines."
+            )
         return
 
     # Multi-account path: resolve every map entry up front (a bad code
