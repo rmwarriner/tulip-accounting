@@ -1084,12 +1084,18 @@ envelopes; sinking funds — which actually *want* a target-relative
 - All 4 prior P6.3 / P6.3.b handler tests updated to the new
   callback signature and still pass.
 
-**Out of scope** (deploy-time concern, not a code slice):
+**Out of scope** (deploy-time concern, not a code slice — see also #340 Phase 8 Wave-2):
 - Wiring `AIForecastCapability` into the runner's handler registration
   as the production `forecaster` callback. The slot is in place; what
   remains is one line of glue at deployment to construct the
   capability + adapter + session factory and pass it to
-  `make_daily_insights_handler(..., forecaster=...)`.
+  `make_daily_insights_handler(..., forecaster=...)`. Privacy audit M-17
+  flagged this as a doc/code drift; closed in #340 (Phase 8 Wave-2) by
+  (a) documenting the deferral in ADR-0005 §"Daily-insights handler
+  registration", (b) surfacing "background daily fire: not scheduled" in
+  `tulip ai status` output, and (c) adding a regression test
+  (`tests/test_main_lifespan.py`) that pins the invariant so a future
+  silent wiring patch fails CI.
 
 ### P6.5.b — `tulip ai config` editor + `log_prompts` toggle + status polish — ✅ *(2026-05-11)*
 

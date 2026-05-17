@@ -368,6 +368,24 @@ The combination — pending-by-default + byte-faithful preview + explicit-approv
 
 Art. 21(1) "right to object to profiling" is a related but separable concern (a *persistent* "I objected" state, not just a one-shot reject) and is not satisfied by this design alone. The privacy audit's M-24 tracks the Art. 21 framing separately; the gap is documentation-acknowledged rather than wired today, since the household admin already controls the AI policy.
 
+### Daily-insights handler registration — deferred (added #340, deep privacy audit M-17)
+
+`make_daily_insights_handler` is exported from `tulip-storage`'s runner-handler registry and fully tested end-to-end (envelope + sinking-fund forecast paths under P6.3 / P6.5.c). It is **deliberately not registered** with the runner in `tulip_api.main.lifespan` for v1.
+
+What this means in practice:
+
+- The `forecast` capability is exposed for **synchronous** use: any caller can hit the proposal / categorise paths and exercise `AIForecastCapability` directly. That path runs only on explicit request.
+- The **scheduled daily fire** — what `make_daily_insights_handler` is for — does not fire. No background egress happens unless an operator explicitly registers the handler at deploy time.
+- `tulip ai status` notes the `forecast` capability's policy resolution honestly but adds a "background daily fire: not scheduled" hint, so an operator reading the output doesn't conclude that enabling `forecast=permissive` automatically means scheduled provider traffic.
+
+Why deferred:
+
+- **Scheduling is operational.** Daily cadence (which time? which user-of-household for multi-user?) is a deploy-time decision that's premature without operational mileage.
+- **Feature-flagging is cleaner at the registration site.** A future `runner.register_handler("daily_insights", make_daily_insights_handler(session_maker, forecaster=…))` is one-line glue; gating that line on `TULIP_AI_FORECAST_ENABLED` or `households.ai_policy.capabilities.forecast.scheduled=true` is the natural extension when the use case lands.
+- **Honest-by-default.** Surface honesty (the status hint) plus a regression test (`tests/test_main_lifespan.py::test_daily_insights_handler_is_not_registered_by_default`) preserve the invariant: nothing changes silently.
+
+When the wiring lands, the deletion of this subsection + the status hint + the regression test is part of the same PR.
+
 ## Alternatives considered
 
 ### Q1 — `tulip-ai` lives inside `tulip-api`

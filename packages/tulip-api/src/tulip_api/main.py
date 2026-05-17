@@ -154,6 +154,15 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
                 "audit_retention",
                 make_audit_retention_handler(session_maker),
             )
+            # M-17 (#340) — deep privacy audit: ``daily_insights`` is
+            # deliberately NOT registered here. The handler is exported
+            # from ``tulip_storage.runner.handlers`` and tested end-to-end,
+            # but daily cadence + per-household-user scheduling decisions
+            # are deferred (ADR-0005 §"Daily-insights handler registration").
+            # The ``forecast`` capability remains available for synchronous
+            # use; only the background daily fire is gated. When the
+            # wiring lands, register here + delete the ADR subsection +
+            # delete the regression test.
             app.state.runner = runner
             _register_ai_categorizer(session_maker)
             await runner.start()

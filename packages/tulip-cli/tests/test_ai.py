@@ -118,6 +118,20 @@ def test_ai_status_renders_defaults(authed: str) -> None:
 
 
 @pytest.mark.integration
+def test_ai_status_forecast_capability_notes_unscheduled_daily_fire(
+    authed: str,
+) -> None:
+    """#340 / privacy audit M-17: the ``forecast`` line carries a
+    "background daily fire: not scheduled" hint so operators don't read
+    ``forecast=permissive`` and assume background egress will fire.
+    """
+    result = _run_cli("ai", "status", api_url=authed)
+    assert result.returncode == 0, result.stderr
+    assert "forecast" in result.stdout
+    assert "background daily fire: not scheduled" in result.stdout
+
+
+@pytest.mark.integration
 def test_ai_preview_renders_payload(authed: str) -> None:
     # Seed two expense accounts so the chart isn't empty.
     httpx.post(
