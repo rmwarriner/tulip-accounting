@@ -47,6 +47,7 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         "tulip-storage/src/tulip_storage/runner/handlers/attachment_gc.py",
         "tulip-storage/src/tulip_storage/runner/handlers/ai_retention.py",
         "tulip-storage/src/tulip_storage/runner/handlers/audit_retention.py",
+        "tulip-storage/src/tulip_storage/runner/handlers/session_retention.py",
         # Read-only repository for the API to query schedules. Writes
         # still go through the Runner (the architecture test's actual
         # invariant). The class doesn't construct or mutate ScheduledJob
