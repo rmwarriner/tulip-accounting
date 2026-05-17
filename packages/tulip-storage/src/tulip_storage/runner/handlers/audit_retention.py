@@ -140,6 +140,8 @@ _RETENTION_TIER_BY_ACTION: dict[str, str] = {
     "csv_profile_update": "admin_days",
     "csv_profile_delete": "admin_days",
     "csv_profile_import": "admin_days",
+    "backup.created": "admin_days",
+    "backup.restored": "admin_days",
 }
 
 
