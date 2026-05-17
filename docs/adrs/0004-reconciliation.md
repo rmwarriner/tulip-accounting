@@ -259,6 +259,27 @@ All four are real audit-log actions. None is a hard delete of user-visible data.
 2. **Statement-line storage is its own table.** `statement_lines` is a new table referencing `import_batches`. We could have stored them as JSON on `import_batches.lines_json`; we don't, because the matcher repeatedly reads them per-account-window query and an indexed table is cheaper than parsing a JSON column.
 3. **`fitid` on `statement_lines` is OFX-specific** but lives on the common table, NULL for QIF / CSV. Per-format columns proliferating would be a worse smell than one nullable column.
 
+### Compliance posture — Art. 22(2)(a) framing for matcher artefacts (added #352, priv audit L-12)
+
+`reconciliation_matches.{match_amount, confidence, matcher_version}` are the
+artefact-records of an automated decision (the matcher's "this statement
+line corresponds to this ledger transaction" conclusion). GDPR Art. 22(1)
+bars decisions based solely on automated processing with legal /
+significant effects — but Art. 22(2)(a) carves out automated decisions
+"necessary for entering into, or performance of, a contract between the
+data subject and a data controller." Bank reconciliation falls
+comfortably inside that carve-out: it is core accounting recordkeeping
+the data subject (the household) explicitly performs against their
+own ledger; no third party is profiled by the decision.
+
+The audit-trail retention purpose (showing *why* a given match
+happened, even years later) is what justifies the per-row
+`matcher_version` + `confidence`: an auditor reconstructing
+"did this auto-match happen correctly?" needs both the inputs and
+the algorithm version. Cross-link: [`docs/USER_RIGHTS.md`](../USER_RIGHTS.md)
+Art. 22 row, ADR-0005's "Compliance posture" subsection on the
+parallel framing for AI proposals.
+
 ### Slice ordering
 
 | Slice | What ships | Issue ref |
