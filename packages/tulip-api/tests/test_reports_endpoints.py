@@ -242,3 +242,87 @@ class TestDateRangeReports:
 
 # Use the date import so linters don't flag it as unused after parametrization.
 _ = date
+
+
+class TestHtmlReportSecurityHeaders:
+    """#349 / security audit L-22: HTML report responses carry a strict
+    ``Content-Security-Policy`` + ``X-Content-Type-Options: nosniff``.
+    Defense-in-depth against a hypothetical template-escaping bug.
+    """
+
+    def test_html_format_carries_csp_header(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.get(
+            "/v1/reports/trial-balance",
+            headers=auth_h,
+            params={"format": "html"},
+        )
+        assert r.status_code == 200
+        assert "Content-Security-Policy" in r.headers
+        # The policy locks down default-src; no remote loads.
+        assert "default-src 'none'" in r.headers["Content-Security-Policy"]
+
+    def test_html_format_carries_nosniff(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.get(
+            "/v1/reports/trial-balance",
+            headers=auth_h,
+            params={"format": "html"},
+        )
+        assert r.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_json_format_does_not_carry_csp_header(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """CSP is only meaningful on browser-rendered HTML — JSON consumers
+        don't need it and it would be noise on every API response.
+        """
+        r = client.get(
+            "/v1/reports/trial-balance",
+            headers=auth_h,
+            params={"format": "json"},
+        )
+        assert "Content-Security-Policy" not in r.headers
+
+
+class TestCustomQueryAdminGate:
+    """#349 / security audit L-7: ``/custom-query`` requires admin. The
+    SQL-safety pass constrains *which* SQL runs, not which tenant rows
+    are visible — a member could observe private-pool data the
+    visibility filter would otherwise hide.
+    """
+
+    def test_member_caller_rejected_with_403(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        session_maker,
+    ) -> None:
+        """Demote the registered user to MEMBER, then assert 403 on custom-query.
+
+        ``auth_h`` registers an admin user (creating the household) — that
+        login fixture is the prerequisite for the demote step below.
+        """
+        from sqlalchemy import select, update
+
+        from tulip_storage.models import User, UserRole
+
+        _ = auth_h  # trigger the admin-register fixture
+
+        with session_maker() as s:
+            s.execute(update(User).values(role=UserRole.MEMBER))
+            s.commit()
+
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": "admin@example.com", "password": "correct horse battery staple"},
+        )
+        member_h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        r = client.get(
+            "/v1/reports/custom-query",
+            headers=member_h,
+            params={"sql": "SELECT 1"},
+        )
+        assert_problem(r, code="auth.forbidden", status=403)
+        _ = select  # silence ruff if unused after the inline update
