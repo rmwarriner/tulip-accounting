@@ -32,11 +32,11 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
 
 from sqlalchemy import delete, select
 
 from tulip_storage.models import AuditLog, Household
+from tulip_storage.repositories.audit_log import AuditLogWriter
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -215,18 +215,14 @@ def run_audit_retention(
             if total > 0:
                 # Summary row mirrors the ai.prompt_log_scrubbed pattern (#243).
                 # actor_user_id is None — this is system GC, not a user action.
-                session.add(
-                    AuditLog(
-                        id=uuid4(),
-                        household_id=household.id,
-                        occurred_at=now,
-                        actor_user_id=None,
-                        actor_kind="system",
-                        action="audit.pruned",
-                        entity_type="household",
-                        entity_id=household.id,
-                        metadata_={"deleted_per_tier": per_tier},
-                    )
+                # Routes through AuditLogWriter per the chokepoint invariant
+                # enforced by test_architecture_audit_log_writer_only (#331).
+                AuditLogWriter(session, household.id).write(
+                    action="audit.pruned",
+                    actor_kind="system",
+                    entity_type="household",
+                    entity_id=household.id,
+                    metadata={"deleted_per_tier": per_tier},
                 )
             summary[household.id] = per_tier
         session.commit()
