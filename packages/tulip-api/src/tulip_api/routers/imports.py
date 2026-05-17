@@ -719,6 +719,15 @@ async def apply_import(
             "to zero per currency."
         ),
     ),
+    treat_cleared_as_pending: bool = Query(
+        default=False,
+        description=(
+            "Issue #279: when true, force every line to PENDING even if "
+            "the source format (e.g. QIF ``C`` field) marked it cleared "
+            "or reconciled. Legacy 'everything pending' behaviour for "
+            "users who want the manual review pass on imported lines."
+        ),
+    ),
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> ImportBatchApplyResponse:
@@ -726,7 +735,8 @@ async def apply_import(
 
     Per ADR-0004 §Q4. The new transactions are PENDING by default; pass
     ``?as_posted=true`` (issue #210) to land them as POSTED for direct
-    migration workflows.
+    migration workflows. Pass ``?treat_cleared_as_pending=true`` (#279)
+    to ignore the QIF ``C`` field's cleared / reconciled hint.
 
     Idempotent at the batch level: re-applying an already-applied batch
     returns ``import.already_applied`` (409). To promote a specific line
@@ -746,6 +756,7 @@ async def apply_import(
             actor_user_id=claims.user_id,
             no_categorize=no_categorize,
             as_posted=as_posted,
+            treat_cleared_as_pending=treat_cleared_as_pending,
         )
     except BatchAlreadyAppliedError as exc:
         raise ImportAlreadyAppliedError(batch_id=str(batch_id)) from exc
@@ -764,6 +775,7 @@ async def apply_import(
             "transaction_ids": [str(t) for t in result.transaction_ids],
             "no_categorize": no_categorize,
             "as_posted": as_posted,
+            "treat_cleared_as_pending": treat_cleared_as_pending,
         },
         request_id=_request_uuid(request),
     )

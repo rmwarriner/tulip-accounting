@@ -342,3 +342,22 @@ class TestParseErrors:
         bad = b"!Type:Bank\nDgarbage\nT-12.50\nPPAYPAL\n^\n"
         with pytest.raises(QifParseError, match="date"):
             parse(bad, currency="USD")
+
+
+class TestClearedField:
+    """#279: the C (cleared) field is captured per-transaction in ``raw``."""
+
+    def test_c_field_appears_in_raw_dict(self):
+        """Empty C / `c` / `R` / `*` round-trip through the parser's raw dict."""
+        lines = parse(_read("cleared_status.qif"), currency="USD")
+        assert len(lines) == 5
+        # Coffee: no C field.
+        assert "C" not in lines[0].raw
+        # Gas: C=c (Banktivity "cleared").
+        assert lines[1].raw["C"] == "c"
+        # Groceries: C=R (reconciled).
+        assert lines[2].raw["C"] == "R"
+        # Paycheck: C=R.
+        assert lines[3].raw["C"] == "R"
+        # Snack: C=* (legacy cleared marker).
+        assert lines[4].raw["C"] == "*"
