@@ -36,7 +36,26 @@ def _session_factory_for(url: str) -> sessionmaker[Session]:
 
 
 def get_session() -> Iterator[Session]:
-    """Yield a Session bound to the configured database URL."""
+    """Yield a Session bound to the configured database URL.
+
+    Lifecycle invariant (defends #200, the SQLite write-lock leak):
+    when an exception bubbles up from inside the request handler, the
+    ``with factory() as s:`` context exit + the explicit ``s.close()``
+    in the ``finally`` clause guarantee the underlying connection is
+    returned to the pool with any open transaction rolled back. The
+    next request can acquire a fresh connection without contending on
+    a stale write lock.
+
+    The other half of the same invariant is in
+    :func:`tulip_ai._sessions.use_session_or_make_one` — AI capabilities
+    invoked mid-transaction (the import-apply flow's categorizer call)
+    must share the caller's session rather than open a second connection
+    that would deadlock on the caller's write lock.
+
+    Regression test:
+    ``packages/tulip-api/tests/test_apply_promote_endpoints.py
+    ::TestApplyExceptionDoesNotLeakLock``.
+    """
     settings = get_settings()
     factory = _session_factory_for(settings.database_url)
     with factory() as s:
