@@ -112,17 +112,23 @@ def delete_user(
         if admin_count <= 1:
             raise LastAdminDeletionError()
 
-    # Redact historic audit-log PII for rows referencing this user (either as
-    # actor or as the entity being acted on). Tombstone row is written
-    # afterward so it isn't caught by the same UPDATE.
-    session.execute(
-        update(AuditLog)
-        .where(
-            AuditLog.household_id == claims.household_id,
-            or_(AuditLog.actor_user_id == user_id, AuditLog.entity_id == user_id),
+    # Redact historic audit-log PII for rows referencing this user (either
+    # as actor or as the entity being acted on). The BEFORE UPDATE trigger
+    # (#333 / M-22) blocks audit_log UPDATEs by default; the
+    # ``audit_log_pii_redaction_allowed`` context manager carves out this
+    # one legitimate site. The tombstone row below is written *after* the
+    # context exits so it isn't caught by the scrub.
+    from tulip_storage.audit_log_helpers import audit_log_pii_redaction_allowed
+
+    with audit_log_pii_redaction_allowed(session):
+        session.execute(
+            update(AuditLog)
+            .where(
+                AuditLog.household_id == claims.household_id,
+                or_(AuditLog.actor_user_id == user_id, AuditLog.entity_id == user_id),
+            )
+            .values(before_snapshot=None, after_snapshot=None, metadata_=None)
         )
-        .values(before_snapshot=None, after_snapshot=None, metadata_=None)
-    )
 
     # Tombstone: structural only — role + caller-id, no email or display name.
     AuditLogWriter(session, claims.household_id).write(

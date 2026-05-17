@@ -173,59 +173,77 @@ def run_audit_retention(
     """
     summary: dict[UUID, dict[str, int]] = {}
     with session_maker() as session:
-        targets = (
-            session.execute(select(Household)).scalars().all()
-            if household_id is None
-            else [h for h in [session.get(Household, household_id)] if h is not None]
-        )
-        for household in targets:
-            policy = household.audit_retention_policy or {}
-            per_tier: dict[str, int] = {}
-            for tier_key in _TIER_DEFAULTS:
-                actions = tuple(
-                    action
-                    for action, mapped_tier in _RETENTION_TIER_BY_ACTION.items()
-                    if mapped_tier == tier_key
-                )
-                cutoff = now - timedelta(days=_resolve_tier_days(policy, tier_key))
-                if tier_key == "default_days":
-                    # Fall-through bucket: any action not in the static map
-                    # ages at default_days. We can't enumerate "anything
-                    # except the mapped ones" cheaply in SQL, so build a
-                    # NOT-IN against every mapped action.
-                    all_mapped = tuple(_RETENTION_TIER_BY_ACTION.keys())
-                    where_clauses = [
-                        AuditLog.household_id == household.id,
-                        AuditLog.occurred_at < cutoff,
-                        AuditLog.action.not_in(all_mapped),
-                    ]
-                elif actions:
-                    where_clauses = [
-                        AuditLog.household_id == household.id,
-                        AuditLog.occurred_at < cutoff,
-                        AuditLog.action.in_(actions),
-                    ]
-                else:
-                    per_tier[tier_key] = 0
-                    continue
-                result = session.execute(delete(AuditLog).where(*where_clauses))
-                per_tier[tier_key] = cast("CursorResult[Any]", result).rowcount or 0
+        # M-22 (#333): the audit_log BEFORE DELETE trigger blocks every
+        # row delete; this is one of the two legitimate carve-out sites
+        # (the other is household-erasure). The context manager drops +
+        # recreates the trigger; the try/finally on its exit guarantees
+        # the trigger is reinstated even if pruning fails partway.
+        from tulip_storage.audit_log_helpers import audit_log_deletion_allowed
 
-            total = sum(per_tier.values())
-            if total > 0:
-                # Summary row mirrors the ai.prompt_log_scrubbed pattern (#243).
-                # actor_user_id is None — this is system GC, not a user action.
-                # Routes through AuditLogWriter per the chokepoint invariant
-                # enforced by test_architecture_audit_log_writer_only (#331).
-                AuditLogWriter(session, household.id).write(
-                    action="audit.pruned",
-                    actor_kind="system",
-                    entity_type="household",
-                    entity_id=household.id,
-                    metadata={"deleted_per_tier": per_tier},
-                )
-            summary[household.id] = per_tier
-        session.commit()
+        with audit_log_deletion_allowed(session):
+            return _run_audit_retention_inner(session, now, household_id, summary)
+
+
+def _run_audit_retention_inner(
+    session: Session,
+    now: datetime,
+    household_id: UUID | None,
+    summary: dict[UUID, dict[str, int]],
+) -> dict[UUID, dict[str, int]]:
+    """The retention-prune body — extracted so the temp-marker bracket above stays tight."""
+    targets = (
+        session.execute(select(Household)).scalars().all()
+        if household_id is None
+        else [h for h in [session.get(Household, household_id)] if h is not None]
+    )
+    for household in targets:
+        policy = household.audit_retention_policy or {}
+        per_tier: dict[str, int] = {}
+        for tier_key in _TIER_DEFAULTS:
+            actions = tuple(
+                action
+                for action, mapped_tier in _RETENTION_TIER_BY_ACTION.items()
+                if mapped_tier == tier_key
+            )
+            cutoff = now - timedelta(days=_resolve_tier_days(policy, tier_key))
+            if tier_key == "default_days":
+                # Fall-through bucket: any action not in the static map
+                # ages at default_days. We can't enumerate "anything
+                # except the mapped ones" cheaply in SQL, so build a
+                # NOT-IN against every mapped action.
+                all_mapped = tuple(_RETENTION_TIER_BY_ACTION.keys())
+                where_clauses = [
+                    AuditLog.household_id == household.id,
+                    AuditLog.occurred_at < cutoff,
+                    AuditLog.action.not_in(all_mapped),
+                ]
+            elif actions:
+                where_clauses = [
+                    AuditLog.household_id == household.id,
+                    AuditLog.occurred_at < cutoff,
+                    AuditLog.action.in_(actions),
+                ]
+            else:
+                per_tier[tier_key] = 0
+                continue
+            result = session.execute(delete(AuditLog).where(*where_clauses))
+            per_tier[tier_key] = cast("CursorResult[Any]", result).rowcount or 0
+
+        total = sum(per_tier.values())
+        if total > 0:
+            # Summary row mirrors the ai.prompt_log_scrubbed pattern (#243).
+            # actor_user_id is None — this is system GC, not a user action.
+            # Routes through AuditLogWriter per the chokepoint invariant
+            # enforced by test_architecture_audit_log_writer_only (#331).
+            AuditLogWriter(session, household.id).write(
+                action="audit.pruned",
+                actor_kind="system",
+                entity_type="household",
+                entity_id=household.id,
+                metadata={"deleted_per_tier": per_tier},
+            )
+        summary[household.id] = per_tier
+    session.commit()
     if summary:
         log.info(
             "audit_retention.summary",

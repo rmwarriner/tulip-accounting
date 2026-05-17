@@ -185,8 +185,17 @@ def erase_household(
     # shadow_postings, csv_profiles, import_batches, reconciliations,
     # attachments, ai_invocations, notifications, pending_proposals,
     # scheduled_jobs, pending_household_erasures.
-    session.execute(sa_delete(Household).where(Household.id == claims.household_id))
-    session.commit()
+    #
+    # The audit_log BEFORE DELETE trigger (#333 / M-22) blocks every
+    # row-delete; it has to come down for the FK cascade to clear the
+    # household's audit_log rows. The context manager drops + recreates
+    # the trigger; the try/finally on its exit guarantees the trigger
+    # is reinstated even if the DELETE fails.
+    from tulip_storage.audit_log_helpers import audit_log_deletion_allowed
+
+    with audit_log_deletion_allowed(session):
+        session.execute(sa_delete(Household).where(Household.id == claims.household_id))
+        session.commit()
 
     # Unlink orphaned attachment ciphertext. A blob is orphaned iff no
     # other household still references its content_hash (within-household

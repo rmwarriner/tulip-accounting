@@ -391,3 +391,89 @@ class TestDeprecatedViewerRole:
                 assert row[0] == "MEMBER"
         finally:
             eng.dispose()
+
+
+class TestAuditLogImmutabilityTrigger:
+    """#333 / security audit M-22: SQLite triggers reject UPDATE / DELETE
+    on ``audit_log`` to defend against application-layer regressions and
+    accidental ``sqlite3`` shell DELETEs. The household-erasure cascade
+    is carved out via a connection-scoped temp marker.
+    """
+
+    def _seed_audit_row(self, session: Session) -> tuple[Household, object]:
+        """Insert one household + one audit_log row; return both."""
+        from datetime import UTC, datetime
+
+        from tulip_storage.models import AuditLog as _AuditLog
+        from tulip_storage.repositories.audit_log import AuditLogWriter
+
+        h = Household(id=uuid4(), name="Audit", base_currency="USD")
+        session.add(h)
+        session.flush()
+        row = AuditLogWriter(session, h.id).write(
+            action="test",
+            actor_kind="user",
+            actor_user_id=None,
+            entity_type="household",
+            entity_id=h.id,
+        )
+        session.commit()
+        _ = datetime.now(tz=UTC), _AuditLog  # silence unused imports
+        return h, row
+
+    def test_direct_update_is_rejected(self, migrated_db):
+        from sqlalchemy import text
+
+        _, Smaker = migrated_db
+        with Smaker() as s:
+            self._seed_audit_row(s)
+        with Smaker() as s, pytest.raises((IntegrityError, OperationalError), match="append-only"):
+            s.execute(text("UPDATE audit_log SET action = 'tampered'"))
+            s.commit()
+
+    def test_direct_delete_is_rejected(self, migrated_db):
+        from sqlalchemy import text
+
+        _, Smaker = migrated_db
+        with Smaker() as s:
+            self._seed_audit_row(s)
+        with Smaker() as s, pytest.raises((IntegrityError, OperationalError), match="append-only"):
+            s.execute(text("DELETE FROM audit_log"))
+            s.commit()
+
+    def test_household_cascade_delete_succeeds_inside_carveout_helper(self, migrated_db):
+        """The right-to-erasure flow brackets its ``DELETE FROM households``
+        with the ``audit_log_deletion_allowed`` context manager; the
+        cascade then clears audit_log rows. After the block exits the
+        trigger is reinstated.
+        """
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy import text
+
+        from tulip_storage.audit_log_helpers import audit_log_deletion_allowed
+
+        _, Smaker = migrated_db
+        with Smaker() as s:
+            h, _ = self._seed_audit_row(s)
+            household_id = h.id
+
+        with Smaker() as s, audit_log_deletion_allowed(s):
+            s.execute(sa_delete(Household).where(Household.id == household_id))
+            s.commit()
+
+        with Smaker() as s:
+            remaining = s.execute(
+                text("SELECT COUNT(*) FROM audit_log WHERE household_id = :h"),
+                {"h": str(household_id)},
+            ).scalar_one()
+            assert remaining == 0
+
+        # After the context exits, the trigger is reinstated — a direct
+        # delete attempt still fails.
+        with Smaker() as s:
+            h2, _ = self._seed_audit_row(s)
+        with Smaker() as s, pytest.raises((IntegrityError, OperationalError), match="append-only"):
+            s.execute(text("DELETE FROM audit_log"))
+            s.commit()
+        # Silence the unused-var warning — h2 created intentionally.
+        _ = h2
