@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-15 · `main` @ **Phase 8 deep security audit complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) cross-cutting design questions resolved (#318): bill data-model in ADR-0008; other four in TUI_WIREFRAMES.md cross-cutting decisions.
 
 ---
 
@@ -30,7 +30,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **CLI + importers usability bundle (post-audit):** ✅ shipped — transaction id-prefix display + prefix resolution (#207/#211), interactive reconciliation wizard (#205), `tulip imports show`/`list` (#203/#272), QIF split-posting fidelity (#270) + non-transaction-section skipping (#198) + multi-account import with transfer pairing (#195a/#195b), paper-statement reconciliation (#275), `tulip imports apply --posted` (#210), currency-natural amount precision (#213), account names in `transactions list`/`show` (#214), transaction-level notes (#271), account resolution by name / hierarchical path (#197), interactive UUID picker (#273), `--pending` balance toggle (#274), Rich `Console` honouring `COLUMNS` (#285), right-aligned numeric columns (#289), `/reject` OpenAPI 400 (#194).
 
-- **Phase 9 (terminal UI):** ⏳ scoped, not started — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
+- **Phase 9 (terminal UI):** ⏳ design pass complete (2026-05-17), implementation not yet started — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). Implementation slices P9.0–P9.4 tracked in [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
 
 **Tests:** 1828 passing · **CI:** green on `main`
 
@@ -1472,6 +1472,75 @@ Side effects of P6.0:
 - The Phase 6 bullet list in ARCHITECTURE.md §10 is replaced with the P6.0–P6.5 slice plan.
 
 No code changes; design-only slice. Implementation begins with P6.1.
+
+---
+
+## Phase 9 — Terminal UI (TUI) — design pass complete, implementation queued
+
+Per [ADR-0007](adrs/0007-terminal-ui.md). A Textual TUI as an **additive
+client** (CLI stays the scriptable surface; the TUI is the comfortable
+human surface). v1 scope is read/browse only — mutations land in later
+slices after the read surfaces prove out. Phase 9 sits after Phase 8
+wraps; pre-cloud preparation moved to Phase 10 when ADR-0007 was accepted.
+
+### P9.D — design pass — ✅ *(2026-05-17; closes [#318](https://github.com/rmwarriner/tulip-accounting/issues/318))*
+
+Resolves the five cross-cutting design questions raised in
+[#318](https://github.com/rmwarriner/tulip-accounting/issues/318) so the implementation slices that follow don't
+re-litigate them.
+
+- **Q1 — bill data model:** new ADR. [ADR-0008](adrs/0008-bills-data-model.md)
+  adopts `Bill` as a third entity alongside `Envelope` and `SinkingFund`,
+  with optional `charge_envelope_id` and `funded_by_sinking_fund_id`
+  cross-references. ADR-0001 (envelope shadow ledger) is unchanged.
+  Implementing `Bill` is **out of v1 TUI scope** — it lands on a separate
+  phase ticket (provisionally Phase 9.5 or new Phase 11) when prioritised.
+- **Q2–Q5 — real-liquid surfacing, stale thresholds, AI categorization,
+  recurring-bill matching:** captured in
+  [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17).
+  Headline defaults pinned: account-sync stale = 24h, check stale = 14d,
+  card hold = 5d, ACH = 3 business days, bill past-due = 5d; bill-match
+  tolerance = payee fuzzy ≥ 0.85 + amount ±5% + date ±3d. AI categorize
+  is **always-confirm in v1** (no silent auto-accept).
+- **#318 acceptance:** ADR for Q1 opened (✓), Q2–Q5 decisions captured
+  (✓), unmocked mutation screens (AI-categorize, assign-unallocated,
+  reconcile-action) explicitly punted to post-v1 with rationale (✓),
+  Phase 9 placement reflected here (✓).
+
+No code changes; doc-only slice. Implementation slices land in the order
+below from [#309](https://github.com/rmwarriner/tulip-accounting/issues/309).
+
+### P9.0 — `tulip-tui` workspace skeleton — 🔜 next
+
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). New workspace package `packages/tulip-tui/`: Textual
+app shell, API-client layer (reuse `tulip-cli`'s `TulipClient` /
+token-store patterns), architecture-boundary test extended to
+`tulip-tui` (no server / storage imports — same rule as `tulip-cli`),
+new `Test (tulip-tui)` CI shard with a pilot-mode boot-and-quit smoke
+test. No screens yet — just the shell that subsequent slices fill.
+
+### P9.1 — Account browser — ⏳ queued
+
+Navigable tree/list of the chart of accounts with balances; drill into
+an account to see its transactions (reusing the P9.2 register).
+
+### P9.2 — Transaction register — ⏳ queued
+
+Scrollable, filterable transaction list with a posting detail pane;
+honors the same status / account / date filters that `tulip
+transactions list` exposes.
+
+### P9.3 — Reports viewer — ⏳ queued
+
+On-screen render of the nine Phase 7 reports. The HTML/PDF/CSV exporters
+stay on `tulip reports` (CLI); this slice is the in-TUI browse surface.
+
+### P9.4 — Reconciliation + import status (read-only) — ⏳ queued
+
+Browse reconciliation envelopes (4-section state) and import batches
+(parsed lines). **Read only** — *acting* on a reconciliation is a
+mutation flow punted to post-v1 (see TUI_WIREFRAMES.md "Screens not yet
+mocked").
 
 ---
 
