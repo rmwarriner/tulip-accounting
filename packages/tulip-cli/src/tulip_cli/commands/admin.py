@@ -155,3 +155,81 @@ def audit_prune(ctx: typer.Context) -> None:
 
 
 __all__ = ["admin_app"]
+
+
+@admin_app.command("grep-pii")
+def grep_pii_command(
+    ctx: typer.Context,
+    user_id: Annotated[
+        str | None,
+        typer.Option(
+            "--user-id",
+            help="User UUID to scan for (substring; case-insensitive).",
+        ),
+    ] = None,
+    email: Annotated[
+        str | None,
+        typer.Option(
+            "--email",
+            help="Email address to scan for (substring; case-insensitive).",
+        ),
+    ] = None,
+    display_name: Annotated[
+        str | None,
+        typer.Option(
+            "--display-name",
+            help="Display name to scan for (substring; case-insensitive).",
+        ),
+    ] = None,
+) -> None:
+    """Scan household text/JSON columns for PII identifiers (#346).
+
+    Post-delete erasure verification: after ``tulip user delete``
+    (or the admin household-erasure flow) run this with the deleted
+    user's identifiers to prove the cascade actually scrubbed them,
+    or to surface what residual matches still need attention.
+
+    At least one of ``--user-id`` / ``--email`` / ``--display-name``
+    is required. Matches are reported as a table of
+    ``table | column | row_id | snippet``; pass ``--json`` for the
+    raw payload.
+    """
+    if not (user_id or email or display_name):
+        raise typer.BadParameter("supply at least one of --user-id / --email / --display-name")
+
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    params: dict[str, str] = {}
+    if user_id:
+        params["user_id"] = user_id
+    if email:
+        params["email"] = email
+    if display_name:
+        params["display_name"] = display_name
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            response = client.get(
+                "/v1/admin/grep-pii",
+                params=params,
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(response.text + "\n")
+        return
+
+    body = response.json()
+    matches = body.get("matches") or []
+    needles = body.get("needles") or []
+    typer.echo(f"grep-pii: scanned needles={', '.join(needles) or '(none)'}")
+    typer.echo(f"  matches: {len(matches)}")
+    if not matches:
+        typer.echo("  (post-delete erasure looks clean for these needles)")
+        return
+    for m in matches:
+        typer.echo(f"  {m['table']}.{m['column']} row={m['row_id'][:8]} needle={m['needle']!r}")
+        typer.echo(f"    {m['snippet']}")
