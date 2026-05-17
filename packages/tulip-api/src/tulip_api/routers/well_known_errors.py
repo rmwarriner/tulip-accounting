@@ -98,6 +98,10 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     "CsvProfileDuplicateNameError": {"name": "chase-checking"},
     "CsvProfileInvalidYamlError": {"reason": "yaml.safe_load rejected the payload"},
     "ImportAlreadyAppliedError": {"batch_id": "<batch-uuid>"},
+    "ImportBatchHasPromotedLinesError": {
+        "batch_id": "<batch-uuid>",
+        "promoted_count": 3,
+    },
     "StatementLineAlreadyPromotedError": {
         "line_id": "<statement-line-uuid>",
         "transaction_id": "<transaction-uuid>",
