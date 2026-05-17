@@ -59,7 +59,7 @@ def _filter_for_role(account: Account, claims: Claims) -> bool:
     """Return True iff the caller may see this account."""
     if account.visibility == "shared":
         return True
-    # private — admin sees all; member/viewer must be the creator.
+    # private — admin sees all; member must be the creator.
     if claims.role == "admin":
         return True
     return account.created_by_user_id == claims.user_id

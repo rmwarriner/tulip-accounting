@@ -77,7 +77,7 @@ Per [PHASE_0_CHECKLIST.md](PHASE_0_CHECKLIST.md). Completed 2026-04-29.
 | **P2.1** | `structlog` JSON logging + `RequestIdMiddleware` + PII-redaction processor (whitelist-based) |
 | **P2.2** | Repositories (`AccountRepository`, `PeriodRepository`, `TransactionRepository`) + `AuditLogWriter` |
 | **P2.3** | Auth: argon2id passwords, JWT access (15m) + opaque refresh (30d hashed), `Session` table + migration #2, `/v1/auth/{register,login,refresh,logout}` |
-| **P2.5** | `/v1/accounts` CRUD with role + visibility enforcement (admin / member / viewer; shared / private) |
+| **P2.5** | `/v1/accounts` CRUD with role + visibility enforcement (admin / member; shared / private — VIEWER role was scaffolded here but never wired; deprecated Phase 8 Wave-2 #341) |
 | **P2.6** | `/v1/transactions` CRUD routing through `post_transaction` with audit log on every mutation |
 
 ### Phase 2 deferred to Phase 2.x (see below)

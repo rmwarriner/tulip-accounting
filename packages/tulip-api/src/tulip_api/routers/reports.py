@@ -12,7 +12,7 @@ remains JSON for backward compatibility.
 Pending transactions are excluded by default (they're workflow state,
 not ledger state); ``?include_pending=true`` (#274) folds them in.
 Role-based filtering matches ``GET /v1/accounts`` — admins see private
-accounts, members and viewers only see shared accounts and their own.
+accounts, members only see shared accounts and their own.
 """
 
 from __future__ import annotations

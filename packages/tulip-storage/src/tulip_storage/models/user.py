@@ -30,7 +30,6 @@ class UserRole(Enum):
 
     ADMIN = "admin"
     MEMBER = "member"
-    VIEWER = "viewer"
 
 
 class User(Base):
