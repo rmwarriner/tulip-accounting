@@ -30,7 +30,9 @@ from tulip_api.auth.rate_limit import (
     AUTH_LOGIN_LIMIT,
     AUTH_LOGIN_MFA_LIMIT,
     AUTH_LOGIN_RECOVER_LIMIT,
+    AUTH_MFA_ENROLL_LIMIT,
     AUTH_REFRESH_LIMIT,
+    get_user_id_from_jwt,
     limiter,
 )
 from tulip_api.auth.recovery_codes import (
@@ -538,8 +540,10 @@ def change_password(
     responses={
         401: problem_response("auth.unauthorized"),
         409: problem_response("auth.mfa_already_enrolled"),
+        429: problem_response("auth.rate_limited"),
     },
 )
+@limiter.limit(AUTH_MFA_ENROLL_LIMIT, key_func=get_user_id_from_jwt)
 def mfa_enroll(
     request: Request,
     claims: Claims = Depends(get_current_claims),  # noqa: B008

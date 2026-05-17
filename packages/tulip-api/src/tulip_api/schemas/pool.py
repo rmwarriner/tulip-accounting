@@ -11,7 +11,9 @@ from datetime import date as date_type
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# Security audit L-13 (#350): request schemas use extra="forbid".
 
 
 class PoolBalanceRead(BaseModel):
@@ -45,6 +47,8 @@ class PoolBalancesRequest(BaseModel):
     per-pool balance endpoint. Empty ``pool_ids`` returns an empty list.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     pool_ids: list[UUID] = Field(
         max_length=500,
         description=(
@@ -62,6 +66,8 @@ class TransferRequest(BaseModel):
     be user pools (envelope or sinking_fund), active, in the same household,
     and share a currency.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     dest_pool_id: UUID
     amount: Decimal = Field(
@@ -85,6 +91,8 @@ class BudgetInflowRequest(BaseModel):
     Lazy-creates the household's ``Inflow`` and ``Unallocated`` system pools
     for the currency if they don't already exist.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     amount: Decimal = Field(gt=0)
     currency: str = Field(min_length=3, max_length=3)

@@ -6,11 +6,18 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# Security audit L-13 (#350): request schemas use extra="forbid". The
+# two AIConfig*Patch schemas below already had it from the original
+# P6.5.b implementation — those are kept; this PR brings the rest of
+# the request bodies in this file into line.
 
 
 class AIKeyCreate(BaseModel):
     """Body for ``POST /v1/ai/keys/{provider}``."""
+
+    model_config = ConfigDict(extra="forbid")
 
     api_key: str = Field(
         min_length=1,
@@ -48,6 +55,8 @@ class AIStatusRead(BaseModel):
 class AIPreviewRequest(BaseModel):
     """Body for ``POST /v1/ai/preview`` — synthetic statement line for the categorize prompt."""
 
+    model_config = ConfigDict(extra="forbid")
+
     description: str = Field(min_length=1, max_length=500)
     amount: Decimal
     currency: str = Field(min_length=3, max_length=3)
@@ -65,6 +74,8 @@ class AIPreviewResponse(BaseModel):
 
 class AIAskRequest(BaseModel):
     """Body for ``POST /v1/ai/ask`` — one user question over the AI views (P6.2)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     question: str = Field(
         min_length=1,

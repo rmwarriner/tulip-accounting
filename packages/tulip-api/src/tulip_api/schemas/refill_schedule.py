@@ -11,11 +11,15 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# Security audit L-13 (#350): request schemas use extra="forbid".
 
 
 class RefillScheduleCreate(BaseModel):
     """Body for ``POST /v1/envelopes/{id}/refill-schedule``."""
+
+    model_config = ConfigDict(extra="forbid")
 
     rrule: str = Field(
         min_length=1,

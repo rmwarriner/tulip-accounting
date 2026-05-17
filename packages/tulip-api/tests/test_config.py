@@ -248,3 +248,43 @@ class TestDeploymentModeProdRefusal:
         with patch("tulip_api.config.log"):
             s = Settings()
         assert s.deployment_mode == "dev"
+
+
+class TestSettingsReprRedacts:
+    """#350 / security audit L-14: ``repr(Settings)`` must not leak the
+    master key, the JWT secret, or a DB URL that may carry inline
+    credentials. A traceback or debug print is the failure scenario.
+    """
+
+    def test_repr_does_not_contain_master_key_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sentinel = b"\xab\xcd" * 16  # 32 bytes
+        monkeypatch.setenv(
+            "TULIP_MASTER_KEY",
+            base64.b64encode(sentinel).decode("ascii"),
+        )
+        monkeypatch.setenv("TULIP_JWT_SECRET", "totally-secret-jwt-value-not-for-print")
+        monkeypatch.setenv("TULIP_DATABASE_URL", "postgresql://user:supersecretpw@host/db")
+        with patch("tulip_api.config.log"):
+            s = Settings()
+        r = repr(s)
+        assert "redacted" in r
+        # The actual secret-bearing values must not appear anywhere.
+        assert "supersecretpw" not in r
+        assert "totally-secret-jwt-value-not-for-print" not in r
+        # Bytes literal of the master key in any common rendering.
+        assert "\\xab\\xcd" not in r.lower()
+        # Source / mode metadata is fine and useful for debug.
+        assert "deployment_mode" in r
+        assert "jwt_secret_source" in r
+
+    def test_attribute_access_still_returns_real_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Redaction is repr-only — attribute reads return the actual values."""
+        sentinel = b"\xef" * 32
+        monkeypatch.setenv("TULIP_MASTER_KEY", base64.b64encode(sentinel).decode("ascii"))
+        monkeypatch.setenv("TULIP_JWT_SECRET", "the-real-secret")
+        with patch("tulip_api.config.log"):
+            s = Settings()
+        assert s.master_key == sentinel
+        assert s.jwt_secret == "the-real-secret"

@@ -50,6 +50,37 @@ AUTH_LOGIN_MFA_LIMIT = "10/minute"
 AUTH_LOGIN_RECOVER_LIMIT = "10/minute"
 AUTH_REFRESH_LIMIT = "30/minute"
 
+#: Per-user quota on ``/v1/auth/mfa/enroll`` (security audit L-3, #350).
+#: The endpoint generates a fresh TOTP secret + provisioning URI on every
+#: call, rotating any unverified secret. A token-stealer with brief access
+#: to a valid access token could spam enroll to deny the user re-enrollment
+#: of their own MFA. 5 per 15 minutes leaves room for a confused user
+#: who didn't scan the first QR code, blocks an automated attacker.
+AUTH_MFA_ENROLL_LIMIT = "5/15minutes"
+
+
+def get_user_id_from_jwt(request: Request) -> str:
+    """Extract the user_id from the bearer token for per-user rate keying.
+
+    Used as a slowapi ``key_func`` for endpoints already behind auth — the
+    JWT's ``sub`` claim is the natural per-user discriminator. Falls back
+    to the client IP when the header is missing/malformed/invalid; the
+    endpoint's own auth dependency will then reject with 401, but slowapi
+    has already accounted the attempt.
+    """
+    from tulip_api.auth.tokens import InvalidTokenError, verify_access_token
+    from tulip_api.config import get_settings
+
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return get_remote_address(request)
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        claims = verify_access_token(token, secret=get_settings().jwt_secret)
+    except InvalidTokenError:
+        return get_remote_address(request)
+    return f"user:{claims.user_id}"
+
 
 class AuthRateLimitedError(TulipProblem):
     """The caller exceeded the per-IP auth rate limit (H-4, #219)."""

@@ -14,7 +14,9 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# Security audit L-13 (#350): request schemas use extra="forbid".
 
 
 class ReconciliationCreate(BaseModel):
@@ -24,6 +26,8 @@ class ReconciliationCreate(BaseModel):
     reconciliation (#275) where the user ticks off ledger transactions
     against a physical statement, with no imported batch to match against.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     account_id: UUID
     statement_period_start: date_type
@@ -129,6 +133,8 @@ class CompleteResponse(BaseModel):
 class ManualMatchCreate(BaseModel):
     """Request body for ``POST /v1/reconciliations/{id}/matches`` (manual match)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     statement_line_id: UUID
     ledger_transaction_id: UUID
     match_amount: Decimal
@@ -144,6 +150,8 @@ class PaperMatchCreate(BaseModel):
     derived server-side from the bank-side posting on the recon's
     account; the client need only identify the transaction.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     ledger_transaction_id: UUID
 

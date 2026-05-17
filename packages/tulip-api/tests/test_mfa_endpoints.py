@@ -175,3 +175,26 @@ class TestVerify:
                 for row in s.execute(select(AuditLog).order_by(AuditLog.occurred_at)).scalars()
             ]
         assert "mfa.verify" in actions
+
+
+class TestEnrollRateLimit:
+    """#350 / security audit L-3: ``/v1/auth/mfa/enroll`` is rate-limited
+    per-authenticated-user (5 / 15min) to defeat denial-of-enrollment by
+    a token-stealer who repeatedly hits enroll to rotate the secret.
+    """
+
+    def test_returns_429_after_burst(
+        self,
+        client: TestClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        from tulip_api.auth.rate_limit import limiter as _auth_limiter
+
+        # conftest resets per-test; re-arm to be explicit.
+        _auth_limiter.reset()
+        # Quota is 5/15min — drive 6 calls and check the 6th trips.
+        last = None
+        for _ in range(6):
+            last = client.post("/v1/auth/mfa/enroll", headers=auth_headers)
+        assert last is not None
+        assert_problem(last, code="auth.rate_limited", status=429)

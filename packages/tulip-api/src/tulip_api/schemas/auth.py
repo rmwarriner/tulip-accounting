@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+# Security audit L-13 (#350): every request schema in this file uses
+# ``extra="forbid"`` so undeclared fields surface as 422 instead of being
+# silently ignored. Response schemas can keep the default since clients
+# never construct them; mass-assignment is the input-side concern.
 
 
 class RegisterRequest(BaseModel):
     """Body for POST /v1/auth/register."""
+
+    model_config = ConfigDict(extra="forbid")
 
     email: EmailStr
     password: str = Field(min_length=12, max_length=200)
@@ -27,6 +34,8 @@ class RegisterResponse(BaseModel):
 class LoginRequest(BaseModel):
     """Body for POST /v1/auth/login."""
 
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: str
 
@@ -43,11 +52,15 @@ class TokenResponse(BaseModel):
 class RefreshRequest(BaseModel):
     """Body for POST /v1/auth/refresh."""
 
+    model_config = ConfigDict(extra="forbid")
+
     refresh_token: str
 
 
 class LogoutRequest(BaseModel):
     """Body for POST /v1/auth/logout."""
+
+    model_config = ConfigDict(extra="forbid")
 
     refresh_token: str
 
@@ -68,11 +81,15 @@ class MfaEnrollResponse(BaseModel):
 class MfaVerifyRequest(BaseModel):
     """Body for POST /v1/auth/mfa/verify."""
 
+    model_config = ConfigDict(extra="forbid")
+
     code: str = Field(min_length=1, max_length=12)
 
 
 class MfaLoginRequest(BaseModel):
     """Body for POST /v1/auth/login/mfa (the step-2 challenge response)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     mfa_token: str = Field(min_length=1)
     code: str = Field(min_length=1, max_length=12)
@@ -80,6 +97,8 @@ class MfaLoginRequest(BaseModel):
 
 class MfaRecoveryLoginRequest(BaseModel):
     """Body for POST /v1/auth/login/recover (alternative step-2 path)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     mfa_token: str = Field(min_length=1)
     recovery_code: str = Field(min_length=1, max_length=64)
@@ -91,6 +110,8 @@ class MfaRegenerateRequest(BaseModel):
     Requires a current TOTP code as the "MFA-fresh" gate — bare access
     tokens are not enough for this sensitive operation.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     code: str = Field(min_length=1, max_length=12)
 
@@ -122,6 +143,8 @@ class PasswordChangeRequest(BaseModel):
     field. All outstanding refresh tokens for the user are revoked when
     the change succeeds.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=12, max_length=200)
