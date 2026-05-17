@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) cross-cutting design questions resolved (#318): bill data-model in ADR-0008; other four in TUI_WIREFRAMES.md cross-cutting decisions.
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0 tulip-tui skeleton shipped** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell + pilot-mode smoke test landed; P9.1+ queued per #309.
 
 ---
 
@@ -30,7 +30,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **CLI + importers usability bundle (post-audit):** ✅ shipped — transaction id-prefix display + prefix resolution (#207/#211), interactive reconciliation wizard (#205), `tulip imports show`/`list` (#203/#272), QIF split-posting fidelity (#270) + non-transaction-section skipping (#198) + multi-account import with transfer pairing (#195a/#195b), paper-statement reconciliation (#275), `tulip imports apply --posted` (#210), currency-natural amount precision (#213), account names in `transactions list`/`show` (#214), transaction-level notes (#271), account resolution by name / hierarchical path (#197), interactive UUID picker (#273), `--pending` balance toggle (#274), Rich `Console` honouring `COLUMNS` (#285), right-aligned numeric columns (#289), `/reject` OpenAPI 400 (#194).
 
-- **Phase 9 (terminal UI):** ⏳ design pass complete (2026-05-17), implementation not yet started — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). Implementation slices P9.0–P9.4 tracked in [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
+- **Phase 9 (terminal UI):** 🔄 design pass complete (2026-05-17) + P9.0 skeleton shipped (2026-05-17) — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). `packages/tulip-tui/` workspace package + pilot-mode smoke test now in tree; P9.1–P9.4 (account browser, transaction register, reports viewer, reconciliation/import status) queued per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
 
 **Tests:** 1828 passing · **CI:** green on `main`
 
@@ -1475,7 +1475,7 @@ No code changes; design-only slice. Implementation begins with P6.1.
 
 ---
 
-## Phase 9 — Terminal UI (TUI) — design pass complete, implementation queued
+## Phase 9 — Terminal UI (TUI) — P9.0 shipped, P9.1+ queued
 
 Per [ADR-0007](adrs/0007-terminal-ui.md). A Textual TUI as an **additive
 client** (CLI stays the scriptable surface; the TUI is the comfortable
@@ -1510,14 +1510,46 @@ re-litigate them.
 No code changes; doc-only slice. Implementation slices land in the order
 below from [#309](https://github.com/rmwarriner/tulip-accounting/issues/309).
 
-### P9.0 — `tulip-tui` workspace skeleton — 🔜 next
+### P9.0 — `tulip-tui` workspace skeleton — ✅ *(2026-05-17)*
 
-Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). New workspace package `packages/tulip-tui/`: Textual
-app shell, API-client layer (reuse `tulip-cli`'s `TulipClient` /
-token-store patterns), architecture-boundary test extended to
-`tulip-tui` (no server / storage imports — same rule as `tulip-cli`),
-new `Test (tulip-tui)` CI shard with a pilot-mode boot-and-quit smoke
-test. No screens yet — just the shell that subsequent slices fill.
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). New workspace package `packages/tulip-tui/` lands the
+shell that the rest of Phase 9 fills in.
+
+- **Package shape** — `packages/tulip-tui/` with `src/tulip_tui/` +
+  `tests/`, hatchling build, src layout. Console script `tulip-tui`
+  invokes `tulip_tui.main:run`. Auto-discovered by the existing
+  `[tool.uv.workspace] members = ["packages/*"]` glob.
+- **App shell** — `TulipTuiApp(App[None])` (Textual) with a single `q`
+  quit binding, a placeholder Header / Static welcome / Footer compose
+  tree. No screens beyond the shell — by design.
+- **API-client reuse** — package depends on `tulip-cli` (workspace
+  source). `TulipClient`, `TokenStore`, and `Config` are reusable from
+  `tulip_cli.http` / `tulip_cli.auth.tokens` / `tulip_cli.config`
+  without duplication. (Extracting a dedicated `tulip-client` package
+  is a candidate post-v1 refactor; not worth the churn now.)
+- **Architecture-boundary test** — `tests/test_architecture.py` AST-scans
+  `tulip_tui/` source and asserts no top-level imports of
+  `tulip_storage`, `tulip_api`, `tulip_ai`, `tulip_importers`,
+  `tulip_reports`, `sqlalchemy`, `alembic`, `fastapi`, `starlette`, or
+  `uvicorn`. `tulip_cli` is allowed (per the reuse decision above);
+  mirrors the rule `tulip-cli` itself lives under.
+- **Pilot-mode smoke test** — `tests/test_app_boot.py` uses Textual's
+  headless `App.run_test()` harness: boots `TulipTuiApp`, asserts
+  `is_running`, sends `q`, asserts `return_code == 0`. Runs in ~0.2s.
+  `pytest-asyncio` already in dev deps; `@pytest.mark.asyncio` per test
+  (strict mode).
+- **CI** — new `tulip-tui` row in the `.github/workflows/ci.yml` test
+  matrix; `area:tui` label rule added to `.github/labeler.yml` (and the
+  label created on the repo). The path-conditional `changes` job
+  already catches `packages/tulip-tui/**/*.py` via the existing
+  `packages/**/*.py` glob.
+- **Root config touches** — `pyproject.toml`: `testpaths`, mypy
+  `files` + `mypy_path`, and ruff `known-first-party` all gain
+  `tulip-tui` / `tulip_tui` entries.
+
+3 tests in the new package; lint / format / mypy --strict all clean.
+The next slice (P9.1 — account browser) is the first to introduce a
+real screen and the first real API call.
 
 ### P9.1 — Account browser — ⏳ queued
 

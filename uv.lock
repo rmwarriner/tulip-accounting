@@ -18,6 +18,7 @@ members = [
     "tulip-importers",
     "tulip-reports",
     "tulip-storage",
+    "tulip-tui",
 ]
 
 [[package]]
@@ -3558,6 +3559,21 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "tulip-core", editable = "packages/tulip-core" },
     { name = "types-python-dateutil", specifier = ">=2.9" },
+]
+
+[[package]]
+name = "tulip-tui"
+version = "0.0.0"
+source = { editable = "packages/tulip-tui" }
+dependencies = [
+    { name = "textual" },
+    { name = "tulip-cli" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "textual", specifier = ">=0.80" },
+    { name = "tulip-cli", editable = "packages/tulip-cli" },
 ]
 
 [[package]]

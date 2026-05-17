@@ -76,6 +76,7 @@ known-first-party = [
     "tulip_importers",
     "tulip_reports",
     "tulip_cli",
+    "tulip_tui",
 ]
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,7 @@ files = [
     "packages/tulip-importers/src",
     "packages/tulip-reports/src",
     "packages/tulip-cli/src",
+    "packages/tulip-tui/src",
 ]
 # Tests are intentionally excluded from mypy: pytest doesn't enforce return
 # annotations on test methods, and conftest.py files at sibling-package
@@ -109,6 +111,7 @@ mypy_path = [
     "packages/tulip-importers/src",
     "packages/tulip-reports/src",
     "packages/tulip-cli/src",
+    "packages/tulip-tui/src",
 ]
 explicit_package_bases = true
 
@@ -116,7 +119,7 @@ explicit_package_bases = true
 # Pytest
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
-testpaths = ["packages/tulip-core/tests", "packages/tulip-storage/tests", "packages/tulip-api/tests", "packages/tulip-ai/tests", "packages/tulip-importers/tests", "packages/tulip-reports/tests", "packages/tulip-cli/tests"]
+testpaths = ["packages/tulip-core/tests", "packages/tulip-storage/tests", "packages/tulip-api/tests", "packages/tulip-ai/tests", "packages/tulip-importers/tests", "packages/tulip-reports/tests", "packages/tulip-cli/tests", "packages/tulip-tui/tests"]
 # importlib import mode lets each package's tests/ have an __init__.py
 # without colliding with sibling packages' tests/ (mypy module-pattern
 # overrides need the __init__.py; pytest's default 'prepend' mode would

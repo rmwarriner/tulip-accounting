@@ -22,6 +22,10 @@
   - changed-files:
       - any-glob-to-any-file: 'packages/tulip-cli/**'
 
+"area:tui":
+  - changed-files:
+      - any-glob-to-any-file: 'packages/tulip-tui/**'
+
 "area:ai":
   - changed-files:
       - any-glob-to-any-file: 'packages/tulip-ai/**'
