@@ -1111,15 +1111,6 @@ def delete_import_batch(
         request_id=_request_uuid(request),
     )
 
-    from sqlalchemy import delete as sa_delete
-
-    from tulip_storage.models import ImportBatch as ImportBatchModel
-
-    session.execute(
-        sa_delete(ImportBatchModel).where(
-            ImportBatchModel.household_id == claims.household_id,
-            ImportBatchModel.id == batch_id,
-        )
-    )
+    batch_repo.delete(batch_id)
     session.commit()
     log.info("import_batch.deleted", batch_id=str(batch_id), line_count=len(lines))
