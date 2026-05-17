@@ -1,9 +1,13 @@
 # tulip TUI wireframes (design exploration)
 
-> **Status:** design exploration · 2026-05-15
-> **Scope:** wireframes only — not a committed spec, not scheduled, not gated.
-> Use as a starting point if/when a TUI surface is picked up. Open questions
-> below need decisions before any of this becomes implementable.
+> **Status:** wireframes 2026-05-15 · cross-cutting decisions 2026-05-17.
+> **Scope:** wireframes + the cross-cutting design decisions that gate
+> implementation. The data-model question is resolved in
+> [ADR-0008](adrs/0008-bills-data-model.md); the other four cross-cutting
+> decisions are captured below in [§ Cross-cutting decisions](#cross-cutting-decisions-2026-05-17).
+> Per-screen open questions are non-blocking and get resolved as each slice
+> lands. Phase 9 implementation slices are tracked in
+> [#309](https://github.com/rmwarriner/tulip-accounting/issues/309).
 
 This document captures wireframe sketches for a possible terminal UI on top of
 the tulip data model. The mockups assume monospace rendering (box-drawing
@@ -653,8 +657,10 @@ Multi-month savings goals and bill-paired accumulations, reachable via
 
 ## Cross-cutting open questions
 
-Decisions that affect multiple screens. These should land before any of
-this becomes implementable scope.
+> **Status:** resolved 2026-05-17. The five questions originally raised here
+> have all been answered. The data-model question is now [ADR-0008](adrs/0008-bills-data-model.md);
+> the other four are summarised in [§ Cross-cutting decisions](#cross-cutting-decisions-2026-05-17)
+> below. The original framings are retained for context.
 
 ### Bill ↔ envelope ↔ sinking-fund model
 
@@ -734,20 +740,187 @@ misses generate spurious past-due flags. The matching rules need to be:
 
 ---
 
+## Cross-cutting decisions (2026-05-17)
+
+Resolutions for the five questions above. Bill data model goes to its own
+ADR; the remaining four are captured here. The Phase 9 v1 TUI slices
+([#309](https://github.com/rmwarriner/tulip-accounting/issues/309) P9.0–P9.4) are read-only and do not implement the
+mutation/matching aspects of these decisions — those land in the dedicated
+Bills + AI follow-up slices that build on this baseline.
+
+### 1. Bill ↔ envelope ↔ sinking-fund model — see [ADR-0008](adrs/0008-bills-data-model.md)
+
+**Decision:** Three distinct entities. `Bill` is a new domain object alongside
+`Envelope` and `SinkingFund`, with optional `charge_envelope_id` and
+`funded_by_sinking_fund_id` cross-references. ADR-0008 captures the full
+rationale, alternatives considered, and field shape.
+
+### 2. "Real liquid" surfacing
+
+**Decision:** Pending screen only. Do not add a fourth figure to the vitals
+strip; do not duplicate to Accounts.
+
+**Rationale:**
+
+- The vitals strip is deliberately a three-item dashboard discipline (sync
+  state, unalloc, forecast). A fourth figure crowds it and dilutes the
+  "three things you never want to lose track of" framing.
+- "Real liquid" is a *reconciliation-flavoured* number — it answers "is the
+  cheque I wrote three weeks ago still uncashed?" Users who care are
+  thinking about pending items, in which case they're on the Pending
+  screen anyway. The number is wasted on a daily glance.
+- The Accounts screen *could* surface it as an aggregate row, but the
+  existing footer line ("Net worth: $X · Liquid: $Y · 4 accounts") is
+  already the canonical aggregate; adding a third figure muddies that
+  surface for the same crowding reason as the vitals strip.
+
+**Implication for v1:** the Pending screen's `"Real" liquid: $14,898 − $921 = $13,977`
+line is the only place this computation appears. No other screen needs it.
+
+### 3. Stale thresholds
+
+**Decision:** Global defaults table, with per-entity override capability as
+a follow-up (not gating v1). The defaults are pinned here so the Settings
+screen (when it lands) has a canonical starting point.
+
+| Concept                  | Default | Notes                                    |
+|--------------------------|---------|------------------------------------------|
+| Account sync             | 24h     | Aggregator/bank-feed last-poll age       |
+| Pending check            | 14d     | Most US banks honour 90–180d; warn early |
+| Card hold                | 5d      | Banks typically auto-expire at 7d        |
+| ACH (push or pull)       | 3 business days | Counts business days, not calendar  |
+| Bill past-due            | 5d      | Expected-pay date + tolerance            |
+
+**Rationale:**
+
+- One config table keeps the mental model simple ("stale = N days, where N
+  depends on type"). Per-type defaults beat one global number because the
+  underlying mechanics genuinely differ — a card hold and a paper cheque
+  decay on completely different timescales.
+- Per-entity override is a real need (a known-slow ACH endpoint, a cheque
+  the user has accepted will never clear) but it's a per-entity nullable
+  column on the relevant tables, not a v1 TUI affordance. The Settings
+  screen + per-row "override stale threshold" action can land after the
+  read-only browsers ship.
+
+**Implication for v1:** the read-only TUI screens render `⚠` against these
+default thresholds. The Settings screen and the override mechanism are
+post-v1.
+
+### 4. AI categorization integration
+
+**Decision:** v1 TUI surfaces AI proposals but **always requires
+confirmation**. No silent auto-categorize, no confidence-threshold
+auto-accept.
+
+- **`⏎` on a row with `⚡`** opens a proposal detail screen (option (a)
+  from the Transactions-screen per-screen open question) listing the
+  top-N proposals with confidence scores. The user picks one or
+  dismisses. Inline-accordion (option (b)) is deferred — simpler model
+  for v1.
+- **Batch flow** — `space`-select multiple rows with `⚡`, then `c`,
+  opens a confirm-list screen showing per-row top proposal + a "use top
+  for all" / "review each" toggle.
+- **Default `⏎` behaviour** in the proposal list is "preview the top
+  choice," not "accept the top choice." Acceptance requires a second
+  affirmative key (e.g. `a` or a second `⏎`). This is deliberately
+  slower; it matches the project's conservative AI posture established
+  by the `local_only` AI policy ([#233](https://github.com/rmwarriner/tulip-accounting/issues/233)) and audit logging.
+
+**Rationale:**
+
+- Categorization is a *write* the user has to live with in reports for
+  years. False auto-categorization is harder to spot and undo than
+  always-confirm friction.
+- Threshold-based auto-accept ("if confidence ≥ 0.95, just take it") is a
+  reasonable future feature, but it needs observed-accuracy data from
+  real households first. v1 collects that data via the confirm flow
+  before tuning a threshold.
+- The proposal-list-on-`⏎` UX is consistent with every other "drill in
+  to see detail" key in the design language. The accordion-inline
+  alternative would be a one-off interaction pattern.
+
+**Implication for v1:** the categorize flow is not part of the read-only
+P9.0–P9.4 slices. The wireframes in this doc reflect the post-categorize
+mutation flow; implementing it lands after the read-only baseline.
+
+### 5. Recurring-bill matching policy
+
+**Decision:** Conservative scoring with an explicit "pending matches" inbox
+the user confirms or rejects. Defaults pinned here; per-bill overrides
+live on the `Bill` row (see ADR-0008's `match_amount_tolerance_pct` and
+`match_date_tolerance_days` fields).
+
+**Defaults:**
+
+| Dimension          | Default tolerance                                    |
+|--------------------|------------------------------------------------------|
+| Payee match        | Normalised exact, OR fuzzy similarity ≥ 0.85        |
+| Amount             | Within ±5% of `Bill.expected_amount`                 |
+| Date               | Within ±3 calendar days of `Bill.next_due_on`        |
+| Account            | Posting on `Bill.pay_from_account_id` (if set)       |
+
+A candidate must satisfy all four to score as a match. If multiple bills
+match a single posted transaction, the highest-confidence match wins;
+the others stay in the inbox.
+
+**Inbox flow:**
+
+- A new screen ("Pending matches", reachable from the Bills detail strip
+  or via `m`) lists `(posted_transaction, candidate_bill, score)` rows.
+- One-key actions on each row: `a` accept (writes `Bill.last_paid_*`,
+  clears past-due, optionally proposes `posting.pool_id =
+  bill.charge_envelope_id`), `r` reject (records an exclusion so the
+  same pair won't auto-re-suggest), `s` snooze (defers without learning).
+- Reject feedback is per-bill (a per-bill exclusion list), not a global
+  ML model. No model training, no opaque scoring weights.
+
+**Rationale:**
+
+- Conservative-by-default fits the project's "false-miss > false-match"
+  preference: a nag is recoverable, a wrongly-marked-paid bill silently
+  hides a real problem.
+- The inbox flow keeps the matching engine **explicit** and **editable** —
+  both criteria the original open question called out.
+- Per-bill exclusions are interpretable (the user can read them) and
+  bounded (they don't accumulate across unrelated bills); a global
+  learning model would be a much heavier commitment for marginal benefit
+  at a single-household scale.
+
+**Implication for v1:** matching is not part of the read-only P9.0–P9.4
+slices. The matching engine + inbox screen land in the Bills
+implementation phase that follows ADR-0008.
+
+---
+
 ## Screens not yet mocked
 
-Surfaces referenced but not drafted in this round:
+Surfaces referenced but not drafted. Per the 2026-05-17 decision pass, the
+three flagged in [#318](https://github.com/rmwarriner/tulip-accounting/issues/318) acceptance criterion 3 are explicitly
+**punted to a later design iteration** — they are all *mutation* flows,
+and v1 TUI scope ([ADR-0007](adrs/0007-terminal-ui.md), [#309](https://github.com/rmwarriner/tulip-accounting/issues/309)) is
+read-only. Re-mocking them belongs with the slice that builds the
+corresponding mutation surface.
 
-- **AI-categorize flow** — what the user sees when they press `c` on a
-  transaction with `⚡` or on a multi-selection.
-- **Assign-unallocated flow** — what the user sees when they press `u` from
-  any screen, with `$408.78 ▸` in the vitals.
-- **Reconcile flow** — what happens when `r` is pressed on the Accounts
-  screen for an unreconciled account.
+- **AI-categorize flow** *(punted to post-v1)* — what the user sees when
+  they press `c` on a transaction with `⚡` or on a multi-selection. The
+  *policy* is decided ([§ Cross-cutting decisions #4](#4-ai-categorization-integration));
+  the screen design lands with the implementation slice.
+- **Assign-unallocated flow** *(punted to post-v1)* — what the user sees
+  when they press `u` from any screen, with `$408.78 ▸` in the vitals.
+- **Reconcile flow** *(punted to post-v1)* — what happens when `r` is
+  pressed on the Accounts screen for an unreconciled account. The
+  reconciliation **status** screen *is* in v1 scope (P9.4 in [#309](https://github.com/rmwarriner/tulip-accounting/issues/309));
+  *acting* on a reconciliation is the punted flow.
+
+Also referenced but not drafted, and not part of any current v1 acceptance:
+
 - **Add/edit forms** — new account, new envelope, new bill, new sinking
   fund, edit recurring schedule, edit goal target.
-- **Settings screen** — stale thresholds, sync policies, AI confidence
-  cutoffs, group definitions, household management.
+- **Settings screen** — stale thresholds (defaults pinned in
+  [§ Cross-cutting decisions #3](#3-stale-thresholds)), sync policies, AI
+  confidence cutoffs, group definitions, household management.
 - **Help overlay (`?`)** — full keybind reference per screen.
-
-Worth mocking when this design direction gets picked up.
+- **Pending matches inbox** (Bills) — referenced in
+  [§ Cross-cutting decisions #5](#5-recurring-bill-matching-policy); screen
+  design lands with the Bills implementation slice.
