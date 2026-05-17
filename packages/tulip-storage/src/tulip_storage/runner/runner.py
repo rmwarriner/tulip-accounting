@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,24 @@ DEFAULT_POLL_INTERVAL_SECONDS: float = 30.0
 
 
 HandlerCallback = Callable[[ScheduledJob, Clock], Awaitable[None]]
+
+
+def _redact_exception(exc: BaseException) -> str:
+    """Return ``<ClassName> at <file>:<lineno>`` — drops the exception message.
+
+    Privacy audit M-13 (#343): Python exception messages routinely embed
+    user-supplied values via DB constraint text, parse-error excerpts,
+    Pydantic validation echoes, etc. The runner persists this string on
+    ``scheduled_job_runs.last_error`` where it survives daily-fire
+    rotation and lands in ``audit_log`` snapshots — a long-tail PII leak.
+
+    The class name + raise-site file:line identifies the failure mode
+    for operators without echoing user content. Stack traces are still
+    captured via ``log.exception`` for diagnosis.
+    """
+    tb = traceback.extract_tb(exc.__traceback__)
+    location = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "unknown"
+    return f"{type(exc).__name__} at {location}"
 
 
 class IdempotencyKeyConflictError(ValueError):
@@ -314,7 +333,7 @@ class Runner:
                 "runner.handler_failed",
                 extra={"job_id": str(job.id), "kind": job.kind},
             )
-            self._on_failure(job, run_id=run_id, started_at=start, error=str(exc))
+            self._on_failure(job, run_id=run_id, started_at=start, error=_redact_exception(exc))
             return
 
         completed = self._clock()
