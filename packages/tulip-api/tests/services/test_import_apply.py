@@ -766,3 +766,132 @@ class TestApplyBatch:
             assert result.skipped_count == 3
             reloaded_batch = _reload(s, ImportBatch, setup["household_id"], batch.id)
             assert reloaded_batch.status == ImportBatchStatus.APPLIED
+
+
+# ---- promote_statement_line: QIF C cleared-status field (#279) ----------
+
+
+class TestPromoteQifClearedStatus:
+    """#279: QIF C field in raw_json drives the promoted transaction's status.
+
+    Status priority (per ``promote_statement_line`` docstring):
+    1. ``as_posted=True`` → POSTED (highest precedence).
+    2. ``treat_cleared_as_pending=True`` → PENDING.
+    3. raw_json ``C``: ``c``/``*`` → POSTED; ``R`` → RECONCILED; empty → PENDING.
+    4. Otherwise → PENDING.
+    """
+
+    @pytest.mark.asyncio
+    async def test_c_equals_c_lands_as_posted(self, session_maker, setup):
+        """QIF C=c (Banktivity "cleared in register") → POSTED transaction."""
+        with session_maker() as s:
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            line.raw_json = '{"raw": {"C": "c"}}'
+            s.commit()
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.POSTED
+
+    @pytest.mark.asyncio
+    async def test_c_equals_R_lands_as_reconciled(self, session_maker, setup):
+        """QIF C=R (matched during reconciliation) → RECONCILED transaction."""
+        with session_maker() as s:
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            line.raw_json = '{"raw": {"C": "R"}}'
+            s.commit()
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.RECONCILED
+
+    @pytest.mark.asyncio
+    async def test_c_star_lands_as_posted(self, session_maker, setup):
+        """QIF C=* (legacy "cleared" marker) → POSTED transaction."""
+        with session_maker() as s:
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            line.raw_json = '{"raw": {"C": "*"}}'
+            s.commit()
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.POSTED
+
+    @pytest.mark.asyncio
+    async def test_empty_c_or_missing_lands_as_pending(self, session_maker, setup):
+        """No C field → default PENDING (the existing contract)."""
+        with session_maker() as s:
+            # Test fixture lines have raw_json="{}" — no C field.
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_treat_cleared_as_pending_overrides_C_R(self, session_maker, setup):
+        """--treat-cleared-as-pending forces PENDING even when C=R."""
+        with session_maker() as s:
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            line.raw_json = '{"raw": {"C": "R"}}'
+            s.commit()
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+                treat_cleared_as_pending=True,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_as_posted_wins_over_C_R(self, session_maker, setup):
+        """as_posted=True overrides everything — even C=R → POSTED, not RECONCILED."""
+        with session_maker() as s:
+            line = _reload(s, StatementLine, setup["household_id"], setup["line_ids"][0])
+            line.raw_json = '{"raw": {"C": "R"}}'
+            s.commit()
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+                as_posted=True,
+            )
+            s.commit()
+            assert tx.status == TransactionStatus.POSTED

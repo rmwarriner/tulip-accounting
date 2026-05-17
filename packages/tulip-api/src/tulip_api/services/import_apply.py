@@ -110,6 +110,43 @@ def serialize_parsed_line_raw_json(parsed: ParsedStatementLine) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _extract_qif_cleared_status_from_raw_json(raw_json: str) -> DomainTxStatus | None:
+    """Read the QIF ``C`` (cleared) field out of ``raw_json`` (#279).
+
+    QIF carries per-transaction status in the ``C`` field:
+
+    - empty / missing → ``None`` (caller defaults to PENDING).
+    - ``c`` / ``C`` / ``*`` → POSTED. Source software's "cleared" /
+      "auto-matched" / "manually cleared in register" state. Maps to
+      Tulip's POSTED.
+    - ``R`` / ``r`` → RECONCILED. Source software's
+      "matched during reconciliation" state.
+
+    Returns ``None`` (use default) when the field is missing, the
+    value is unrecognised, the JSON is malformed, or the line was
+    imported via a non-QIF source (OFX/CSV have their own status
+    semantics; this helper is QIF-only).
+    """
+    try:
+        payload = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    c = raw.get("C")
+    if not isinstance(c, str):
+        return None
+    normalised = c.strip().lower()
+    if normalised in ("c", "*"):
+        return DomainTxStatus.POSTED
+    if normalised == "r":
+        return DomainTxStatus.RECONCILED
+    return None
+
+
 def _extract_splits_from_raw_json(raw_json: str, *, currency: str) -> tuple[ParsedSplit, ...]:
     """Read the splits tuple back out of a persisted ``raw_json`` blob (#297).
 
@@ -241,6 +278,7 @@ async def promote_statement_line(
     actor_user_id: UUID | None,
     no_categorize: bool = False,
     as_posted: bool = False,
+    treat_cleared_as_pending: bool = False,
 ) -> Transaction:
     """Promote one statement line into a ledger Transaction.
 
@@ -257,6 +295,15 @@ async def promote_statement_line(
     line is already cleared by the source bank/tool; the user can fix
     categorization later via ``tulip transactions edit`` (which
     transparently void+recreates POSTED transactions).
+
+    **Status resolution priority** (#279):
+    1. ``as_posted=True`` → POSTED (highest precedence; force-all-POSTED).
+    2. ``treat_cleared_as_pending=True`` → PENDING (force-all-PENDING; the
+       legacy "everything pending" behaviour for users who want the
+       manual review pass even on lines the source marked cleared).
+    3. QIF ``C`` field carried in raw_json → POSTED for ``c``/``*``;
+       RECONCILED for ``R``. Default behaviour for QIF imports.
+    4. Otherwise → PENDING.
 
     Raises:
         LineExcludedError: ``line.is_excluded`` is True (caller should
@@ -283,7 +330,14 @@ async def promote_statement_line(
         raise LookupError(f"batch.account_id {batch.account_id} not found")
 
     splits = _extract_splits_from_raw_json(line.raw_json, currency=line.currency)
-    tx_status = DomainTxStatus.POSTED if as_posted else DomainTxStatus.PENDING
+    # Status resolution per #279 (see docstring).
+    if as_posted:
+        tx_status = DomainTxStatus.POSTED
+    elif treat_cleared_as_pending:
+        tx_status = DomainTxStatus.PENDING
+    else:
+        cleared = _extract_qif_cleared_status_from_raw_json(line.raw_json)
+        tx_status = cleared if cleared is not None else DomainTxStatus.PENDING
 
     if splits:
         # #297: split-bearing line promotes to one transaction with
@@ -388,6 +442,7 @@ async def apply_batch(
     actor_user_id: UUID | None,
     no_categorize: bool = False,
     as_posted: bool = False,
+    treat_cleared_as_pending: bool = False,
 ) -> ApplyResult:
     """Promote every applicable line in ``batch``, then mark batch APPLIED.
 
@@ -399,6 +454,11 @@ async def apply_batch(
     ``POSTED`` instead of the default ``PENDING`` — bypassing the
     review step for migration workflows where the imported lines are
     already cleared by the source bank/tool.
+
+    ``treat_cleared_as_pending=True`` (#279) forces every line back to
+    PENDING even when the source format (QIF ``C`` field) marked it
+    cleared or reconciled. The legacy behaviour for users who want a
+    manual review pass.
 
     Idempotency is at the batch level: a batch in ``APPLIED`` state
     cannot be re-applied (raises). The caller can re-promote individual
@@ -433,6 +493,7 @@ async def apply_batch(
             actor_user_id=actor_user_id,
             no_categorize=no_categorize,
             as_posted=as_posted,
+            treat_cleared_as_pending=treat_cleared_as_pending,
         )
         transaction_ids.append(tx.id)
 

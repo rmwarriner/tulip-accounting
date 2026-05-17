@@ -590,12 +590,29 @@ def apply_import(
             ),
         ),
     ] = False,
+    treat_cleared_as_pending: Annotated[
+        bool,
+        typer.Option(
+            "--treat-cleared-as-pending",
+            help=(
+                "Force every line to PENDING even when the source format "
+                "(e.g. QIF C field, #279) marks it cleared or reconciled. "
+                "Legacy 'everything pending' behaviour for users who want "
+                "the manual review pass."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Apply a parsed batch: every non-excluded line becomes a ledger transaction.
 
     By default, new transactions are PENDING (review queue). Pass
     ``--posted`` to land them as POSTED directly — useful for migrations
     where every line is already cleared by the source bank/tool.
+
+    For QIF imports (#279), the ``C`` (cleared) field is consulted by
+    default: ``c``/``*`` lands as POSTED, ``R`` as RECONCILED, empty
+    as PENDING. Pass ``--treat-cleared-as-pending`` to ignore the hint
+    and put every line in the review queue.
     """
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
@@ -609,6 +626,8 @@ def apply_import(
         query.append("no_categorize=true")
     if posted:
         query.append("as_posted=true")
+    if treat_cleared_as_pending:
+        query.append("treat_cleared_as_pending=true")
     if query:
         path += "?" + "&".join(query)
     try:
