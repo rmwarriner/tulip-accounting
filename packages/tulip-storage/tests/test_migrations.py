@@ -297,3 +297,97 @@ class TestBalanceTrigger:
                 s2.add(bad)
                 with pytest.raises((IntegrityError, OperationalError), match="balance"):
                     s2.commit()
+
+
+class TestDeprecatedViewerRole:
+    """#341: ``UserRole.VIEWER`` is removed from the enum after the migration
+    runs. Defensive UPDATE in the migration demotes any pre-existing VIEWER
+    rows to MEMBER (audit M-26).
+
+    The DB column carries no CHECK constraint by design — the existing model
+    uses ``native_enum=False`` without ``create_constraint=True``. The Python
+    enum class is the enforcement boundary; any row written via raw SQL with
+    a value outside the enum fails to re-hydrate through the ORM.
+    """
+
+    def test_userrole_enum_does_not_contain_viewer(self):
+        from tulip_storage.models import UserRole
+
+        assert {r.name for r in UserRole} == {"ADMIN", "MEMBER"}
+        assert not hasattr(UserRole, "VIEWER")
+
+    def test_reading_raw_viewer_row_fails_via_orm(self, migrated_db):
+        from sqlalchemy import text
+
+        from tulip_storage.models import User
+
+        _, Smaker = migrated_db
+        h_id = uuid4()
+        u_id = uuid4()
+        with Smaker() as s:
+            h = Household(id=h_id, name="H", base_currency="USD")
+            s.add(h)
+            s.flush()
+            s.execute(
+                text(
+                    "INSERT INTO users "
+                    "(household_id, id, email, password_hash, display_name, role, "
+                    "created_at, updated_at) "
+                    "VALUES (:h, :u, 'v@example.com', 'x', 'V', 'VIEWER', "
+                    "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                ),
+                {"h": str(h_id), "u": str(u_id)},
+            )
+            s.commit()
+
+        with Smaker() as s, pytest.raises(LookupError):
+            s.get(User, (h_id, u_id))
+
+    def test_upgrade_demotes_existing_viewer_rows_to_member(self, tmp_path):
+        """downgrade → insert VIEWER → upgrade demotes the row to MEMBER."""
+        from sqlalchemy import create_engine, text
+
+        db_path = tmp_path / "tulip.db"
+        db_url = f"sqlite:///{db_path}"
+        cfg = _make_alembic_cfg(db_url)
+        # Go to the revision *just before* the deprecation lands so VIEWER
+        # is still in the CHECK constraint.
+        upgrade(cfg, "b4c8e2d9a1f5")
+
+        eng = create_engine(db_url, future=True)
+        try:
+            household_id = uuid4()
+            user_id = uuid4()
+            ts = "2026-01-01 00:00:00"
+            with eng.begin() as c:
+                c.execute(
+                    text(
+                        "INSERT INTO households "
+                        "(id, name, base_currency, created_at, updated_at, "
+                        "ai_policy, audit_retention_policy) "
+                        "VALUES (:i, 'H', 'USD', :ts, :ts, '{}', '{}')"
+                    ),
+                    {"i": str(household_id), "ts": ts},
+                )
+                c.execute(
+                    text(
+                        "INSERT INTO users "
+                        "(household_id, id, email, password_hash, display_name, "
+                        "role, created_at, updated_at) "
+                        "VALUES (:h, :u, 'v@example.com', 'x', 'V', "
+                        "'VIEWER', :ts, :ts)"
+                    ),
+                    {"h": str(household_id), "u": str(user_id), "ts": ts},
+                )
+
+            upgrade(cfg, "head")
+
+            with eng.connect() as c:
+                row = c.execute(
+                    text("SELECT role FROM users WHERE id = :u"),
+                    {"u": str(user_id)},
+                ).first()
+                assert row is not None
+                assert row[0] == "MEMBER"
+        finally:
+            eng.dispose()

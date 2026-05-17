@@ -130,10 +130,10 @@ Same shape, with:
 ### 3.4 User & Permission Model
 
 - **Users** belong to exactly one household in v1 (multi-household membership deferred — schema-friendly to add).
-- **Roles** (per household): `admin`, `member`, `viewer`.
+- **Roles** (per household): `admin`, `member`.
   - `admin`: manage users, settings, scheduled tx, period close, see and edit all accounts including private ones, set tenant AI policy, set tenant MFA policy.
   - `member`: see and edit shared accounts, manage own private accounts/envelopes/sinking funds.
-  - `viewer`: read-only on shared accounts; no visibility into private accounts.
+  - *(A read-only `viewer` role was scaffolded in the initial schema but was never wired through `require_role` and was deprecated in #341 — see [docs/audits/2026-05-13-deep-privacy-audit.md §M-26](audits/2026-05-13-deep-privacy-audit.md). Re-introduce when a real read-only-audit-seat use case lands, with the per-endpoint authz matrix tested.)*
 - **Visibility** (per account / envelope / sinking fund): `shared` (default) or `private` (creator + admins only).
 - **Right to erasure** (GDPR Art. 17 / CCPA §1798.105 — shipped Phase 8 Wave-1):
   - `DELETE /v1/users/{user_id}` — erases one user; cascades their `sessions` + `mfa_recovery_codes` and redacts their PII from `audit_log` snapshots. Admin-only (or self).
