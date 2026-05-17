@@ -169,11 +169,12 @@ async def import_journal(
     reviews before promoting to POSTED. The response carries the
     created transaction IDs.
     """
-    body = await request.body()
-    if len(body) > _MAX_JOURNAL_BYTES:
-        from tulip_api.errors import RequestPayloadTooLargeError
+    # Security audit M-17 (#336): stream-and-bail rather than slurping the
+    # whole body before the size check. Raises ``RequestPayloadTooLargeError``
+    # as soon as the running total exceeds the cap.
+    from tulip_api.upload_limits import read_request_body_capped
 
-        raise RequestPayloadTooLargeError(max_bytes=_MAX_JOURNAL_BYTES)
+    body = await read_request_body_capped(request, max_bytes=_MAX_JOURNAL_BYTES)
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError as exc:

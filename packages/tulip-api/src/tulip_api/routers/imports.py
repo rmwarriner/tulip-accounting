@@ -49,7 +49,6 @@ from tulip_api.errors import (
     ImportQifAccountUnmappedError,
     ImportQifParseFailedError,
     ImportUnsupportedFormatError,
-    RequestPayloadTooLargeError,
     StatementLineAlreadyPromotedError,
     StatementLineExcludedError,
     StatementLineNotFoundError,
@@ -237,9 +236,10 @@ async def upload_import(
             received=received_ct or "<missing>",
         )
 
-    raw_bytes = await file.read()
-    if len(raw_bytes) > MAX_OFX_BYTES:
-        raise RequestPayloadTooLargeError(max_bytes=MAX_OFX_BYTES)
+    # Security audit M-17 (#336): stream-and-bail rather than slurp.
+    from tulip_api.upload_limits import read_upload_file_capped
+
+    raw_bytes = await read_upload_file_capped(file, max_bytes=MAX_OFX_BYTES)
     if not raw_bytes:
         if source_format == "ofx":
             raise ImportOfxParseFailedError(reason="uploaded file is empty")
@@ -487,9 +487,10 @@ async def upload_multi_account_qif(
     Transfer legs that can't be paired fall back to ordinary one-sided
     statement lines and are reported in ``warnings``.
     """
-    raw_bytes = await file.read()
-    if len(raw_bytes) > MAX_OFX_BYTES:
-        raise RequestPayloadTooLargeError(max_bytes=MAX_OFX_BYTES)
+    # Security audit M-17 (#336): stream-and-bail rather than slurp.
+    from tulip_api.upload_limits import read_upload_file_capped
+
+    raw_bytes = await read_upload_file_capped(file, max_bytes=MAX_OFX_BYTES)
     if not raw_bytes:
         raise ImportQifParseFailedError(reason="uploaded file is empty")
 
