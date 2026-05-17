@@ -352,3 +352,145 @@ class TestEnforcePreCall:
             result = enforce_pre_call(s, **kwargs)
         assert isinstance(result, PreCallBlock)
         assert result.outcome == "cost_capped"
+
+
+# ---- M-23 (#334): atomic-gate lock ----------------------------------------
+
+
+class TestHouseholdGateLockSerialization:
+    """Concurrency tests for ``_acquire_household_gate_lock`` (#334)."""
+
+    def _file_engine_and_household(self, db_path, *, busy_timeout_ms: int = 200):
+        """Build a file-backed SQLite engine + seed one household.
+
+        File-backed (not :memory:) so two separate connections see the
+        same data; in-memory SQLite is per-connection and would defeat
+        the concurrency test.
+        """
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+
+        from tulip_storage.migrations._triggers import (
+            INITIAL_TRIGGERS,
+            P4_0_SHADOW_TRIGGERS,
+        )
+        from tulip_storage.models import Base, Household
+
+        eng = create_engine(
+            f"sqlite:///{db_path}",
+            future=True,
+            connect_args={"timeout": busy_timeout_ms / 1000},
+        )
+
+        @event.listens_for(eng, "connect")
+        def _enable_fk(dbapi_conn, _record):  # type: ignore[no-untyped-def]
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        Base.metadata.create_all(eng)
+        from sqlalchemy import text as _text
+
+        with eng.begin() as conn:
+            for ddl in INITIAL_TRIGGERS:
+                conn.execute(_text(ddl))
+            for ddl in P4_0_SHADOW_TRIGGERS:
+                conn.execute(_text(ddl))
+
+        sm = sessionmaker(eng, expire_on_commit=False)
+        with sm() as s:
+            h = Household(id=uuid4(), name="LockTest", base_currency="USD")
+            s.add(h)
+            s.commit()
+            s.refresh(h)
+        return eng, sm, h
+
+    def test_second_writer_blocks_until_first_commits(self, tmp_path) -> None:
+        """A held gate lock forces a concurrent gate to wait or error."""
+        import sqlalchemy.exc
+
+        from tulip_ai.cost import _acquire_household_gate_lock
+
+        eng, sm, h = self._file_engine_and_household(tmp_path / "lock.db", busy_timeout_ms=100)
+        try:
+            s_a = sm()
+            s_b = sm()
+            try:
+                # Session A grabs the lock (no commit; tx stays open).
+                _acquire_household_gate_lock(s_a, h.id)
+
+                # Session B tries to acquire the same lock — SQLite has
+                # one global writer, so B's UPDATE must wait the 100ms
+                # busy_timeout and then raise.
+                import pytest as _pytest
+
+                with _pytest.raises(sqlalchemy.exc.OperationalError) as exc_info:
+                    _acquire_household_gate_lock(s_b, h.id)
+                assert "locked" in str(exc_info.value).lower()
+            finally:
+                s_a.rollback()
+                s_b.rollback()
+                s_a.close()
+                s_b.close()
+        finally:
+            eng.dispose()
+
+    def test_lock_released_after_commit_allows_next_gate(self, tmp_path) -> None:
+        """Committing the first transaction must release the lock."""
+        from tulip_ai.cost import _acquire_household_gate_lock
+
+        eng, sm, h = self._file_engine_and_household(tmp_path / "lock2.db")
+        try:
+            s_a = sm()
+            try:
+                _acquire_household_gate_lock(s_a, h.id)
+                s_a.commit()
+            finally:
+                s_a.close()
+
+            # Fresh session — lock must be available immediately.
+            s_b = sm()
+            try:
+                _acquire_household_gate_lock(s_b, h.id)
+                s_b.commit()
+            finally:
+                s_b.close()
+        finally:
+            eng.dispose()
+
+    def test_enforce_pre_call_acquires_lock(self, tmp_path) -> None:
+        """``enforce_pre_call`` blocks a concurrent gate on the same household."""
+        import sqlalchemy.exc
+
+        eng, sm, h = self._file_engine_and_household(tmp_path / "lock3.db", busy_timeout_ms=100)
+        try:
+            kwargs = {
+                "household_id": h.id,
+                "user_id": None,
+                "rate_limit_per_hour": 60,
+                "monthly_cost_cap_usd": None,
+                "cost_cap_behaviour": "degrade",
+                "fallback_provider": "ollama",
+                "fallback_model": "llama3:70b",
+                "primary_provider": "anthropic",
+                "primary_model": "claude-opus-4-7",
+            }
+
+            s_a = sm()
+            s_b = sm()
+            try:
+                result = enforce_pre_call(s_a, **kwargs)
+                assert isinstance(result, PreCallApproval)
+                # s_a's transaction is still open (no commit yet); the
+                # lock from inside enforce_pre_call must still be held.
+                import pytest as _pytest
+
+                with _pytest.raises(sqlalchemy.exc.OperationalError):
+                    enforce_pre_call(s_b, **kwargs)
+            finally:
+                s_a.rollback()
+                s_b.rollback()
+                s_a.close()
+                s_b.close()
+        finally:
+            eng.dispose()

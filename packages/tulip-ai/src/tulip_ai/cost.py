@@ -18,7 +18,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from tulip_storage.models import AIInvocation, AIOutcome
 
@@ -62,6 +62,46 @@ def _billable_outcomes() -> tuple[str, ...]:
     rate-limited / disabled rows never reached the wire, so they don't.
     """
     return (AIOutcome.SUCCESS.value, AIOutcome.PROVIDER_ERROR.value)
+
+
+def _acquire_household_gate_lock(session: Session, household_id: UUID) -> None:
+    """Serialize concurrent pre-call gates on the same household (#334, M-23).
+
+    The cost-cap + rate-limit gate reads `SUM(cost_estimate_usd)` and
+    `COUNT(*)` from `ai_invocations`, then writes one new row. Without
+    a write lock at the entry, two concurrent capabilities can both
+    observe `spent < cap` and both commit success rows — the audit's
+    classic TOCTOU race documented in M-23.
+
+    Strategy:
+    - SQLite: issue a no-op UPDATE on the household row. Any UPDATE in
+      a SQLAlchemy session escalates the connection's transaction from
+      DEFERRED to RESERVED, which is SQLite's single-writer chokepoint;
+      concurrent gates serialize through here. The row content is
+      unchanged (``SET id = id``), so this is purely a lock acquisition.
+    - PostgreSQL (Phase 9): issue ``SELECT 1 FROM households ... FOR UPDATE``
+      to acquire a row-level lock with the same serialization semantics
+      without writing the row.
+
+    The lock is held until the surrounding session's transaction commits —
+    callers MUST commit (or rollback) after writing the matching
+    ``ai_invocations`` row, otherwise the lock leaks and subsequent gates
+    will block.
+    """
+    dialect_name = session.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        session.execute(
+            text("SELECT 1 FROM households WHERE id = :hid FOR UPDATE"),
+            {"hid": str(household_id)},
+        )
+    else:
+        # SQLite (and other dialects without FOR UPDATE — sqlite is the
+        # only one in scope today). The no-op UPDATE promotes BEGIN to
+        # RESERVED, blocking concurrent writers until commit.
+        session.execute(
+            text("UPDATE households SET id = id WHERE id = :hid"),
+            {"hid": str(household_id)},
+        )
 
 
 def check_cost_cap(
@@ -187,7 +227,15 @@ def enforce_pre_call(
     ``cost_cap_behaviour=degrade`` and a configured ``fallback_provider``,
     returns an approval that swaps provider/model. Otherwise, returns a
     block — the capability writes the matching audit row and raises.
+
+    The whole check runs under a household write-lock (#334, M-23) so
+    that two concurrent callers can't both observe ``spent < cap`` and
+    both commit success rows. The lock releases when the surrounding
+    session commits or rolls back, which is the same boundary the
+    capability uses to persist the matching ``ai_invocations`` row.
     """
+    _acquire_household_gate_lock(session, household_id)
+
     rate = check_rate_limit(
         session,
         household_id=household_id,
