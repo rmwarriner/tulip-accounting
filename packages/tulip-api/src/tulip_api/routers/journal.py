@@ -100,6 +100,15 @@ def export(
         default=None,
         description="Inclusive upper bound on transaction date (YYYY-MM-DD).",
     ),
+    include_metadata: bool = Query(
+        default=True,
+        description=(
+            "When true (default), the export's header comments name the "
+            "household + Tulip provenance. Set false (privacy audit L-5 / "
+            "L-17, #351) for handoffs to third parties — e.g. a tax "
+            "preparer — where the household name shouldn't ride along."
+        ),
+    ),
     claims: Claims = Depends(get_current_claims),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
@@ -118,6 +127,7 @@ def export(
         end=end,
         # #229: drop postings on private accounts the caller can't see.
         visible_account_filter=lambda vis, by: _filter_for_role(vis, by, claims),
+        include_metadata=include_metadata,
     )
     suffix_parts = []
     if start is not None:

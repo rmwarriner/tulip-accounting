@@ -173,3 +173,33 @@ class TestJournalExport:
         body = r.text
         assert "Expense:Misc Food" in body
         assert "Asset:Cash on hand" in body
+
+
+class TestExportMetadataOptOut:
+    """#351 / privacy audit L-5 / L-17: ``?include_metadata=false`` mutes
+    the header comments naming the household + Tulip provenance. The
+    transactions themselves are unchanged either way.
+    """
+
+    def test_default_export_carries_household_name_header(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.get("/v1/journal/export", headers=auth_h)
+        assert r.status_code == 200
+        body = r.text
+        assert "Tulip Accounting" in body
+        # The test fixture's household name is the default 'Smith' (see registered fixture).
+        assert "household:" in body
+
+    def test_include_metadata_false_drops_header_comments(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.get(
+            "/v1/journal/export?include_metadata=false",
+            headers=auth_h,
+        )
+        assert r.status_code == 200
+        body = r.text
+        # The leading provenance + household-name comments are gone.
+        assert "Tulip Accounting" not in body
+        assert "household:" not in body

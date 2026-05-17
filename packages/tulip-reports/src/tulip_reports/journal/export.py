@@ -81,6 +81,7 @@ def export_journal(
     start: date_type | None = None,
     end: date_type | None = None,
     visible_account_filter: Callable[[str, UUID | None], bool] | None = None,
+    include_metadata: bool = True,
 ) -> bytes:
     """Render the household's posted transactions as a hledger journal.
 
@@ -92,6 +93,14 @@ def export_journal(
       whose every posting becomes invisible. The router supplies a
       closure over the request's claims; tests can pass ``None``
       to see every account (#229).
+
+    Privacy:
+    - ``include_metadata`` (default True) controls whether the export's
+      header comments carry the household name + tulip provenance. Set
+      False (privacy audit L-5 / L-17, #351) when the bytes are headed
+      to a tax preparer / accountant who doesn't need the household
+      identity surfaced in the file. The transactions themselves are
+      unchanged either way; only the leading comment block is muted.
     """
     from sqlalchemy import select
 
@@ -131,13 +140,14 @@ def export_journal(
     transactions = session.execute(tx_query).scalars().all()
 
     lines: list[str] = []
-    lines.append("; Tulip Accounting — hledger journal export")
-    lines.append(f"; household: {household.name}")
-    if start is not None:
-        lines.append(f"; from: {start.isoformat()}")
-    if end is not None:
-        lines.append(f"; to: {end.isoformat()}")
-    lines.append("")
+    if include_metadata:
+        lines.append("; Tulip Accounting — hledger journal export")
+        lines.append(f"; household: {household.name}")
+        if start is not None:
+            lines.append(f"; from: {start.isoformat()}")
+        if end is not None:
+            lines.append(f"; to: {end.isoformat()}")
+        lines.append("")
 
     for tx in transactions:
         # Postings: stable order by amount sign (debits first, then credits)

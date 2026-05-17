@@ -194,3 +194,24 @@ class TestImportErrors:
 
 # Keep the date import in scope (used implicitly by some test bodies).
 _ = date
+
+
+class TestParseLineCap:
+    """#351 / security audit L-12: the journal parser bounds each line
+    before any regex runs. A pathologically long line surfaces as a
+    typed parse error instead of risking catastrophic backtracking.
+    """
+
+    def test_pathological_long_line_surfaces_as_parse_error(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """A 5000-char description (above the 4096 cap) is rejected with
+        ``journal.parse_failed`` + a line-too-long error.
+        """
+        oversize_line = "2026-05-01 " + ("A" * 5000) + "\n"
+        body = oversize_line + "    Asset:Cash  1.00 USD\n    Expense:Misc  -1.00 USD\n"
+        r = _post_journal(client, auth_h, body)
+        assert r.status_code == 400
+        assert r.json()["code"] == "journal.parse_failed"
+        errors = r.json()["errors"]
+        assert any("line exceeds" in e["message"] for e in errors)

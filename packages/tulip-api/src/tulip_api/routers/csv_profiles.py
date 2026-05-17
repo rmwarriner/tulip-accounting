@@ -8,7 +8,7 @@ mandatory; ``yaml.load`` is banned by an architecture test in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import structlog
@@ -277,6 +277,13 @@ def export_profile(
     return Response(content=row.yaml_body, media_type="application/x-yaml")
 
 
+#: Security audit L-11 (#351): cap matches THREAT_MODEL.md §5.2's
+#: published 100 KB claim. CSV profiles are mapping configuration —
+#: real ones come in under 4 KiB. The cap defends against a yaml.safe_load
+#: that allocates aggressively on degenerate input.
+_MAX_CSV_PROFILE_BYTES: Final[int] = 100 * 1024
+
+
 @router.post(
     "/import",
     response_model=CsvProfileRead,
@@ -285,6 +292,7 @@ def export_profile(
         400: problem_response("csv_profile.invalid_yaml"),
         401: problem_response("auth.unauthorized"),
         409: problem_response("csv_profile.duplicate_name"),
+        413: problem_response("request.payload_too_large"),
         422: problem_response("validation.failed"),
     },
 )
@@ -299,6 +307,10 @@ def import_profile(
     session: Session = Depends(get_session),  # noqa: B008
 ) -> CsvProfileRead:
     """Import a CSV profile from a YAML body (round-trip with /export)."""
+    if len(body) > _MAX_CSV_PROFILE_BYTES:
+        from tulip_api.errors import RequestPayloadTooLargeError
+
+        raise RequestPayloadTooLargeError(max_bytes=_MAX_CSV_PROFILE_BYTES)
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError as exc:

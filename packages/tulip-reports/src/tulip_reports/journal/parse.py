@@ -68,12 +68,19 @@ class ParsedJournal:
     errors: list[JournalParseError] = field(default_factory=list)
 
 
+#: Per-line length cap (security audit L-12, #351). Real journal lines
+#: are well under 200 chars; the cap defends against pathologically long
+#: lines that could push the regex into catastrophic backtracking. Lines
+#: that exceed surface as ``line too long`` parse errors.
+_MAX_LINE_LEN: int = 4096
+
+
 _HEADER_RE = re.compile(
     r"""
     ^(?P<date>\d{4}-\d{2}-\d{2})    # ISO date
     \s+
-    (?:\((?P<ref>[^)]+)\)\s+)?      # optional (reference) prefix
-    (?P<description>.+?)            # the rest of the line is the description
+    (?:\((?P<ref>[^)]{1,200})\)\s+)?  # optional (reference) prefix, bounded
+    (?P<description>[^\r\n]+?)        # rest of the line (single-line; no LF)
     \s*$
     """,
     re.VERBOSE,
@@ -82,11 +89,11 @@ _HEADER_RE = re.compile(
 
 _POSTING_RE = re.compile(
     r"""
-    ^\s+                              # leading whitespace (indented)
-    (?P<account>\S+(?:\s\S+)*?)       # account path: tokens joined by single spaces
-    \s{2,}                            # at least two spaces separator (hledger spec)
-    (?P<amount>-?\d+(?:\.\d+)?)       # decimal amount, optionally negative
-    \s+
+    ^[ \t]+                           # leading indent (TAB or spaces only)
+    (?P<account>\S(?:[\S ]{0,500}\S)?)  # account path: bounded, possessive-ish
+    [ \t]{2,}                         # at least two spaces separator (hledger spec)
+    (?P<amount>-?\d{1,18}(?:\.\d{1,8})?)  # decimal amount, bounded digits
+    [ \t]+
     (?P<currency>[A-Z]{3,5})          # currency code (3-5 uppercase letters)
     \s*$
     """,
@@ -131,6 +138,18 @@ def parse_journal(text: str) -> ParsedJournal:
         )
 
     for line_num, raw_line in enumerate(text.splitlines(), start=1):
+        # Security audit L-12 (#351): bound each line before regex runs.
+        # Real journal lines are well under 200 chars; anything past
+        # _MAX_LINE_LEN is pathological and surfaces as a typed error
+        # rather than risking catastrophic backtracking.
+        if len(raw_line) > _MAX_LINE_LEN:
+            errors.append(
+                JournalParseError(
+                    line_number=line_num,
+                    message=f"line exceeds {_MAX_LINE_LEN}-char cap; cannot parse",
+                )
+            )
+            continue
         stripped = raw_line.strip()
         if not stripped or stripped.startswith(";"):
             # Blank line ends the current transaction; comments are ignored.
