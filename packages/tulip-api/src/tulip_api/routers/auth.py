@@ -355,7 +355,12 @@ def login_mfa(
         session.commit()
         raise InvalidMfaTokenError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     if not verify_totp_code(secret, body.code):
         log.info("user.login.mfa_code_rejected", user_id=str(user.id))
         AuditLogWriter(session, user.household_id).write(
@@ -569,7 +574,12 @@ def mfa_enroll(
         raise MfaAlreadyEnrolledError()
 
     secret = generate_totp_secret()
-    user.totp_secret_encrypted = encrypt_totp_secret(secret, master_key=settings.master_key)
+    user.totp_secret_encrypted = encrypt_totp_secret(
+        secret,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     session.flush()
 
     AuditLogWriter(session, user.household_id).write(
@@ -628,7 +638,12 @@ def mfa_verify(
     if user.totp_secret_encrypted is None:
         raise MfaNotPendingError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     if not verify_totp_code(secret, body.code):
         log.info("user.mfa_verify_failed", user_id=str(user.id))
         raise MfaInvalidCodeError()
@@ -758,7 +773,12 @@ def mfa_regenerate_recovery_codes(
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
         raise MfaNotEnrolledError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     if not verify_totp_code(secret, body.code):
         log.info("user.mfa_regenerate_failed", user_id=str(user.id))
         raise MfaInvalidCodeError()

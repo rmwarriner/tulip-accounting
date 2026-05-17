@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from alembic.command import downgrade, upgrade
 from alembic.config import Config
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -114,6 +114,106 @@ class TestCompositeFkAiInvocationId:
             with pytest.raises(IntegrityError):
                 s.flush()
             s.rollback()
+
+
+class TestEncryptionV1Wrap:
+    """#338 (audit M-6): pre-#338 v1 blobs get a ``0x01`` prefix at upgrade."""
+
+    def _build_pre338_blob(self, master_key: bytes, plaintext: bytes) -> bytes:
+        """Mint a raw v1 blob (no version prefix) as if pre-#338 had written it."""
+        import os as _os
+
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        nonce = _os.urandom(12)
+        ct = AESGCM(master_key).encrypt(nonce, plaintext, associated_data=None)
+        return nonce + ct
+
+    def test_legacy_blob_gets_v1_prefix(self, tmp_path):
+        """Migrate forward with a pre-existing legacy blob — assert it's wrapped."""
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as _text
+
+        from tulip_storage.encryption import decrypt_field
+
+        db_path = tmp_path / "wrap.db"
+        cfg = _make_alembic_cfg(f"sqlite:///{db_path}")
+        master_key = b"\x42" * 32
+
+        # Step to the revision BEFORE the wrap migration so we can plant
+        # a raw v1 blob in the legacy shape, then forward-migrate.
+        upgrade(cfg, "a6f1c9b3d8e4")
+
+        eng = create_engine(f"sqlite:///{db_path}", future=True)
+        hid = uuid4()
+        uid = uuid4()
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    _text(
+                        "INSERT INTO households (id, name, base_currency) VALUES (:id, :name, :cur)"
+                    ),
+                    {"id": str(hid), "name": "T", "cur": "USD"},
+                )
+                conn.execute(
+                    _text(
+                        "INSERT INTO users (household_id, id, email, password_hash, "
+                        "display_name, role, totp_secret_encrypted) VALUES "
+                        "(:h, :i, :e, :p, :n, 'admin', :blob)"
+                    ),
+                    {
+                        "h": str(hid),
+                        "i": str(uid),
+                        "e": "a@b.c",
+                        "p": "$argon2i$x",
+                        "n": "T",
+                        "blob": self._build_pre338_blob(master_key, b"legacy-totp"),
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        # Forward-migrate.
+        upgrade(cfg, "e9c4f1b7d2a5")
+
+        # The blob now starts with 0x01 and decrypts via the v1 path
+        # (AAD is ignored on v1).
+        eng = create_engine(f"sqlite:///{db_path}", future=True)
+        try:
+            with eng.connect() as conn:
+                blob = conn.execute(
+                    _text("SELECT totp_secret_encrypted FROM users WHERE id = :i"),
+                    {"i": str(uid)},
+                ).scalar_one()
+            assert blob[0] == 0x01
+            assert decrypt_field(bytes(blob), master_key, aad=b"any-aad") == b"legacy-totp"
+        finally:
+            eng.dispose()
+
+        # Downgrade strips the 0x01 prefix back to the legacy raw shape.
+        downgrade(cfg, "a6f1c9b3d8e4")
+        eng = create_engine(f"sqlite:///{db_path}", future=True)
+        try:
+            with eng.connect() as conn:
+                blob_after = conn.execute(
+                    _text("SELECT totp_secret_encrypted FROM users WHERE id = :i"),
+                    {"i": str(uid)},
+                ).scalar_one()
+            assert blob_after == bytes(blob[1:])
+        finally:
+            eng.dispose()
+
+    def test_migration_is_idempotent(self, tmp_path):
+        """Re-running the wrap migration after it's done is a no-op."""
+        from tulip_storage.encryption import wrap_legacy_v1_blob
+
+        db_path = tmp_path / "wrap-idem.db"
+        cfg = _make_alembic_cfg(f"sqlite:///{db_path}")
+        upgrade(cfg, "e9c4f1b7d2a5")
+        upgrade(cfg, "e9c4f1b7d2a5")  # second time — no error.
+        # Sanity: helper directly.
+        ct = b"\x01" + b"\xaa" * (12 + 16 + 5)
+        assert wrap_legacy_v1_blob(ct) == ct
 
 
 class TestMigrationsRoundTrip:
@@ -317,7 +417,6 @@ class TestDeprecatedViewerRole:
         assert not hasattr(UserRole, "VIEWER")
 
     def test_reading_raw_viewer_row_fails_via_orm(self, migrated_db):
-        from sqlalchemy import text
 
         from tulip_storage.models import User
 
@@ -345,7 +444,7 @@ class TestDeprecatedViewerRole:
 
     def test_upgrade_demotes_existing_viewer_rows_to_member(self, tmp_path):
         """downgrade → insert VIEWER → upgrade demotes the row to MEMBER."""
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine
 
         db_path = tmp_path / "tulip.db"
         db_url = f"sqlite:///{db_path}"
@@ -422,7 +521,6 @@ class TestAuditLogImmutabilityTrigger:
         return h, row
 
     def test_direct_update_is_rejected(self, migrated_db):
-        from sqlalchemy import text
 
         _, Smaker = migrated_db
         with Smaker() as s:
@@ -432,7 +530,6 @@ class TestAuditLogImmutabilityTrigger:
             s.commit()
 
     def test_direct_delete_is_rejected(self, migrated_db):
-        from sqlalchemy import text
 
         _, Smaker = migrated_db
         with Smaker() as s:
@@ -448,7 +545,6 @@ class TestAuditLogImmutabilityTrigger:
         trigger is reinstated.
         """
         from sqlalchemy import delete as sa_delete
-        from sqlalchemy import text
 
         from tulip_storage.audit_log_helpers import audit_log_deletion_allowed
 

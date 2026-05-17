@@ -30,6 +30,17 @@ from tulip_storage.models import Attachment
 
 log = logging.getLogger("tulip_storage.repositories.attachment")
 
+
+def _attachment_aad(content_hash: str) -> bytes:
+    """Per-content AAD for attachment AEAD (#338, M-1).
+
+    Bound to ``content_hash`` rather than ``(household_id, attachment_id)``
+    so the cross-household dedup of content-addressed blob storage stays
+    correct. See ``write`` for the full rationale.
+    """
+    return f"attachments:content:{content_hash}".encode()
+
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -84,7 +95,20 @@ class AttachmentRepository:
         ``attachment_root / <content_hash>``. Caller must ``session.commit()``.
         """
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
-        encrypted = encrypt_field(raw_bytes, self._master_key)
+        # Per-content AAD (#338, M-1). Attachment storage is content-
+        # addressed (dedup by content_hash across households + rows), so
+        # the AAD can't bind to (household_id, attachment_id) without
+        # breaking dedup — a second household uploading the same plaintext
+        # would overwrite the file with a ciphertext authenticated under
+        # a different AAD, making the first row undecryptable. Binding
+        # the AAD to ``content_hash`` keeps dedup working while still
+        # blocking the cross-row swap: any row pointing at a *different*
+        # content_hash would carry a different AAD and decrypt would fail.
+        encrypted = encrypt_field(
+            raw_bytes,
+            self._master_key,
+            aad=_attachment_aad(content_hash),
+        )
 
         self._attachment_root.mkdir(parents=True, exist_ok=True)
         target = self._attachment_root / content_hash
@@ -116,7 +140,7 @@ class AttachmentRepository:
             )
         path = self._attachment_root / att.content_hash
         ciphertext = path.read_bytes()
-        return decrypt_field(ciphertext, self._master_key)
+        return decrypt_field(ciphertext, self._master_key, aad=_attachment_aad(att.content_hash))
 
     def delete(self, attachment_id: UUID) -> bool:
         """Delete an attachment row and unlink its ciphertext if no rows remain.

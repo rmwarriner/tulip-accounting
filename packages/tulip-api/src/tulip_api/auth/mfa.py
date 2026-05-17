@@ -7,11 +7,14 @@ secrets via the field-encryption helper in ``tulip-storage``.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pyotp
 
-from tulip_storage.encryption.field import decrypt_field, encrypt_field
+from tulip_storage.encryption.field import decrypt_field, encrypt_field, field_aad
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 #: Default issuer name shown in authenticator apps.
 DEFAULT_ISSUER: Final[str] = "Tulip Accounting"
@@ -42,11 +45,49 @@ def verify_totp_code(secret: str, code: str) -> bool:
     return pyotp.TOTP(secret).verify(code, valid_window=_VERIFY_WINDOW)
 
 
-def encrypt_totp_secret(secret: str, *, master_key: bytes) -> bytes:
-    """Encrypt a base32 TOTP secret for storage in ``users.totp_secret_encrypted``."""
-    return encrypt_field(secret.encode("ascii"), master_key=master_key)
+def _totp_aad(*, household_id: UUID, user_id: UUID) -> bytes:
+    """AAD binding for the (users.totp_secret_encrypted, user-row) field (#338)."""
+    return field_aad(
+        table="users",
+        column="totp_secret_encrypted",
+        household_id=household_id,
+        row_id=user_id,
+    )
 
 
-def decrypt_totp_secret(blob: bytes, *, master_key: bytes) -> str:
-    """Decrypt a blob produced by :func:`encrypt_totp_secret`."""
-    return decrypt_field(blob, master_key=master_key).decode("ascii")
+def encrypt_totp_secret(
+    secret: str,
+    *,
+    master_key: bytes,
+    household_id: UUID,
+    user_id: UUID,
+) -> bytes:
+    """Encrypt a base32 TOTP secret for storage in ``users.totp_secret_encrypted``.
+
+    AAD binds the ciphertext to ``(household_id, user_id)`` so a future
+    DB-write attacker can't swap user A's TOTP secret onto user B (audit M-1).
+    """
+    return encrypt_field(
+        secret.encode("ascii"),
+        master_key=master_key,
+        aad=_totp_aad(household_id=household_id, user_id=user_id),
+    )
+
+
+def decrypt_totp_secret(
+    blob: bytes,
+    *,
+    master_key: bytes,
+    household_id: UUID,
+    user_id: UUID,
+) -> str:
+    """Decrypt a blob produced by :func:`encrypt_totp_secret`.
+
+    Reconstructs the same AAD the writer used; legacy v1 blobs decrypt
+    transparently without consulting the AAD.
+    """
+    return decrypt_field(
+        blob,
+        master_key=master_key,
+        aad=_totp_aad(household_id=household_id, user_id=user_id),
+    ).decode("ascii")

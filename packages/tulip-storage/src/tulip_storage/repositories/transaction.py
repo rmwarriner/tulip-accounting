@@ -19,7 +19,7 @@ from uuid import UUID
 
 from sqlalchemy import String, case, cast, delete, func, select, update
 
-from tulip_storage.encryption import decrypt_field, encrypt_field
+from tulip_storage.encryption import decrypt_field, encrypt_field, field_aad
 from tulip_storage.models import Posting, StatementLine, Transaction, TransactionStatus
 
 if TYPE_CHECKING:
@@ -140,6 +140,14 @@ class TransactionRepository:
             )
         return self._master_key
 
+    def _notes_aad(self, tx_id: UUID) -> bytes:
+        return field_aad(
+            table="transactions",
+            column="notes_encrypted",
+            household_id=self._household_id,
+            row_id=tx_id,
+        )
+
     def decrypt_notes(self, header: Transaction) -> str | None:
         """Return the plaintext notes for ``header`` or None when unset.
 
@@ -148,7 +156,9 @@ class TransactionRepository:
         if header.notes_encrypted is None:
             return None
         key = self._require_master_key()
-        return decrypt_field(header.notes_encrypted, key).decode("utf-8")
+        return decrypt_field(header.notes_encrypted, key, aad=self._notes_aad(header.id)).decode(
+            "utf-8"
+        )
 
     def get(self, tx_id: UUID) -> Transaction | None:
         """Return the Transaction header by id, or None."""
@@ -382,7 +392,9 @@ class TransactionRepository:
         notes_blob: bytes | None = None
         if notes is not None:
             key = self._require_master_key()
-            notes_blob = encrypt_field(notes.encode("utf-8"), key)
+            notes_blob = encrypt_field(
+                notes.encode("utf-8"), key, aad=self._notes_aad(domain_tx.id)
+            )
 
         header = Transaction(
             household_id=self._household_id,
@@ -578,7 +590,9 @@ class TransactionRepository:
                 header_values["notes_encrypted"] = None
             else:
                 key = self._require_master_key()
-                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
+                header_values["notes_encrypted"] = encrypt_field(
+                    notes.encode("utf-8"), key, aad=self._notes_aad(tx_id)
+                )
         self._session.execute(
             update(Transaction)
             .where(
@@ -664,7 +678,9 @@ class TransactionRepository:
                 header_values["notes_encrypted"] = None
             else:
                 key = self._require_master_key()
-                header_values["notes_encrypted"] = encrypt_field(notes.encode("utf-8"), key)
+                header_values["notes_encrypted"] = encrypt_field(
+                    notes.encode("utf-8"), key, aad=self._notes_aad(tx_id)
+                )
 
         if header_values:
             self._session.execute(

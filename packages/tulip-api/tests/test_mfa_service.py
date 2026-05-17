@@ -44,19 +44,34 @@ class TestProvisioningUri:
 
 
 class TestEncryptDecrypt:
+    def _hid(self):
+        from uuid import uuid4 as _u
+
+        return _u()
+
+    def _uid(self):
+        from uuid import uuid4 as _u
+
+        return _u()
+
     def test_round_trip(self):
         secret = generate_totp_secret()
-        blob = encrypt_totp_secret(secret, master_key=MASTER_KEY)
+        hid, uid = self._hid(), self._uid()
+        blob = encrypt_totp_secret(secret, master_key=MASTER_KEY, household_id=hid, user_id=uid)
         # Encrypted form must not equal plaintext.
         assert blob != secret.encode("ascii")
         # Round-trip restores plaintext.
-        assert decrypt_totp_secret(blob, master_key=MASTER_KEY) == secret
+        assert (
+            decrypt_totp_secret(blob, master_key=MASTER_KEY, household_id=hid, user_id=uid)
+            == secret
+        )
 
     def test_wrong_key_fails(self):
         secret = generate_totp_secret()
-        blob = encrypt_totp_secret(secret, master_key=MASTER_KEY)
+        hid, uid = self._hid(), self._uid()
+        blob = encrypt_totp_secret(secret, master_key=MASTER_KEY, household_id=hid, user_id=uid)
         with pytest.raises(Exception):  # noqa: B017 — InvalidCiphertextError
-            decrypt_totp_secret(blob, master_key=b"\x00" * 32)
+            decrypt_totp_secret(blob, master_key=b"\x00" * 32, household_id=hid, user_id=uid)
 
 
 class TestVerifyTotpCode:
