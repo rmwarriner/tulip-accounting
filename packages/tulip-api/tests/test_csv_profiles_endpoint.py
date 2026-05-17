@@ -213,3 +213,19 @@ class TestExportImport:
             content=b"name: : :\n  bad indent",
         )
         assert_problem(r, code="csv_profile.invalid_yaml", status=400)
+
+
+class TestImportSizeCap:
+    """#351 / security audit L-11: 100 KB cap matches THREAT_MODEL.md §5.2
+    and defends against a yaml.safe_load that allocates aggressively on
+    degenerate input.
+    """
+
+    def test_oversize_yaml_returns_413(self, client: TestClient, auth_h: dict[str, str]):
+        oversize = ("name: x\n" + ("# pad\n" * 30_000)).encode()  # >150 KB
+        r = client.post(
+            "/v1/imports/profiles/import",
+            headers={**auth_h, "content-type": "application/x-yaml"},
+            content=oversize,
+        )
+        assert_problem(r, code="request.payload_too_large", status=413)
