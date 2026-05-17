@@ -36,10 +36,10 @@ jobs:
     # runaway hypothesis loop from billing forever.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Cache apt packages (SQLCipher)
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: /var/cache/apt/archives
           key: apt-sqlcipher-${{ runner.os }}-v1
@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install -y libsqlcipher-dev sqlcipher
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: latest
           enable-cache: true
@@ -71,7 +71,7 @@ jobs:
         # .hypothesis/. Surface it so a developer can reproduce locally
         # by checking out the same commit + running the same test.
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hypothesis-examples
           path: .hypothesis/
