@@ -428,3 +428,43 @@ async def test_start_stop_lifecycle(
     await runner.stop()
 
     assert fired == [job_id]
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_last_error_does_not_leak_exception_message(
+    session_maker: sessionmaker[Session],
+    session: Session,
+    household: Household,
+) -> None:
+    """#343 / privacy audit M-13: handler-raised exception messages do
+    NOT land in ``scheduled_job_runs.last_error``. Class name + raise-
+    site file:line is recorded instead, so operators still get a
+    diagnosable signal without persisting PII-bearing exception text.
+    """
+    t0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+    clock = FakeClock(now=t0)
+    runner = _runner(session_maker, clock=clock)
+
+    pii_secret = "alice@example.com is the leaked email"
+
+    async def leaky_handler(job: ScheduledJob, _clock):
+        raise RuntimeError(pii_secret)
+
+    runner.register_handler("leaky", leaky_handler)
+    job_id = runner.schedule_one(
+        household_id=household.id,
+        kind="leaky",
+        payload={},
+        fire_at=t0,
+    )
+
+    await runner.run_once()
+    runs = _runs(session, household.id, job_id)
+    assert len(runs) == 1
+    last_error = runs[0].last_error or ""
+
+    # The PII string must not survive into the persisted last_error.
+    assert pii_secret not in last_error
+    # The class name + a file:line marker should be present.
+    assert "RuntimeError" in last_error
+    assert "at " in last_error
