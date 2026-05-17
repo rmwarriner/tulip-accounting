@@ -99,6 +99,10 @@ _ALLOWED_RELATIVE: Final[frozenset[str]] = frozenset(
         # introduce a circular-import between TransactionRepository and
         # StatementLineRepository.
         "tulip-storage/src/tulip_storage/repositories/transaction.py",
+        # Post-delete PII scanner (#346) reads StatementLine.raw_json to
+        # surface residual subject mentions. Read-only; never constructs
+        # or mutates a row.
+        "tulip-storage/src/tulip_storage/grep_pii.py",
     }
 )
 

@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from alembic.command import downgrade, upgrade
 from alembic.config import Config
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -114,6 +114,63 @@ class TestCompositeFkAiInvocationId:
             with pytest.raises(IntegrityError):
                 s.flush()
             s.rollback()
+
+
+class TestAuditLogCompositePk:
+    """#337 (audit M-12): ``audit_log`` PK is ``(household_id, id)`` post-migration."""
+
+    def test_audit_log_pk_is_composite_at_head(self, migrated_db):
+        _, maker = migrated_db
+        with maker() as s:
+            cols = [r[1] for r in s.execute(text("PRAGMA table_info(audit_log)")) if r[5]]
+        # PRAGMA table_info `pk` (column 5) is 1-based ordinal in the PK;
+        # both household_id and id should be present in the PK column set.
+        assert "household_id" in cols
+        assert "id" in cols
+        assert set(cols) == {"household_id", "id"}
+
+    def test_immutability_triggers_survive_pk_migration(self, migrated_db):
+        """The PK swap recreates the table; triggers must be reinstalled."""
+        _, maker = migrated_db
+        with maker() as s:
+            names = {
+                r[0]
+                for r in s.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='trigger' "
+                        "AND name LIKE 'trg_audit_log%'"
+                    )
+                )
+            }
+        assert names == {"trg_audit_log_no_update", "trg_audit_log_no_delete"}
+
+    def test_audit_log_pk_round_trips(self, tmp_path):
+        """Upgrade → downgrade-1 → upgrade restores the composite PK + triggers."""
+        from sqlalchemy import create_engine
+
+        db_path = tmp_path / "audit_pk_roundtrip.db"
+        cfg = _make_alembic_cfg(f"sqlite:///{db_path}")
+        upgrade(cfg, "head")
+        downgrade(cfg, "-1")
+        upgrade(cfg, "head")
+
+        eng = create_engine(f"sqlite:///{db_path}", future=True)
+        try:
+            with eng.connect() as conn:
+                pk_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(audit_log)")) if r[5]]
+                trigger_names = {
+                    r[0]
+                    for r in conn.execute(
+                        text(
+                            "SELECT name FROM sqlite_master WHERE type='trigger' "
+                            "AND name LIKE 'trg_audit_log%'"
+                        )
+                    )
+                }
+        finally:
+            eng.dispose()
+        assert set(pk_cols) == {"household_id", "id"}
+        assert trigger_names == {"trg_audit_log_no_update", "trg_audit_log_no_delete"}
 
 
 class TestMigrationsRoundTrip:

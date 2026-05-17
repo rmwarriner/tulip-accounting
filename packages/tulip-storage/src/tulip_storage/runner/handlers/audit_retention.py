@@ -136,10 +136,13 @@ _RETENTION_TIER_BY_ACTION: dict[str, str] = {
     "household.erase_requested": "admin_days",
     "household.audit_policy_set": "admin_days",
     "audit.pruned": "admin_days",  # the prune handler's own summary row
+    "admin.grep_pii_run": "admin_days",  # #346 post-delete verification scan
     "csv_profile_create": "admin_days",
     "csv_profile_update": "admin_days",
     "csv_profile_delete": "admin_days",
     "csv_profile_import": "admin_days",
+    "backup.created": "admin_days",
+    "backup.restored": "admin_days",
 }
 
 

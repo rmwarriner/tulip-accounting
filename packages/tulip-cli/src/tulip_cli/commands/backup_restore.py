@@ -19,6 +19,7 @@ from tulip_cli.backup import (
     resolve_db_path_from_url,
     restore_backup,
     write_backup,
+    write_backup_audit_rows,
 )
 from tulip_cli.backup import (
     load_master_key_from_env as _load_master_key,
@@ -81,6 +82,17 @@ def backup_command(
             tulip_version=_tulip_version(),
             out=sys.stdout.buffer,
         )
+        write_backup_audit_rows(
+            db_path=db_path,
+            action="backup.created",
+            metadata={
+                "out": "-",
+                "format_version": manifest.format_version,
+                "tulip_version": manifest.tulip_version,
+                "alembic_head": manifest.alembic_head,
+                "timestamp": manifest.timestamp,
+            },
+        )
         if not as_json:
             # Stderr so stdout is the tar bytes only.
             typer.echo(f"backup: streamed to stdout (timestamp {manifest.timestamp})", err=True)
@@ -102,6 +114,19 @@ def backup_command(
         if out_path.exists():
             out_path.unlink()
         raise typer.Exit(2) from None
+
+    write_backup_audit_rows(
+        db_path=db_path,
+        action="backup.created",
+        metadata={
+            "out": str(out_path),
+            "format_version": manifest.format_version,
+            "tulip_version": manifest.tulip_version,
+            "alembic_head": manifest.alembic_head,
+            "timestamp": manifest.timestamp,
+            "size_bytes": out_path.stat().st_size,
+        },
+    )
 
     if as_json:
         sys.stdout.write(
@@ -179,6 +204,19 @@ def restore_command(
     except RestoreError as exc:
         typer.echo(f"restore: {exc}", err=True)
         raise typer.Exit(2) from None
+
+    write_backup_audit_rows(
+        db_path=db_path,
+        action="backup.restored",
+        metadata={
+            "in_path": str(in_path),
+            "format_version": manifest.format_version,
+            "tulip_version": manifest.tulip_version,
+            "alembic_head": manifest.alembic_head,
+            "hostname": manifest.hostname,
+            "timestamp": manifest.timestamp,
+        },
+    )
 
     if as_json:
         sys.stdout.write(

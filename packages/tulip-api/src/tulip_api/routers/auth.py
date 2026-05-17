@@ -356,7 +356,8 @@ def login_mfa(
         raise InvalidMfaTokenError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
-    if not verify_totp_code(secret, body.code):
+    verified, matched_step = verify_totp_code(secret, body.code, last_step=user.last_totp_step)
+    if not verified:
         log.info("user.login.mfa_code_rejected", user_id=str(user.id))
         AuditLogWriter(session, user.household_id).write(
             action="mfa.code_rejected",
@@ -371,6 +372,10 @@ def login_mfa(
         session.commit()
         raise MfaInvalidCodeError()
 
+    # Replay-defence: persist the highest accepted step in the same
+    # commit as the session mint (security audit M-5, #330).
+    if matched_step is not None:
+        user.last_totp_step = matched_step
     AuditLogWriter(session, user.household_id).write(
         action="login_mfa_success",
         actor_kind="user",
@@ -629,7 +634,14 @@ def mfa_verify(
         raise MfaNotPendingError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
-    if not verify_totp_code(secret, body.code):
+    # Replay defence (#330) does NOT apply on enrollment-verify: the
+    # user has just typed the code from their authenticator app and is
+    # about to log in with the same code — the replay gate would lock
+    # them out of their own first login. The login-mfa path is where
+    # the replay gate matters (a token-stealer with a captured mfa
+    # challenge token could otherwise re-submit a window-valid code).
+    verified, _ = verify_totp_code(secret, body.code)
+    if not verified:
         log.info("user.mfa_verify_failed", user_id=str(user.id))
         raise MfaInvalidCodeError()
 
@@ -759,7 +771,11 @@ def mfa_regenerate_recovery_codes(
         raise MfaNotEnrolledError()
 
     secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
-    if not verify_totp_code(secret, body.code):
+    # Replay defence (#330) does not apply on the regenerate-recovery
+    # path either — the same fresh-MFA gate as enroll. The login-mfa
+    # path is the load-bearing site.
+    verified, _ = verify_totp_code(secret, body.code)
+    if not verified:
         log.info("user.mfa_regenerate_failed", user_id=str(user.id))
         raise MfaInvalidCodeError()
 

@@ -16,21 +16,26 @@ from tulip_storage.models.household import Household
 class AuditLog(Base):
     """An append-only audit row.
 
-    Schema follows ARCHITECTURE §4.1. v1 doesn't physically enforce
-    immutability (true OS-level append-only is deferred to the Postgres
-    phase per §1.3); the application layer simply never updates or
-    deletes rows in this table.
+    Schema follows ARCHITECTURE §4.1. Composite primary key
+    ``(household_id, id)`` matches the household-scoped-model pattern
+    in §3.3 (#337, audit M-12): cross-tenant inserts become a schema-
+    level impossibility rather than a writer-class invariant. The single
+    -column FK to ``households.id`` stays — audit_log has no children, so
+    no other table needs a composite FK into it.
+
+    Application-level immutability (the writer never updates or deletes
+    rows) is paired with SQLite triggers from #333 (M-22).
     """
 
     __tablename__ = "audit_log"
 
-    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True)
     household_id: Mapped[UUID] = mapped_column(
         GUID(),
         ForeignKey("households.id", ondelete="CASCADE"),
-        nullable=False,
+        primary_key=True,
         index=True,
     )
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )

@@ -26,6 +26,10 @@ from tulip_storage.runner.handlers.audit_retention import (
 )
 from tulip_storage.runner.handlers.daily_insights import make_daily_insights_handler
 from tulip_storage.runner.handlers.envelope_refill import make_envelope_refill_handler
+from tulip_storage.runner.handlers.session_retention import (
+    make_session_retention_handler,
+    run_session_retention,
+)
 
 __all__ = [
     "AI_INVOCATION_RETENTION_DAYS",
@@ -34,7 +38,9 @@ __all__ = [
     "make_audit_retention_handler",
     "make_daily_insights_handler",
     "make_envelope_refill_handler",
+    "make_session_retention_handler",
     "run_ai_retention",
     "run_attachment_gc",
     "run_audit_retention",
+    "run_session_retention",
 ]

@@ -266,3 +266,98 @@ class TestPostAuditPrune:
 
         r = client.post("/v1/admin/audit-prune", headers=member_h)
         assert_problem(r, code="auth.forbidden", status=403)
+
+
+class TestGetGrepPii:
+    """#346: GET /v1/admin/grep-pii — post-delete erasure verification."""
+
+    def test_returns_matches_for_existing_pii(
+        self, client: TestClient, admin_h: dict[str, str]
+    ) -> None:
+        # The admin's registration row's audit_log carries the email in
+        # after_snapshot — the scan should find it.
+        r = client.get(
+            "/v1/admin/grep-pii",
+            headers=admin_h,
+            params={"email": "admin@example.com"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["needles"] == ["email"]
+        assert any(
+            m["table"] == "audit_log" and m["column"] == "after_snapshot" for m in body["matches"]
+        )
+
+    def test_clean_household_returns_no_matches(
+        self, client: TestClient, admin_h: dict[str, str]
+    ) -> None:
+        r = client.get(
+            "/v1/admin/grep-pii",
+            headers=admin_h,
+            params={"email": "nobody-here@example.com"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["matches"] == []
+
+    def test_no_needles_returns_400(self, client: TestClient, admin_h: dict[str, str]) -> None:
+        r = client.get("/v1/admin/grep-pii", headers=admin_h)
+        assert r.status_code == 400
+        body = r.json()
+        assert body["code"] == "request.body_invalid"
+
+    def test_scan_writes_admin_audit_row(
+        self,
+        client: TestClient,
+        admin_h: dict[str, str],
+        session_maker,
+    ) -> None:
+        """The scan itself is auditable — ``admin.grep_pii_run`` row carries
+        needle *kinds* and the match count (no PII bytes).
+        """
+        client.get(
+            "/v1/admin/grep-pii",
+            headers=admin_h,
+            params={"email": "admin@example.com"},
+        )
+
+        from tulip_storage.models import AuditLog
+
+        with session_maker() as s:
+            row = (
+                s.query(AuditLog)
+                .filter(AuditLog.action == "admin.grep_pii_run")
+                .order_by(AuditLog.occurred_at.desc())
+                .first()
+            )
+            assert row is not None, "expected an admin.grep_pii_run audit row"
+            md = row.metadata_ or {}
+            assert md.get("needle_kinds") == ["email"]
+            assert isinstance(md.get("match_count"), int)
+
+    def test_member_returns_403(
+        self,
+        client: TestClient,
+        admin_h: dict[str, str],
+        session_maker,
+    ) -> None:
+        # Demote admin to MEMBER to reuse the existing auth path.
+        from sqlalchemy import update
+
+        from tulip_storage.models import User, UserRole
+
+        with session_maker() as s:
+            s.execute(update(User).values(role=UserRole.MEMBER))
+            s.commit()
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": "admin@example.com", "password": "correct horse battery staple"},
+        )
+        member_h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        r = client.get(
+            "/v1/admin/grep-pii",
+            headers=member_h,
+            params={"email": "admin@example.com"},
+        )
+        assert_problem(r, code="auth.forbidden", status=403)

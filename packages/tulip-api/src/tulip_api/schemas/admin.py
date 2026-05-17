@@ -76,3 +76,25 @@ class AuditPruneResult(BaseModel):
     household_id: UUID
     deleted_per_tier: dict[str, int]
     total_deleted: int
+
+
+class GrepPiiMatchRead(BaseModel):
+    """One match in the GET /v1/admin/grep-pii report (#346)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    table: str
+    column: str
+    row_id: str
+    snippet: str
+    needle: str
+
+
+class GrepPiiResult(BaseModel):
+    """Response shape for GET /v1/admin/grep-pii (#346)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    household_id: UUID
+    needles: list[str]
+    matches: list[GrepPiiMatchRead]

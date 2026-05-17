@@ -1,6 +1,10 @@
 {
   "permissions": {
     "defaultMode": "acceptEdits",
+    "autoMode": {
+      "trustedRepositories": ["rmwarriner/tulip-accounting"],
+      "trustedDomains": ["api.github.com", "localhost"]
+    },
     "allow": [
       "Bash(uv *)",
       "Bash(uvx *)",

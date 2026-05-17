@@ -63,19 +63,27 @@ class TestVerifyTotpCode:
     def test_accepts_current_code(self):
         secret = generate_totp_secret()
         code = pyotp.TOTP(secret).now()
-        assert verify_totp_code(secret, code) is True
+        ok, step = verify_totp_code(secret, code)
+        assert ok is True
+        assert step is not None
 
     def test_rejects_wrong_code(self):
         secret = generate_totp_secret()
         # 000000 is statistically near-certain not to be the current code.
         # Even on the off chance it is, the next assertion below will fail
         # on a different random secret — flake budget is effectively zero.
-        assert verify_totp_code(secret, "000000") is False
+        ok, step = verify_totp_code(secret, "000000")
+        assert ok is False
+        assert step is None
 
     def test_rejects_garbage(self):
         secret = generate_totp_secret()
-        assert verify_totp_code(secret, "not-a-code") is False
-        assert verify_totp_code(secret, "") is False
+        ok1, step1 = verify_totp_code(secret, "not-a-code")
+        assert ok1 is False
+        assert step1 is None
+        ok2, step2 = verify_totp_code(secret, "")
+        assert ok2 is False
+        assert step2 is None
 
     def test_accepts_previous_window(self):
         # ±1 window tolerates clock skew up to ±30s, the standard practice.
@@ -85,7 +93,9 @@ class TestVerifyTotpCode:
         import time
 
         past_code = totp.at(int(time.time()) - 30)
-        assert verify_totp_code(secret, past_code) is True
+        ok, step = verify_totp_code(secret, past_code)
+        assert ok is True
+        assert step is not None
 
 
 def _b32_decodable(secret: str) -> bool:

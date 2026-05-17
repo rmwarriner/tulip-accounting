@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     DateTime,
     ForeignKey,
     LargeBinary,
@@ -60,6 +61,11 @@ class User(Base):
     totp_enrolled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Highest TOTP step (``int(time.time()) // 30``) the user has
+    # successfully verified. Every subsequent verify refuses matches at
+    # or below this step (security audit M-5, #330). NULL = never
+    # verified a TOTP yet — verify treats as "no replay history."
+    last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
