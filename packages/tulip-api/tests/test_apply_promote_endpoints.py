@@ -268,3 +268,54 @@ class TestPromoteLineErrors:
 
         r = client.post(f"/v1/imports/{parsed_batch}/lines/{uuid4()}/promote", headers=auth_h)
         assert_problem(r, status=404, code="import.line.not_found")
+
+
+class TestApplyExceptionDoesNotLeakLock:
+    """#200: an exception bubbling from apply must not leave the SQLite
+    write lock held — subsequent requests must continue to work without
+    a process restart. The bug surfaced during a Banktivity migration
+    where ai.categorize failures wedged the API until docker compose
+    restart.
+
+    This test monkey-patches ``promote_statement_line`` to raise
+    mid-batch, fires the apply endpoint (expects 500), then immediately
+    fires a follow-up request that must NOT see "database is locked".
+    """
+
+    def test_subsequent_request_succeeds_after_apply_5xx(
+        self,
+        app,
+        auth_h: dict[str, str],
+        parsed_batch: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tulip_api.services import import_apply as svc
+
+        async def _raise(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("simulated mid-apply failure (#200 regression)")
+
+        monkeypatch.setattr(svc, "promote_statement_line", _raise)
+
+        # raise_server_exceptions=False so the catch-all 500 handler
+        # emits the typed Problem-Details body rather than re-raising
+        # into pytest.
+        leak_client = TestClient(app, raise_server_exceptions=False)
+
+        # First request: apply raises mid-flight → 500 with the typed
+        # server.internal_error body (catch-all handler).
+        r1 = leak_client.post(f"/v1/imports/{parsed_batch}/apply", headers=auth_h)
+        assert r1.status_code == 500, r1.text
+        assert "internal_error" in r1.text.lower() or "server" in r1.text.lower()
+
+        # Second request: must not block. Before the fix, this returned
+        # 500 "database is locked"; the lock leaked across the request
+        # boundary.
+        r2 = leak_client.get("/v1/accounts", headers=auth_h)
+        assert r2.status_code == 200, r2.text
+        # And a write request must also work.
+        r3 = leak_client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Post-failure", "type": "expense", "currency": "USD", "code": "5200"},
+        )
+        assert r3.status_code == 201, r3.text
