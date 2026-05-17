@@ -133,3 +133,27 @@ class TestDegradedStates:
         assert body["alembic_head_match"] is False
         assert body["alembic_head_expected"] == "deadbeef0000"
         assert body["alembic_head_in_db"] != "deadbeef0000"
+
+
+class TestCacheControl:
+    """#349 / security audit L-23: ``/v1/system/diagnostics`` answers can
+    change between calls (alembic head bumps, attachment-root writability
+    flips), so intermediaries / browsers must not cache the response.
+    """
+
+    def test_no_store_cache_control_header(
+        self, app: FastAPI, client: TestClient, tmp_path: Path
+    ) -> None:
+        _override_settings(
+            app,
+            Settings(
+                database_url="sqlite:///:memory:",
+                jwt_secret="test-secret-32bytes-test-secret!!",
+                master_key=b"\x42" * 32,
+                master_key_source="env",
+                attachment_root=tmp_path / "attachments",
+            ),
+        )
+        r = client.get("/v1/system/diagnostics")
+        assert r.status_code == 200
+        assert r.headers.get("Cache-Control") == "no-store"

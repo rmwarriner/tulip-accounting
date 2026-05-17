@@ -14,7 +14,7 @@ import secrets
 import uuid
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 
 from tulip_api.config import Settings, get_settings
@@ -61,10 +61,16 @@ def _probe_attachment_root_writable(settings: Settings) -> bool:
     response_model=SystemDiagnosticsRead,
 )
 def get_system_diagnostics(
+    response: Response,
     session: Session = Depends(get_session),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> SystemDiagnosticsRead:
     """Aggregate environment + storage probes consumed by ``tulip doctor``."""
+    # Security audit L-23 (#349): the writability-probe answer + alembic
+    # head can change between calls; intermediaries / browsers must not
+    # cache. ``no-store`` is the strongest no-cache directive (also
+    # forbids transformation by caching proxies).
+    response.headers["Cache-Control"] = "no-store"
     head_in_db = _read_alembic_head_in_db(session)
     head_expected = expected_alembic_head()
     return SystemDiagnosticsRead(

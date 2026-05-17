@@ -212,6 +212,23 @@ def _to_jsonable(obj: object) -> object:
     return obj
 
 
+#: Security headers applied to every HTML report response. Defense-in-
+#: depth against a hypothetical template-escaping bug (security audit
+#: L-22). Tulip's report templates pull no remote resources and use only
+#: inline ``<style>`` (no inline script), so the policy below is the
+#: tightest one that still renders correctly. Adjust ``style-src`` if a
+#: report ever needs an external stylesheet.
+_HTML_REPORT_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        "img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 def _report_response(
     data: object,
     render_html: Callable[..., str],
@@ -224,7 +241,10 @@ def _report_response(
 ) -> Response:
     """Common JSON / HTML / PDF / CSV branch used by the report endpoints."""
     if format == "html":
-        return HTMLResponse(content=render_html(data))
+        return HTMLResponse(
+            content=render_html(data),
+            headers=_HTML_REPORT_SECURITY_HEADERS,
+        )
     if format == "pdf":
         if render_pdf is None:
 
@@ -550,12 +570,13 @@ class CustomQueryUnsafeError(TulipProblem):
         200: {"description": "Custom-query report (JSON or HTML)."},
         400: problem_response("report.unsafe_query"),
         401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
     },
 )
 def custom_query(
     sql: str = Query(..., description="Read-only SELECT against AI views (P6.2)."),
     format: Literal["json", "html", "pdf", "csv"] = Query(default="json"),
-    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    claims: Claims = Depends(require_role("admin")),  # noqa: B008 — #349 / audit L-7
     session: Session = Depends(get_session),  # noqa: B008
 ) -> Response:
     """Run a read-only SELECT against the AI views; render as a table.
@@ -563,6 +584,13 @@ def custom_query(
     Queries are validated by ``tulip_ai.sql_safety.validate_and_rewrite``
     — writes, non-AI-view reads, and joins outside the allowlist raise
     ``UnsafeSQLError`` which we surface as a 400 Problem Details.
+
+    Admin-only per security audit L-7 (#349). The SQL-safety pass
+    constrains *which* SQL runs, not which tenant rows are visible —
+    a member running custom-query would observe private-pool data the
+    visibility filter would otherwise hide. Restricting to admin
+    sidesteps the cross-user-within-household concern; the broader
+    visibility-filter bundle stays gated on multi-user invite (#237).
     """
     from tulip_ai.sql_safety import UnsafeSQLError
     from tulip_reports.reports import custom_query as report_module
