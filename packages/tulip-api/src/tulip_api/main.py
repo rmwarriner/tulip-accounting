@@ -133,6 +133,7 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
                 make_ai_retention_handler,
                 make_attachment_gc_handler,
                 make_audit_retention_handler,
+                make_session_retention_handler,
             )
 
             runner.register_handler(
@@ -153,6 +154,15 @@ def create_app(*, enable_runner: bool = True) -> FastAPI:
             runner.register_handler(
                 "audit_retention",
                 make_audit_retention_handler(session_maker),
+            )
+            # M-6 (#344): daily prune of revoked sessions + used MFA
+            # recovery codes past their retention window (default 90d,
+            # operator-overridable via households.audit_retention_policy
+            # .session_retention_days). Active sessions + unused codes
+            # are never touched. Installer seeds a daily rrule.
+            runner.register_handler(
+                "session_retention",
+                make_session_retention_handler(session_maker),
             )
             # M-17 (#340) — deep privacy audit: ``daily_insights`` is
             # deliberately NOT registered here. The handler is exported
