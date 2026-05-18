@@ -36,6 +36,8 @@ from tulip_api.schemas.transaction import (
     TransactionCreate,
     TransactionRead,
     TransactionRectifyRequest,
+    TransactionReplaceRequest,
+    TransactionReplaceResponse,
     TransactionUpdate,
     TransactionVoidRequest,
     TransactionVoidResponse,
@@ -409,6 +411,254 @@ def void_transaction(
         reversal_id=reversal_posted.id,
         voided_at=voided_at,
         paired_shadow_tx_id_voided=paired_shadow_tx_id,
+    )
+
+
+@router.post(
+    "/{tx_id}/replace",
+    response_model=TransactionReplaceResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: problem_response(
+            "account.unknown",
+            "period.closed",
+            "pool.not_found",
+            "pool.inactive",
+            "pool.currency_mismatch",
+            "pool.invalid_account_type_pairing",
+            "transaction.invalid",
+            "transaction.unbalanced",
+        ),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("transaction.not_found"),
+        409: problem_response("transaction.already_voided", "transaction.not_voidable"),
+        422: problem_response("validation.failed"),
+    },
+)
+def replace_transaction(
+    tx_id: UUID,
+    body: TransactionReplaceRequest,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> TransactionReplaceResponse:
+    """Atomically void ``tx_id`` and create a replacement in one commit (#209a).
+
+    The single-endpoint shape exists so the CLI's ``transactions edit``
+    flow doesn't have to race a void call followed by a separate create
+    (the in-between window could see the source voided but no
+    replacement — exactly the inconsistency that "transparent edit"
+    promises not to expose). Both writes commit together or roll back
+    together.
+
+    Pre-flight order mirrors ``/void`` then ``POST``: source must exist
+    (404), must not be already voided (409 ``transaction.already_voided``),
+    must be in a void-eligible status (409 ``transaction.not_voidable`` —
+    i.e., POSTED or RECONCILED; a PENDING transaction should be edited
+    via PATCH). The replacement's account / pool pre-flight runs before
+    any DB write so a bad request never half-applies.
+    """
+    tx_repo = TransactionRepository(
+        session, claims.household_id, master_key=get_settings().master_key
+    )
+    source_storage = tx_repo.get(tx_id)
+    if source_storage is None:
+        raise TransactionNotFoundError()
+    if source_storage.voided_by_transaction_id is not None:
+        raise TransactionAlreadyVoidedError(
+            voided_by_transaction_id=str(source_storage.voided_by_transaction_id)
+        )
+    if source_storage.status not in (
+        StorageTxStatus.POSTED,
+        StorageTxStatus.RECONCILED,
+    ):
+        raise TransactionNotVoidableError(status=source_storage.status.value)
+
+    # ---- Replacement pre-flight (account + pool) -------------------
+    # Mirrors create_transaction. Runs before any write so a malformed
+    # replacement can't leave the source voided + the replacement
+    # missing.
+    accounts_repo = AccountRepository(session, claims.household_id)
+    accounts_by_id = {}
+    for p in body.postings:
+        a = accounts_repo.get(p.account_id)
+        if a is None:
+            raise AccountUnknownError(account_id=str(p.account_id))
+        accounts_by_id[p.account_id] = a
+
+    pool_repo = AllocationPoolRepository(session, claims.household_id)
+    pool_tagged_currencies: set[str] = set()
+    for p in body.postings:
+        if p.pool_id is None:
+            continue
+        pool = pool_repo.get(p.pool_id)
+        if pool is None:
+            raise PoolNotFoundError(pool_id=str(p.pool_id))
+        if not pool.is_active:
+            raise PoolInactiveError(pool_id=str(p.pool_id))
+        account = accounts_by_id[p.account_id]
+        if account.type.value != "expense":
+            raise PoolInvalidAccountTypePairingError(account_type=account.type.value)
+        if pool.currency != p.currency:
+            raise PoolCurrencyMismatchError(
+                pool_id=str(p.pool_id),
+                pool_currency=pool.currency,
+                posting_currency=p.currency,
+            )
+        pool_tagged_currencies.add(p.currency)
+
+    spent_pool_by_currency: dict[str, UUID] = {}
+    for ccy in pool_tagged_currencies:
+        sys_pools = pool_repo.get_or_create_system_pools(currency=ccy)
+        spent_pool_by_currency[ccy] = sys_pools[StoragePoolType.SPENT].id
+
+    # ---- Build + post reversal of the source -----------------------
+    source_postings = tx_repo.list_postings(tx_id)
+    source_domain = DomainTransaction(
+        id=source_storage.id,
+        household_id=source_storage.household_id,
+        date=source_storage.date,
+        description=source_storage.description,
+        reference=source_storage.reference,
+        postings=tuple(
+            DomainPosting(
+                id=p.id,
+                account_id=p.account_id,
+                amount=Money(p.amount, p.currency),
+                memo=p.memo,
+                pool_id=p.pool_id,
+            )
+            for p in source_postings
+        ),
+        status=DomainTxStatus(source_storage.status.value),
+        created_by_user_id=source_storage.created_by_user_id,
+    )
+
+    reversal_date = body.reversal_date or date_type.today()
+    reversal_pending = build_reversal(
+        source_domain,
+        reversal_id=uuid4(),
+        reversal_date=reversal_date,
+        description=f"Reversal of {source_domain.description}: {body.reason}",
+        actor_user_id=claims.user_id,
+    )
+
+    period_repo = PeriodRepository(session, claims.household_id)
+    candidate_periods = _domain_periods(period_repo)
+    try:
+        reversal_posted = post_transaction(reversal_pending, periods=candidate_periods)
+    except ClosedPeriodError as exc:
+        raise PeriodClosedError(reason=str(exc)) from exc
+    except UnbalancedTransactionError as exc:
+        raise TransactionUnbalancedError(
+            reason=f"Reversal failed to balance (Tulip bug): {exc}"
+        ) from exc
+
+    # ---- Build + post replacement ----------------------------------
+    replacement_postings: tuple[DomainPosting, ...] = tuple(
+        DomainPosting(
+            id=uuid4(),
+            account_id=p.account_id,
+            amount=Money(p.amount, p.currency),
+            memo=p.memo,
+            pool_id=p.pool_id,
+        )
+        for p in body.postings
+    )
+    try:
+        replacement_domain = DomainTransaction(
+            id=uuid4(),
+            household_id=claims.household_id,
+            date=body.date,
+            description=body.description,
+            reference=body.reference,
+            postings=replacement_postings,
+            status=DomainTxStatus.PENDING,
+            created_by_user_id=claims.user_id,
+        )
+    except ValueError as exc:
+        raise TransactionInvalidError(reason=str(exc)) from exc
+    try:
+        replacement_posted = post_transaction(replacement_domain, periods=candidate_periods)
+    except UnbalancedTransactionError as exc:
+        raise TransactionUnbalancedError(reason=f"Replacement does not balance: {exc}") from exc
+    except ClosedPeriodError as exc:
+        raise PeriodClosedError(reason=str(exc)) from exc
+
+    # ---- Derive paired shadow for the replacement ------------------
+    account_types_by_id = {
+        aid: DomainAccountType(a.type.value) for aid, a in accounts_by_id.items()
+    }
+    try:
+        replacement_shadow = derive_paired_shadow_tx(
+            replacement_posted,
+            account_types_by_id=account_types_by_id,
+            spent_pool_by_currency=spent_pool_by_currency,
+        )
+    except InvalidAccountTypePairingError as exc:
+        raise PoolInvalidAccountTypePairingError(account_type="non-expense") from exc
+    except MultiCurrencyPoolTaggingError as exc:
+        raise TransactionInvalidError(reason=str(exc)) from exc
+    except UnsupportedRefundShapedShadowTxError as exc:
+        raise TransactionInvalidError(reason=str(exc)) from exc
+    except ValueError as exc:
+        raise ShadowLedgerInternalError() from exc
+
+    # ---- Persist everything in one commit --------------------------
+    voided_at = datetime.now(tz=UTC)
+    tx_repo.persist_reversal(tx_id, reversal_posted, voided_at=voided_at)
+
+    saved_replacement = tx_repo.save_balanced(replacement_posted, notes=body.notes)
+
+    if replacement_shadow is not None:
+        # The replacement gets its own paired shadow when any posting
+        # carries ``pool_id`` (ADR-0001). The id is not surfaced in the
+        # response since the caller queries the replacement via
+        # ``GET /v1/transactions/{id}`` to discover it.
+        ShadowTransactionRepository(session, claims.household_id).save_balanced(replacement_shadow)
+
+    # Auto-void the source's paired shadow if it had one (same atomic
+    # commit). Mirrors void_transaction.
+    source_shadow_repo = ShadowTransactionRepository(session, claims.household_id)
+    source_paired_shadow_id = source_shadow_repo.get_paired_id_for_main_tx(tx_id)
+    if source_paired_shadow_id is not None:
+        source_shadow_repo.void(source_paired_shadow_id, voided_at=voided_at)
+
+    audit_after: dict[str, str] = {
+        "reversal_id": str(reversal_posted.id),
+        "replacement_id": str(saved_replacement.id),
+        "reason": body.reason,
+        "reversal_date": reversal_date.isoformat(),
+    }
+    if source_paired_shadow_id is not None:
+        audit_after["paired_shadow_tx_id_voided"] = str(source_paired_shadow_id)
+    AuditLogWriter(session, claims.household_id).write(
+        action="replace",
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="transaction",
+        entity_id=tx_id,
+        before={"voided_by_transaction_id": None},
+        after=audit_after,
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "transaction.replaced",
+        source_id=str(tx_id),
+        reversal_id=str(reversal_posted.id),
+        replacement_id=str(saved_replacement.id),
+        paired_shadow_tx_id_voided=(
+            str(source_paired_shadow_id) if source_paired_shadow_id else None
+        ),
+    )
+    return TransactionReplaceResponse(
+        source_id=tx_id,
+        reversal_id=reversal_posted.id,
+        replacement_id=saved_replacement.id,
+        voided_at=voided_at,
+        paired_shadow_tx_id_voided=source_paired_shadow_id,
     )
 
 

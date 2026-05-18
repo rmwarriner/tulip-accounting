@@ -75,6 +75,7 @@ _RETENTION_TIER_BY_ACTION: dict[str, str] = {
     "update": "ledger_days",
     "delete": "ledger_days",
     "void": "ledger_days",
+    "replace": "ledger_days",  # #209a — atomic void+recreate is a ledger mutation
     "description_rectified": "ledger_days",
     "redact": "ledger_days",
     "import_create": "ledger_days",
