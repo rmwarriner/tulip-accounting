@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tulip_ai.adapters import RecordingAdapter
 from tulip_ai.nl_query import AINLQueryCapability
-from tulip_storage.encryption import encrypt_field
+from tulip_storage.encryption import encrypt_field, field_aad
 from tulip_storage.models import (
     Account,
     AccountType,
@@ -138,6 +138,12 @@ def configured_household(
     keys_blob = encrypt_field(
         json.dumps({"anthropic": "sk-test"}).encode("utf-8"),
         master_key=master_key,
+        aad=field_aad(
+            table="households",
+            column="ai_keys_encrypted",
+            household_id=household.id,
+            row_id=household.id,
+        ),
     )
     with session_maker() as s:
         h = s.get(Household, household.id)

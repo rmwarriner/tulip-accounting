@@ -16,8 +16,12 @@ Column is nullable — users who have never verified a TOTP have NULL,
 and the verify path treats NULL as "no replay history yet."
 
 Revision ID: c2a9f4b7e1d8
-Revises: a6f1c9b3d8e4
+Revises: c7a3f9e2b1d8
 Create Date: 2026-05-17 19:00:00.000000+00:00
+
+Down-revision rebased from ``a6f1c9b3d8e4`` to ``c7a3f9e2b1d8`` to keep
+the alembic chain linear after #380 (composite PK) landed in parallel
+(see #347 / #338 PR bodies for the merge-order story).
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c2a9f4b7e1d8"
-down_revision: str | None = "a6f1c9b3d8e4"
+down_revision: str | None = "c7a3f9e2b1d8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

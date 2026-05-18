@@ -40,7 +40,7 @@ from tulip_ai.redaction import (
     PromptRedactor,
 )
 from tulip_core.reconciliation.categorizer import CategorizationResult
-from tulip_storage.encryption import decrypt_field
+from tulip_storage.encryption import decrypt_field, field_aad
 from tulip_storage.models import Account, AccountType, Household, User
 
 if TYPE_CHECKING:
@@ -348,17 +348,35 @@ class AICategorizer:
         if not isinstance(provider, str):
             return None
         if user is not None and user.ai_keys_encrypted:
-            user_key = self._extract_provider_key(user.ai_keys_encrypted, provider)
+            user_key = self._extract_provider_key(
+                user.ai_keys_encrypted,
+                provider,
+                aad=field_aad(
+                    table="users",
+                    column="ai_keys_encrypted",
+                    household_id=user.household_id,
+                    row_id=user.id,
+                ),
+            )
             if user_key is not None:
                 return user_key
         if household.ai_keys_encrypted:
-            return self._extract_provider_key(household.ai_keys_encrypted, provider)
+            return self._extract_provider_key(
+                household.ai_keys_encrypted,
+                provider,
+                aad=field_aad(
+                    table="households",
+                    column="ai_keys_encrypted",
+                    household_id=household.id,
+                    row_id=household.id,
+                ),
+            )
         return None
 
-    def _extract_provider_key(self, blob: bytes, provider: str) -> str | None:
+    def _extract_provider_key(self, blob: bytes, provider: str, *, aad: bytes) -> str | None:
         """Decrypt + extract a single provider's key from a ``{provider: key}`` blob."""
         try:
-            decrypted = decrypt_field(blob, master_key=self._master_key).decode("utf-8")
+            decrypted = decrypt_field(blob, master_key=self._master_key, aad=aad).decode("utf-8")
             keys_dict = json.loads(decrypted)
         except (ValueError, json.JSONDecodeError):
             return None

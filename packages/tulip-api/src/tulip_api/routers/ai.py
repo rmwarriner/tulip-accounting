@@ -46,7 +46,7 @@ from tulip_api.schemas.ai import (
 )
 from tulip_core.money import Money
 from tulip_core.reconciliation.statement_line import StatementLine
-from tulip_storage.encryption import decrypt_field, encrypt_field
+from tulip_storage.encryption import decrypt_field, encrypt_field, field_aad
 from tulip_storage.models import Account, AccountType, Household, User
 from tulip_storage.repositories import AIInvocationRepository, AuditLogWriter
 from tulip_storage.runner.handlers import AI_INVOCATION_RETENTION_DAYS
@@ -62,47 +62,62 @@ router = APIRouter(prefix="/v1/ai", tags=["ai"])
 log = structlog.get_logger("tulip_api.ai")
 
 
-def _decrypt_keys_blob(blob: bytes | None, master_key: bytes) -> dict[str, str]:
+def _ai_keys_aad(*, table: str, household_id: UUID, row_id: UUID) -> bytes:
+    """AAD for an ``ai_keys_encrypted`` blob (#338, M-1)."""
+    return field_aad(
+        table=table,
+        column="ai_keys_encrypted",
+        household_id=household_id,
+        row_id=row_id,
+    )
+
+
+def _decrypt_keys_blob(blob: bytes | None, master_key: bytes, *, aad: bytes) -> dict[str, str]:
     """Decrypt an ``ai_keys_encrypted`` blob to a ``{provider: key}`` dict.
 
-    Returns ``{}`` for ``None`` / malformed / non-dict ciphertexts. Used
-    by both the household helpers below and the per-user helpers (#239).
+    Returns ``{}`` for ``None`` / malformed / non-dict ciphertexts. The
+    ``aad`` argument binds the ciphertext to its (table, row) identity
+    so a swapped blob from a different row / household fails decrypt.
     """
     if not blob:
         return {}
     try:
-        decrypted = decrypt_field(blob, master_key=master_key).decode("utf-8")
+        decrypted = decrypt_field(blob, master_key=master_key, aad=aad).decode("utf-8")
         parsed = json.loads(decrypted)
         return parsed if isinstance(parsed, dict) else {}
     except (ValueError, json.JSONDecodeError):
         return {}
 
 
-def _encrypt_keys_blob(keys: dict[str, str], master_key: bytes) -> bytes | None:
+def _encrypt_keys_blob(keys: dict[str, str], master_key: bytes, *, aad: bytes) -> bytes | None:
     """Encrypt a ``{provider: key}`` dict; ``None`` when empty."""
     if not keys:
         return None
-    return encrypt_field(json.dumps(keys).encode("utf-8"), master_key=master_key)
+    return encrypt_field(json.dumps(keys).encode("utf-8"), master_key=master_key, aad=aad)
 
 
 def _load_household_keys(household: Household, master_key: bytes) -> dict[str, str]:
     """Decrypt ``households.ai_keys_encrypted`` to a ``{provider: key}`` dict."""
-    return _decrypt_keys_blob(household.ai_keys_encrypted, master_key)
+    aad = _ai_keys_aad(table="households", household_id=household.id, row_id=household.id)
+    return _decrypt_keys_blob(household.ai_keys_encrypted, master_key, aad=aad)
 
 
 def _store_household_keys(household: Household, keys: dict[str, str], master_key: bytes) -> None:
     """Re-encrypt the ``{provider: key}`` dict back onto the household row."""
-    household.ai_keys_encrypted = _encrypt_keys_blob(keys, master_key)
+    aad = _ai_keys_aad(table="households", household_id=household.id, row_id=household.id)
+    household.ai_keys_encrypted = _encrypt_keys_blob(keys, master_key, aad=aad)
 
 
 def _load_user_keys(user: User, master_key: bytes) -> dict[str, str]:
     """Decrypt ``users.ai_keys_encrypted`` to a ``{provider: key}`` dict (#239)."""
-    return _decrypt_keys_blob(user.ai_keys_encrypted, master_key)
+    aad = _ai_keys_aad(table="users", household_id=user.household_id, row_id=user.id)
+    return _decrypt_keys_blob(user.ai_keys_encrypted, master_key, aad=aad)
 
 
 def _store_user_keys(user: User, keys: dict[str, str], master_key: bytes) -> None:
     """Re-encrypt the ``{provider: key}`` dict back onto the user row (#239)."""
-    user.ai_keys_encrypted = _encrypt_keys_blob(keys, master_key)
+    aad = _ai_keys_aad(table="users", household_id=user.household_id, row_id=user.id)
+    user.ai_keys_encrypted = _encrypt_keys_blob(keys, master_key, aad=aad)
 
 
 def _resolve_provider_key(
