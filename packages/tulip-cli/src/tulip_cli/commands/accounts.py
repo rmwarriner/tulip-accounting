@@ -419,8 +419,34 @@ def add_account(
             ),
         ),
     ] = None,
+    create_parents: Annotated[
+        bool,
+        typer.Option(
+            "--create-parents",
+            help=(
+                "Parse --code as a colon-delimited path (e.g. "
+                "'assets:current:checking') and auto-create any missing "
+                "ancestor accounts in one atomic call (#46). The root "
+                "segment determines the type — it must match --type. "
+                "Mutually exclusive with --parent (parents come from the "
+                "path)."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Create a new account in the logged-in user's household."""
+    """Create a new account in the logged-in user's household.
+
+    With ``--create-parents``, ``--code`` is parsed as a colon-path and
+    any missing ancestors are auto-created in the same atomic request.
+    """
+    if create_parents and parent is not None:
+        raise typer.BadParameter(
+            "--create-parents derives the parent chain from --code; "
+            "passing --parent at the same time is ambiguous"
+        )
+    if create_parents and not code:
+        raise typer.BadParameter("--create-parents requires --code (the colon-path)")
+
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
@@ -434,6 +460,8 @@ def add_account(
         body["code"] = code
     if subtype is not None:
         body["subtype"] = subtype
+    if create_parents:
+        body["create_parents"] = True
 
     try:
         with _client(config, as_json=as_json) as client:
@@ -450,7 +478,18 @@ def add_account(
         return
 
     payload = response.json()
-    typer.echo(f"Created account {payload.get('id', '')}")
+    parents_created = payload.get("parents_created") or []
+    if parents_created:
+        typer.echo(
+            f"Created account {payload.get('id', '')} along with {len(parents_created)} parent(s):"
+        )
+        for parent_account in parents_created:
+            typer.echo(
+                f"  + {parent_account.get('code') or '—'}  ({parent_account.get('name', '')})"
+            )
+        typer.echo("Leaf:")
+    else:
+        typer.echo(f"Created account {payload.get('id', '')}")
     _render_account(payload)
 
 

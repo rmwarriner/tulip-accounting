@@ -20,6 +20,7 @@ from tulip_api.errors import (
     AccountParentNotFoundError,
     AccountParentTypeMismatchError,
     AccountParentVisibilityViolationError,
+    AccountPathInvalidError,
     ForbiddenError,
     problem_response,
 )
@@ -53,6 +54,60 @@ def _to_read(a: Account) -> AccountRead:
         is_active=a.is_active,
         parent_account_id=a.parent_account_id,
     )
+
+
+# Root-segment → account-type mapping for the create_parents path-walker (#46).
+# Mirrors ``tulip_cli.commands.accounts._TYPE_ALIASES`` so a path that
+# resolves on the read side also infers cleanly on the write side.
+_PATH_ROOT_TYPES: dict[str, str] = {
+    "asset": "asset",
+    "assets": "asset",
+    "liability": "liability",
+    "liabilities": "liability",
+    "equity": "equity",
+    "equities": "equity",
+    "income": "income",
+    "incomes": "income",
+    "expense": "expense",
+    "expenses": "expense",
+}
+
+
+def _parse_account_path(code: str | None, leaf_type: str) -> tuple[list[str], str]:
+    """Validate ``code`` as a colon-path; return (segments, inferred_type).
+
+    Used only when ``create_parents=True``. Raises
+    :class:`AccountPathInvalidError` for empty input, single-segment
+    input, empty / whitespace-only segments, leading/trailing colons,
+    unknown root segment, or root → ``leaf_type`` type mismatch.
+    """
+    if not code:
+        raise AccountPathInvalidError("``code`` is required when create_parents=true")
+    if ":" not in code:
+        raise AccountPathInvalidError(
+            f"path {code!r} has a single segment; create_parents needs at "
+            "least one parent to create (use create_parents=false instead)"
+        )
+    raw_segments = code.split(":")
+    if any(not seg.strip() for seg in raw_segments):
+        raise AccountPathInvalidError(
+            f"path {code!r} has an empty / whitespace-only segment; every "
+            "segment must be a non-empty identifier"
+        )
+    segments = [seg.strip() for seg in raw_segments]
+    root = segments[0].lower()
+    if root not in _PATH_ROOT_TYPES:
+        raise AccountPathInvalidError(
+            f"root segment {segments[0]!r} does not name an account type; "
+            f"expected one of {sorted(set(_PATH_ROOT_TYPES))}"
+        )
+    inferred = _PATH_ROOT_TYPES[root]
+    if inferred != leaf_type:
+        raise AccountPathInvalidError(
+            f"path root segment implies type {inferred!r}, but the body's "
+            f"``type`` is {leaf_type!r}; the two must match"
+        )
+    return segments, inferred
 
 
 def _filter_for_role(account: Account, claims: Claims) -> bool:
@@ -152,6 +207,7 @@ def list_accounts(
             "account.parent_type_mismatch",
             "account.parent_currency_mismatch",
             "account.parent_visibility_violation",
+            "account.path_invalid",
         ),
         422: problem_response("validation.failed"),
     },
@@ -162,8 +218,39 @@ def create_account(
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AccountRead:
-    """Create a new account in the caller's household."""
+    """Create a new account in the caller's household.
+
+    With ``create_parents=true``, ``code`` is parsed as a colon-path and
+    any missing ancestor accounts are auto-created in the same commit
+    (#46). The root segment determines the account type for every
+    account in the chain; the body's ``type`` must match. The leaf
+    takes the body's ``name`` / ``subtype`` / ``visibility``; parents
+    take their segment as the name and inherit currency from the body.
+    """
     repo = AccountRepository(session, claims.household_id)
+    audit = AuditLogWriter(session, claims.household_id)
+    request_id = _request_uuid(request)
+
+    if body.create_parents:
+        leaf, parents_created = _create_with_parents(
+            repo=repo,
+            audit=audit,
+            body=body,
+            claims=claims,
+            request_id=request_id,
+        )
+        session.commit()
+        log.info(
+            "account.created_with_parents",
+            account_id=str(leaf.id),
+            parents_created=[str(p.id) for p in parents_created],
+        )
+        read = _to_read(leaf)
+        # The PR description: parents are listed root → leaf-parent in
+        # creation order; the leaf itself is the top-level response.
+        read.parents_created = [_to_read(p) for p in parents_created]
+        return read
+
     if body.parent_account_id is not None:
         _validate_parent(
             repo,
@@ -184,18 +271,87 @@ def create_account(
         visibility=body.visibility,
         created_by_user_id=claims.user_id,
     )
-    AuditLogWriter(session, claims.household_id).write(
+    audit.write(
         action="create",
         actor_kind="user",
         actor_user_id=claims.user_id,
         entity_type="account",
         entity_id=a.id,
         after={"name": a.name, "type": a.type.value, "currency": a.currency},
-        request_id=_request_uuid(request),
+        request_id=request_id,
     )
     session.commit()
     log.info("account.created", account_id=str(a.id))
     return _to_read(a)
+
+
+def _create_with_parents(
+    *,
+    repo: AccountRepository,
+    audit: AuditLogWriter,
+    body: AccountCreate,
+    claims: Claims,
+    request_id: UUID | None,
+) -> tuple[Account, list[Account]]:
+    """Walk the path root → leaf, creating any missing segment.
+
+    Returns ``(leaf, parents_created)`` where ``parents_created`` is the
+    list of auto-created ancestors in creation order (root first). Pre-
+    existing accounts along the path are reused — they don't appear in
+    ``parents_created``. Idempotent: re-running with the same path
+    returns the original leaf and an empty ``parents_created``.
+    """
+    segments, inferred_type = _parse_account_path(body.code, body.type)
+    parents_created: list[Account] = []
+    parent: Account | None = None
+    for index, segment in enumerate(segments):
+        prefix_code = ":".join(segments[: index + 1])
+        existing = repo.get_by_code(prefix_code)
+        is_leaf = index == len(segments) - 1
+        if existing is not None:
+            parent = existing
+            continue
+        # Need to create this segment. Leaf takes body.name / subtype /
+        # visibility; intermediates take their segment as the name and
+        # share currency + visibility with the leaf.
+        if is_leaf:
+            new_name = body.name
+            new_subtype = body.subtype
+        else:
+            new_name = segment
+            new_subtype = None
+        parent_id = parent.id if parent is not None else None
+        created = repo.create(
+            name=new_name,
+            type=AccountType(inferred_type),
+            currency=body.currency,
+            code=prefix_code,
+            subtype=new_subtype,
+            parent_account_id=parent_id,
+            visibility=body.visibility,
+            created_by_user_id=claims.user_id,
+        )
+        audit.write(
+            action="create",
+            actor_kind="user",
+            actor_user_id=claims.user_id,
+            entity_type="account",
+            entity_id=created.id,
+            after={
+                "name": created.name,
+                "type": created.type.value,
+                "currency": created.currency,
+                "auto_created_parent_of": (":".join(segments) if not is_leaf else None),
+            },
+            request_id=request_id,
+        )
+        parent = created
+        if not is_leaf:
+            parents_created.append(created)
+    # ``parent`` is the leaf — either the freshly-created last segment
+    # or the pre-existing account when the path already terminated.
+    assert parent is not None  # noqa: S101 — segments non-empty by validation
+    return parent, parents_created
 
 
 @router.get(
