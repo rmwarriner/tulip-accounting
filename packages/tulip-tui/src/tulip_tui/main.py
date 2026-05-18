@@ -17,6 +17,7 @@ from tulip_tui.data.envelopes import EnvelopesData, load_envelopes
 from tulip_tui.data.imports import ImportsData, load_import_batches
 from tulip_tui.data.reconciliations import ReconciliationsData, load_reconciliations
 from tulip_tui.data.reports import ReportPayload, ReportSpec, load_report
+from tulip_tui.data.sinking_funds import SinkingFundsData, load_sinking_funds
 from tulip_tui.data.transactions import TransactionsData, load_transactions
 from tulip_tui.screens.transactions import TransactionsLoader
 
@@ -64,6 +65,12 @@ def _envelopes_loader() -> EnvelopesData:
         return load_envelopes(client)
 
 
+def _sinking_funds_loader() -> SinkingFundsData:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return load_sinking_funds(client)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
@@ -73,4 +80,5 @@ def run() -> None:
         reconciliations_loader=_reconciliations_loader,
         imports_loader=_imports_loader,
         envelopes_loader=_envelopes_loader,
+        sinking_funds_loader=_sinking_funds_loader,
     ).run()

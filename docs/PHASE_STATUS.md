@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse) + P9.5.a envelopes browser in flight** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007. Phase 9 v1 read continuation ([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)) opens with three read-only browse slices (envelopes / sinking funds / pending) on the same loader-injection pattern; [#400](https://github.com/rmwarriner/tulip-accounting/issues/400) (envelopes) is the first.
+**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse) + P9.5.a envelopes browser shipped + P9.5.b sinking funds browser in flight** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007. Phase 9 v1 read continuation ([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)) opens with three read-only browse slices (envelopes / sinking funds / pending) on the same loader-injection pattern; [#400](https://github.com/rmwarriner/tulip-accounting/issues/400) (envelopes) is the first.
 
 ---
 
@@ -1736,6 +1736,38 @@ envelopes browser.
   endpoint exposes it; deferred to a backend slice), Needs / Wants /
   Bills / Family group headers (no `group` field on the API), every
   mutation (fund / move / edit stay on the CLI).
+
+#### P9.5.b — Sinking funds browser — ✅ *(2026-05-18)*
+
+Per [#408](https://github.com/rmwarriner/tulip-accounting/issues/408). New app-wide `s` binding pushes the
+sinking funds browser. Mirrors the P9.5.a envelopes pattern almost
+exactly — pools are pools, so the data layer reuses the same
+`POST /v1/pools/balances` plumbing.
+
+- **Data layer** — `tulip_tui/data/sinking_funds.py` adds
+  `SinkingFundSummary` / `SinkingFundsData` (frozen) and
+  `load_sinking_funds(client)`. Joins `GET /v1/sinking-funds` with
+  `POST /v1/pools/balances`. Funds missing from the balance response
+  keep `balance = None` so the screen renders `—` instead of `0.00`.
+  Empty fund list short-circuits the POST.
+- **SinkingFundsScreen** — DataTable with seven columns (Name /
+  Currency / Target / Target date / Strategy / Contribution /
+  Balance); detail pane below renders the full fund on cursor
+  highlight. `escape` pops, `r` refreshes. Inline error pane on
+  loader failure.
+- **App wiring** — new `s` binding + `sinking_funds_loader`
+  constructor seam with a `_no_op_sinking_funds_loader` default.
+  Production `main.run()` installs the loader that opens a fresh
+  `TulipClient` per fetch.
+- **Tests** — 3 data-layer tests (happy join, empty short-circuit,
+  API-error path); 5 pilot-mode screen tests (rows render with
+  comma-grouped amounts, cursor follows detail, empty state, inline
+  error, `s` binding pushes the screen).
+- **Out of scope** — progress bars (e.g. `$1,200 / $3,000 ▓▓░`)
+  deferred until a reusable progress widget can serve envelopes +
+  sinking funds together; goal-date math ("on track / behind by
+  N days") needs backend support; every mutation (contribute / edit /
+  deactivate) stays on the CLI per ADR-0007.
 
 ---
 
