@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0 tulip-tui skeleton shipped** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell + pilot-mode smoke test landed; P9.1+ queued per #309.
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0 tulip-tui skeleton shipped + P9.1 accounts browser shipped** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
 
 ---
 
@@ -30,7 +30,7 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **CLI + importers usability bundle (post-audit):** ✅ shipped — transaction id-prefix display + prefix resolution (#207/#211), interactive reconciliation wizard (#205), `tulip imports show`/`list` (#203/#272), QIF split-posting fidelity (#270) + non-transaction-section skipping (#198) + multi-account import with transfer pairing (#195a/#195b), paper-statement reconciliation (#275), `tulip imports apply --posted` (#210), currency-natural amount precision (#213), account names in `transactions list`/`show` (#214), transaction-level notes (#271), account resolution by name / hierarchical path (#197), interactive UUID picker (#273), `--pending` balance toggle (#274), Rich `Console` honouring `COLUMNS` (#285), right-aligned numeric columns (#289), `/reject` OpenAPI 400 (#194).
 
-- **Phase 9 (terminal UI):** 🔄 design pass complete (2026-05-17) + P9.0 skeleton shipped (2026-05-17) — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). `packages/tulip-tui/` workspace package + pilot-mode smoke test now in tree; P9.1–P9.4 (account browser, transaction register, reports viewer, reconciliation/import status) queued per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
+- **Phase 9 (terminal UI):** 🔄 design pass complete (2026-05-17) + P9.0 skeleton shipped (2026-05-17) + P9.1 accounts browser shipped (2026-05-17) — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). `packages/tulip-tui/` workspace package, pilot-mode smoke test, and the accounts browser (grouped DataTable with per-currency subtotals, loader-seam tested in-memory) now in tree; P9.2–P9.4 (transaction register, reports viewer, reconciliation/import status) queued per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
 
 **Tests:** 1828 passing · **CI:** green on `main`
 
@@ -1557,10 +1557,41 @@ shell that the rest of Phase 9 fills in.
 The next slice (P9.1 — account browser) is the first to introduce a
 real screen and the first real API call.
 
-### P9.1 — Account browser — ⏳ queued
+### P9.1 — Account browser — ✅ *(2026-05-17)*
 
-Navigable tree/list of the chart of accounts with balances; drill into
-an account to see its transactions (reusing the P9.2 register).
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). First real Tulip TUI screen and the
+first slice that performs an authenticated API round-trip.
+
+- **Data layer** — `tulip_tui/data/accounts.py` adds an immutable
+  `AccountSummary` / `AccountGroup` / `AccountsData` triple and a
+  `load_accounts(client)` function that joins `GET /v1/accounts`
+  (every active account, including ones with no postings) with
+  `GET /v1/reports/trial-balance` (per-account balances). Accounts
+  with no trial-balance row keep `balance = None` so the screen can
+  render `—` instead of a misleading `0.00`.
+- **AccountsScreen** — grouped `DataTable` rendering: one row per
+  group header (`── ASSET ──`), member account rows beneath, and a
+  per-group subtotal row (`subtotal: 15,741.18 USD, …`). Comma-grouped
+  balances; sign preserved on negatives; `r` rebinds to refresh.
+- **App wiring** — `TulipTuiApp(loader: AccountsLoader)` pushes
+  `AccountsScreen` on mount. Production `main.run()` installs a loader
+  that opens a `TulipClient` per load against the CLI's stored
+  `api_url` + token store; tests inject in-memory `AccountsData`
+  through the same constructor.
+- **Failure mode** — loader exceptions render inline in the status
+  strip and the `q` quit binding still works. A network blip should
+  not pull the user out of their TUI session.
+- **Tests** — 5 unit tests cover the data join (balance fill, empty
+  household, error propagation); 4 pilot tests cover the screen
+  (group/subtotal rendering, empty state, error state, `—`
+  no-postings render). The P9.0 boot test now boots into the screen
+  with an empty loader; the architecture test is unchanged.
+- **Out of scope** — drill-in to per-account transactions
+  (lands in P9.2); status markers (`●` / `⚠`), reconcile badges,
+  account-number masking, credit-card sub-rows: those require API
+  surfaces that don't exist yet and are part of the broader Phase 9
+  cross-cutting decisions ([TUI_WIREFRAMES.md § Cross-cutting
+  decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17)).
 
 ### P9.2 — Transaction register — ⏳ queued
 
