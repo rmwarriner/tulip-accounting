@@ -99,6 +99,59 @@ class TransactionVoidResponse(BaseModel):
     )
 
 
+class TransactionReplaceRequest(BaseModel):
+    """Body for POST /v1/transactions/{id}/replace (#209a).
+
+    The atomic void-and-recreate primitive: in a single commit the source
+    is voided (sibling reversal created, status flip) and a brand-new
+    transaction is posted with the edited shape. The ``reason`` field
+    flows into the reversal's description so the audit trail records
+    *why* the source was voided. ``reversal_date`` defaults to today and
+    is checked against open periods; the replacement's ``date`` is
+    checked separately.
+    """
+
+    date: date_type
+    description: str = Field(min_length=1, max_length=500)
+    reference: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Optional free-text transaction-level annotation on the "
+            "replacement. Stored encrypted at rest."
+        ),
+    )
+    postings: list[PostingCreate] = Field(min_length=2)
+    reason: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Free-text reason for the edit; flows into the reversal's description.",
+    )
+    reversal_date: date_type | None = Field(
+        default=None,
+        description=(
+            "Date for the reversal sibling. Defaults to today. The reversal "
+            "date — not the source's date — is checked against open periods."
+        ),
+    )
+
+
+class TransactionReplaceResponse(BaseModel):
+    """Response for POST /v1/transactions/{id}/replace (#209a)."""
+
+    source_id: UUID
+    reversal_id: UUID
+    replacement_id: UUID
+    voided_at: datetime
+    paired_shadow_tx_id_voided: UUID | None = Field(
+        default=None,
+        description=(
+            "If the source had a paired shadow tx (per ADR-0001), it has "
+            "been auto-voided in the same atomic commit. Null otherwise."
+        ),
+    )
+
+
 class TransactionRectifyRequest(BaseModel):
     """PATCH /v1/transactions/{id}/description body — GDPR Art. 16 rectification (#242).
 
