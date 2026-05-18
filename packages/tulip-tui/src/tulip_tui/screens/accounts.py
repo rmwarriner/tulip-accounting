@@ -26,6 +26,11 @@ from textual.widgets import DataTable, Footer, Header, Static
 from tulip_tui.data.accounts import AccountsData, AccountSummary, CurrencyTotal
 
 AccountsLoader = Callable[[], AccountsData]
+OpenAccountHandler = Callable[[str | None], None]
+
+
+def _noop_open_account(_account_id: str | None) -> None:
+    """Default drill-in handler — used when no transactions screen is wired."""
 
 
 def _fmt_balance(balance: Decimal | None) -> str:
@@ -76,11 +81,18 @@ class AccountsScreen(Screen[None]):
     }
     """
 
-    def __init__(self, loader: AccountsLoader) -> None:
-        """Store the loader the screen will pull ``AccountsData`` from."""
+    def __init__(
+        self,
+        loader: AccountsLoader,
+        *,
+        on_open_account: OpenAccountHandler = _noop_open_account,
+    ) -> None:
+        """Store the loader and the drill-in callback used by ``enter``."""
         super().__init__()
         self._loader = loader
+        self._on_open_account = on_open_account
         self._rendered_rows: list[str] = []
+        self._row_index_to_account_id: list[str | None] = []
         self.last_error: str | None = None
         self._empty: bool = False
 
@@ -101,6 +113,21 @@ class AccountsScreen(Screen[None]):
     def action_refresh(self) -> None:
         """Re-run the loader and rebuild the table in place."""
         self._load()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Drill into the selected row's account, if it maps to one.
+
+        DataTable fires ``RowSelected`` on ``enter``. Group-header and
+        subtotal rows have no associated account id — those are no-ops
+        so the cursor stays free to traverse the whole table.
+        """
+        index = event.cursor_row
+        if index < 0 or index >= len(self._row_index_to_account_id):
+            return
+        account_id = self._row_index_to_account_id[index]
+        if account_id is None:
+            return
+        self._on_open_account(account_id)
 
     # -- internals -----------------------------------------------------
 
@@ -128,6 +155,7 @@ class AccountsScreen(Screen[None]):
         table = self.query_one("#accounts", DataTable)
         table.clear()
         self._rendered_rows = []
+        self._row_index_to_account_id = []
 
         status = self.query_one("#status", Static)
         status.update(f"as of {data.as_of} · {len(data.accounts)} accounts")
@@ -138,6 +166,7 @@ class AccountsScreen(Screen[None]):
             # condition in the status strip and skip row emission.
             table.add_row("—", "No accounts yet.", "—", "—", "—")
             self._rendered_rows.append("No accounts yet.")
+            self._row_index_to_account_id.append(None)
             return
 
         self._empty = False
@@ -145,11 +174,13 @@ class AccountsScreen(Screen[None]):
             header_text = _group_header_text(group.type)
             table.add_row(header_text, "", "", "", "")
             self._rendered_rows.append(header_text)
+            self._row_index_to_account_id.append(None)
             for account in group.accounts:
                 self._add_account_row(table, account)
             subtotal_text = _subtotal_row_text(group.totals)
             table.add_row("", subtotal_text, "", "", "")
             self._rendered_rows.append(subtotal_text)
+            self._row_index_to_account_id.append(None)
 
     def _add_account_row(self, table: DataTable[str], account: AccountSummary) -> None:
         code = account.code or "—"
@@ -160,11 +191,13 @@ class AccountsScreen(Screen[None]):
         self._rendered_rows.append(
             " ".join([code, account.name, account.type, account.currency, balance])
         )
+        self._row_index_to_account_id.append(account.id)
 
     def _render_error(self, exc: BaseException) -> None:
         table = self.query_one("#accounts", DataTable)
         table.clear()
         self._rendered_rows = []
+        self._row_index_to_account_id = []
         self._empty = False
         status = self.query_one("#status", Static)
         status.update(f"[red]error:[/red] {exc}")

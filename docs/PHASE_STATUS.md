@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0 tulip-tui skeleton shipped + P9.1 accounts browser shipped** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0–P9.2 shipped (skeleton + accounts browser + transactions register with account drill-in)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
 
 ---
 
@@ -1593,11 +1593,40 @@ first slice that performs an authenticated API round-trip.
   cross-cutting decisions ([TUI_WIREFRAMES.md § Cross-cutting
   decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17)).
 
-### P9.2 — Transaction register — ⏳ queued
+### P9.2 — Transaction register — ✅ *(2026-05-17)*
 
-Scrollable, filterable transaction list with a posting detail pane;
-honors the same status / account / date filters that `tulip
-transactions list` exposes.
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Second TUI screen plus the
+first cross-screen navigation flow (drill into an account from the
+accounts browser).
+
+- **Data layer** — `tulip_tui/data/transactions.py` joins
+  `GET /v1/transactions` (filterable by `account_id` / `status` /
+  `from` / `to` / `limit`) with `GET /v1/accounts` for UUID→label
+  resolution. Unknown account ids render as `—`. Each
+  `TransactionSummary` carries an `amount_display` short string
+  (chosen as the first negative leg, sign preserved) so the table
+  doesn't recompute on every paint.
+- **TransactionsScreen** — DataTable with Date / Description /
+  Status / Postings (first two account+amount legs) / Amount;
+  posting-detail pane below that updates as the cursor moves and
+  surfaces reference + notes for the selected transaction.
+  `escape` pops back; `r` rebinds to refresh.
+- **Drill-in from AccountsScreen** — `Enter` on an account row fires
+  the new `on_open_account` callback (group-header / subtotal rows
+  are no-ops). The app wires that to push `TransactionsScreen` with
+  the account's id pre-filtered through a new
+  `transactions_loader_factory` constructor seam.
+- **Failure mode** — loader exceptions surface inline in both the
+  status strip and the detail pane; `escape` + `q` still work.
+- **Tests** — 7 unit tests for the data join (label resolution,
+  filter param passthrough, amount display, empty + error paths); 5
+  pilot tests for the screen + drill-in (row rendering, detail-pane
+  cursor follow, empty state, error path, accounts→transactions
+  navigation captures the right account id).
+- **Out of scope** — surfacing filter widgets in the UI (status /
+  date pickers), AI categorize / split / edit actions, the
+  "marker column" badges from the wireframe (those depend on data
+  the API doesn't yet expose).
 
 ### P9.3 — Reports viewer — ⏳ queued
 

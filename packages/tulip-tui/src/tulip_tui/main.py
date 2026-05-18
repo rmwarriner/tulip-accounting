@@ -1,9 +1,9 @@
 """Entry point for the ``tulip-tui`` console script.
 
-Resolves the CLI's stored ``api_url`` + on-disk token store, then
-hands a closure that round-trips ``load_accounts`` against that
-client into ``TulipTuiApp``. Tests bypass this path entirely by
-constructing ``TulipTuiApp(loader=...)`` directly.
+Resolves the CLI's stored ``api_url`` + on-disk token store, builds
+loaders for both the accounts and transactions screens, and hands
+them to ``TulipTuiApp``. Tests bypass this path entirely by
+constructing ``TulipTuiApp`` directly with their own loaders.
 """
 
 from __future__ import annotations
@@ -13,15 +13,31 @@ from tulip_cli.config import load_config
 from tulip_cli.http import TulipClient
 from tulip_tui.app import TulipTuiApp
 from tulip_tui.data.accounts import AccountsData, load_accounts
+from tulip_tui.data.transactions import TransactionsData, load_transactions
+from tulip_tui.screens.transactions import TransactionsLoader
 
 
-def _production_loader() -> AccountsData:
+def _accounts_loader() -> AccountsData:
     """Open a fresh ``TulipClient`` per load and round-trip ``load_accounts``."""
     config = load_config()
     with TulipClient(config, token_store=default_token_store()) as client:
         return load_accounts(client)
 
 
+def _transactions_loader_factory(account_id: str | None) -> TransactionsLoader:
+    """Build a loader that pulls transactions filtered by ``account_id``."""
+
+    def _load() -> TransactionsData:
+        config = load_config()
+        with TulipClient(config, token_store=default_token_store()) as client:
+            return load_transactions(client, account_id=account_id)
+
+    return _load
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
-    TulipTuiApp(loader=_production_loader).run()
+    TulipTuiApp(
+        loader=_accounts_loader,
+        transactions_loader_factory=_transactions_loader_factory,
+    ).run()
