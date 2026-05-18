@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0–P9.3 shipped (skeleton + accounts browser + transactions register + reports viewer)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + Phase 9 v1 shipped (skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
 
 ---
 
@@ -1663,12 +1663,38 @@ SQL the user has to type).
   cash-flow, year-over-year diffs on income-statement, etc.); a
   custom-query screen with a SQL editor.
 
-### P9.4 — Reconciliation + import status (read-only) — ⏳ queued
+### P9.4 — Reconciliation + import status (read-only) — ✅ *(2026-05-17)*
 
-Browse reconciliation envelopes (4-section state) and import batches
-(parsed lines). **Read only** — *acting* on a reconciliation is a
-mutation flow punted to post-v1 (see TUI_WIREFRAMES.md "Screens not yet
-mocked").
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Read-only browse of
+reconciliation envelopes and import batches. *Acting* on either
+(auto-match / manual match / complete; apply / revert) remains on
+the CLI per ADR-0007.
+
+- **Data layer** — `tulip_tui/data/reconciliations.py` wraps
+  `GET /v1/reconciliations` into `ReconciliationsData`;
+  `tulip_tui/data/imports.py` wraps `GET /v1/imports` into
+  `ImportsData`. Both are immutable triples of summary dataclasses
+  plus a thin loader.
+- **ReconciliationsScreen** — DataTable (Status / Period / Closing /
+  Id) with a detail pane below that surfaces the full envelope
+  (account_id, period bounds, starting + ending balances, created /
+  completed timestamps, source import-batch reference when present).
+- **ImportsScreen** — DataTable (Format / Filename / Status /
+  Counts / Id) with a detail pane (account_id, format, filename,
+  imported / skipped / error counts, created / applied / reverted
+  timestamps).
+- **App wiring** — new app-wide bindings `c` ("reconcile") and `i`
+  ("imports") push the respective screens. New
+  `reconciliations_loader` and `imports_loader` constructor seams
+  mirror the existing pattern; production `main.run()` installs
+  loaders that open a fresh `TulipClient` per fetch.
+- **Failure mode** — loader exceptions render inline in the detail
+  pane; `escape` + `q` still work on both screens.
+- **Tests** — 6 data-layer tests (3 per adapter: normal payload,
+  empty response, API error); 10 screen tests (4 per screen + 2 app
+  binding tests for `c` / `i`).
+- **Out of scope (per design pass)** — actioning reconciliations
+  (mutation), per-batch line drill-in (later polish if needed).
 
 ---
 

@@ -13,6 +13,8 @@ from tulip_cli.config import load_config
 from tulip_cli.http import TulipClient
 from tulip_tui.app import TulipTuiApp
 from tulip_tui.data.accounts import AccountsData, load_accounts
+from tulip_tui.data.imports import ImportsData, load_import_batches
+from tulip_tui.data.reconciliations import ReconciliationsData, load_reconciliations
 from tulip_tui.data.reports import ReportPayload, ReportSpec, load_report
 from tulip_tui.data.transactions import TransactionsData, load_transactions
 from tulip_tui.screens.transactions import TransactionsLoader
@@ -43,10 +45,24 @@ def _reports_loader(spec: ReportSpec) -> ReportPayload:
         return load_report(client, spec)
 
 
+def _reconciliations_loader() -> ReconciliationsData:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return load_reconciliations(client)
+
+
+def _imports_loader() -> ImportsData:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return load_import_batches(client)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
         loader=_accounts_loader,
         transactions_loader_factory=_transactions_loader_factory,
         reports_loader=_reports_loader,
+        reconciliations_loader=_reconciliations_loader,
+        imports_loader=_imports_loader,
     ).run()
