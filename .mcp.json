@@ -6,7 +6,7 @@
       "args": [
         "mcp-server-sqlite",
         "--db-path",
-        "./tulip.db"
+        "./deploy/docker/data/db/tulip.db"
       ]
     }
   }

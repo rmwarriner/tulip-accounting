@@ -39,8 +39,14 @@ junit.xml
 # Databases (SQLite / SQLCipher)
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# Docker bind-mount data dirs (compose.yml mounts ./deploy/docker/data/db
+# into the API container; runtime state, never committed).
+/deploy/docker/data/
 
 # IDE / editor
 # Team-shared VS Code config (extensions, workspace settings, debug

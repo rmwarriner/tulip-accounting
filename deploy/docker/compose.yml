@@ -68,7 +68,14 @@ services:
       - tulip-master-key
       - tulip-jwt-secret
     volumes:
-      - tulip-db:/var/lib/tulip/db
+      # DB is a host bind mount so the project-scoped `sqlite` MCP server
+      # (.mcp.json) can read the live container DB. Named volumes live in
+      # Docker's internal storage and aren't reachable from the host.
+      # Attachments stay on a named volume — the MCP doesn't read them
+      # and the bind-mount portability tradeoffs (uid 1000 on Linux,
+      # see entrypoint.sh's chown step) only matter for files we need
+      # to inspect off-container.
+      - ./data/db:/var/lib/tulip/db
       - tulip-attachments:/var/lib/tulip/attachments
     healthcheck:
       test:
@@ -82,7 +89,6 @@ services:
       start_period: 30s
 
 volumes:
-  tulip-db:
   tulip-attachments:
 
 secrets:

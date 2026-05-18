@@ -38,6 +38,15 @@ if [ -n "${TULIP_JWT_SECRET_FILE:-}" ] && [ -f "${TULIP_JWT_SECRET_FILE}" ]; the
     unset TULIP_JWT_SECRET_FILE
 fi
 
+# ---- 1.5. Reclaim ownership of bind-mounted data dirs --------------------
+# The Dockerfile chowns /var/lib/tulip to uid 1000 at image-build time, but
+# a bind mount overlays that with the host directory's ownership (typically
+# the host user's uid on Linux, often 501 on macOS Docker Desktop). Without
+# this, `gosu tulip alembic upgrade head` below fails with EACCES on the
+# very first boot against an empty bind mount. Idempotent — a no-op once
+# the dirs are already tulip-owned.
+chown -R tulip:tulip /var/lib/tulip/db /var/lib/tulip/attachments
+
 # ---- 2. Migrate as the tulip user (writes to the tulip-owned volume) -----
 # Skip migration when TULIP_SKIP_MIGRATION=1 — used by tests or by
 # operators running `docker compose run` for one-off commands.
