@@ -1123,20 +1123,47 @@ def edit_transaction(
         raise typer.Exit(err.exit_code) from None
 
 
+def _account_display_for_edit(account_id: str, accounts_by_id: dict[str, dict[str, Any]]) -> str:
+    """Pick the most-readable label for an account in the editor buffer (#304).
+
+    Fallback order:
+
+    1. ``code`` — already-namespaced and parser-safe (matches the user's
+       chart-of-accounts shorthand).
+    2. ``name`` — works for the common case of code-less accounts created
+       by an importer (e.g., "Checking"). Names with spaces survive the
+       round-trip because the parser accepts the hledger two-space
+       account/amount separator.
+    3. ``account_id`` — last-resort, for orphaned references where the
+       account row didn't come back in the lookup. The user will see a
+       UUID and can fix or delete the row by hand.
+    """
+    account = accounts_by_id.get(account_id, {})
+    code = account.get("code")
+    if isinstance(code, str) and code:
+        return code
+    name = account.get("name")
+    if isinstance(name, str) and name:
+        return name
+    return account_id
+
+
 def _render_tx_for_edit(tx: dict[str, Any], accounts_by_id: dict[str, dict[str, Any]]) -> str:
     """Render an existing transaction back into the hledger-subset format.
 
-    Uses account ``code`` when available; falls back to UUID. Inverse of
-    :func:`tulip_cli.commands._ledger.parse_ledger_text`. Notes (if any)
-    are rendered as a bracketed comment block at the bottom of the
-    buffer; see :func:`_extract_notes_block`.
+    Inverse of :func:`tulip_cli.commands._ledger.parse_ledger_text`.
+    Account labels use the fallback chain in
+    :func:`_account_display_for_edit` so code-less accounts render as
+    their human-readable name rather than a bare UUID (#304). The
+    account/amount separator is two spaces — the hledger convention the
+    parser also accepts so names containing single spaces round-trip.
+    Notes (if any) are rendered as a bracketed comment block at the
+    bottom of the buffer; see :func:`_extract_notes_block`.
     """
     lines: list[str] = [_EDITOR_TEMPLATE_HEADER, ""]
     lines.append(f"{tx.get('date', '')} {tx.get('description', '')}")
     for p in tx.get("postings", []):
-        account_ref = accounts_by_id.get(p.get("account_id", ""), {}).get("code") or p.get(
-            "account_id", ""
-        )
+        account_ref = _account_display_for_edit(str(p.get("account_id", "")), accounts_by_id)
         amount = p.get("amount", "")
         currency = p.get("currency", "")
         lines.append(f"  {account_ref}  {amount} {currency}")
