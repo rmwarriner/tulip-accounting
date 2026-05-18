@@ -13,6 +13,7 @@ from tulip_cli.config import load_config
 from tulip_cli.http import TulipClient
 from tulip_tui.app import TulipTuiApp
 from tulip_tui.data.accounts import AccountsData, load_accounts
+from tulip_tui.data.envelopes import EnvelopesData, load_envelopes
 from tulip_tui.data.imports import ImportsData, load_import_batches
 from tulip_tui.data.reconciliations import ReconciliationsData, load_reconciliations
 from tulip_tui.data.reports import ReportPayload, ReportSpec, load_report
@@ -57,6 +58,12 @@ def _imports_loader() -> ImportsData:
         return load_import_batches(client)
 
 
+def _envelopes_loader() -> EnvelopesData:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return load_envelopes(client)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
@@ -65,4 +72,5 @@ def run() -> None:
         reports_loader=_reports_loader,
         reconciliations_loader=_reconciliations_loader,
         imports_loader=_imports_loader,
+        envelopes_loader=_envelopes_loader,
     ).run()

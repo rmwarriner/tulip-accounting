@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007.
+**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse) + P9.5.a envelopes browser in flight** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007. Phase 9 v1 read continuation ([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)) opens with three read-only browse slices (envelopes / sinking funds / pending) on the same loader-injection pattern; [#400](https://github.com/rmwarriner/tulip-accounting/issues/400) (envelopes) is the first.
 
 ---
 
@@ -1696,6 +1696,46 @@ the CLI per ADR-0007.
   binding tests for `c` / `i`).
 - **Out of scope (per design pass)** — actioning reconciliations
   (mutation), per-batch line drill-in (later polish if needed).
+
+### P9.5 — TUI read-only continuation (in flight)
+
+Per [#399](https://github.com/rmwarriner/tulip-accounting/issues/399). Three more read-only browse screens (envelopes,
+sinking funds, pending) that complete the v1 read surface — every
+mutation flow still stays on the CLI per ADR-0007.
+
+#### P9.5.a — Envelopes browser — ✅ *(2026-05-18)*
+
+Per [#400](https://github.com/rmwarriner/tulip-accounting/issues/400). New app-wide `e` binding pushes the
+envelopes browser.
+
+- **Data layer** — `tulip_tui/data/envelopes.py` adds
+  `EnvelopeSummary` / `EnvelopesData` (frozen) and
+  `load_envelopes(client)`. Joins `GET /v1/envelopes` with
+  `POST /v1/pools/balances` (the batched balance endpoint from #137).
+  Envelopes that don't come back in the balance response keep
+  `balance = None` so the screen renders `—` instead of `0.00`
+  (same convention as `data/accounts.py`). Empty envelope list
+  short-circuits the POST. Refill-rule summarisation
+  (`fixed: 600.00 USD` / `target: 200.00 USD` / `pct-inflow: 5%`)
+  is duplicated inline rather than reaching into the
+  `tulip_cli.commands._pools._summarize_refill_rule` private.
+- **EnvelopesScreen** — DataTable with seven columns (Name /
+  Currency / Period / Rollover / Budget / Balance / Refill); detail
+  pane below renders the full envelope on cursor highlight.
+  `escape` pops, `r` refreshes. Inline error pane on loader failure.
+- **App wiring** — new `e` binding + `envelopes_loader` constructor
+  seam with a `_no_op_envelopes_loader` default (consistent with the
+  existing per-screen seam pattern). Production `main.run()` installs
+  the loader that opens a fresh `TulipClient` per fetch.
+- **Tests** — 10 data-layer tests (happy join, empty short-circuit,
+  API-error path, refill-summary table for each strategy + None +
+  unknown); 5 pilot-mode screen tests (rows render with formatted
+  amounts + refill summary, cursor follows detail, empty state,
+  inline error, `e` binding pushes the screen).
+- **Out of scope** — period-bucketed "Spent vs Budget" view (no API
+  endpoint exposes it; deferred to a backend slice), Needs / Wants /
+  Bills / Family group headers (no `group` field on the API), every
+  mutation (fund / move / edit stay on the CLI).
 
 ---
 

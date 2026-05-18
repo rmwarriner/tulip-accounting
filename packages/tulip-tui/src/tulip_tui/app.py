@@ -21,10 +21,12 @@ from typing import ClassVar
 from textual.app import App
 from textual.binding import Binding, BindingType
 
+from tulip_tui.data.envelopes import EnvelopesData
 from tulip_tui.data.imports import ImportsData
 from tulip_tui.data.reconciliations import ReconciliationsData
 from tulip_tui.data.reports import ReportPayload, ReportSpec
 from tulip_tui.screens.accounts import AccountsLoader, AccountsScreen
+from tulip_tui.screens.envelopes import EnvelopesScreen
 from tulip_tui.screens.imports import ImportsScreen
 from tulip_tui.screens.reconciliations import ReconciliationsScreen
 from tulip_tui.screens.reports import ReportsScreen
@@ -34,6 +36,7 @@ TransactionsLoaderFactory = Callable[[str | None], TransactionsLoader]
 ReportLoader = Callable[[ReportSpec], ReportPayload]
 ReconciliationsLoader = Callable[[], ReconciliationsData]
 ImportsLoader = Callable[[], ImportsData]
+EnvelopesLoader = Callable[[], EnvelopesData]
 
 
 def _no_op_transactions_factory(_account_id: str | None) -> TransactionsLoader:
@@ -61,6 +64,10 @@ def _no_op_imports_loader() -> ImportsData:
     raise RuntimeError("imports loader not configured")
 
 
+def _no_op_envelopes_loader() -> EnvelopesData:
+    raise RuntimeError("envelopes loader not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -71,6 +78,7 @@ class TulipTuiApp(App[None]):
         Binding("p", "open_reports", "reports", show=True),
         Binding("c", "open_reconciliations", "reconcile", show=True),
         Binding("i", "open_imports", "imports", show=True),
+        Binding("e", "open_envelopes", "envelopes", show=True),
     ]
 
     def __init__(
@@ -81,6 +89,7 @@ class TulipTuiApp(App[None]):
         reports_loader: ReportLoader = _no_op_reports_loader,
         reconciliations_loader: ReconciliationsLoader = _no_op_reconciliations_loader,
         imports_loader: ImportsLoader = _no_op_imports_loader,
+        envelopes_loader: EnvelopesLoader = _no_op_envelopes_loader,
     ) -> None:
         """Store the per-screen loaders / factories used at mount and drill-in."""
         super().__init__()
@@ -89,6 +98,7 @@ class TulipTuiApp(App[None]):
         self._reports_loader = reports_loader
         self._reconciliations_loader = reconciliations_loader
         self._imports_loader = imports_loader
+        self._envelopes_loader = envelopes_loader
 
     def on_mount(self) -> None:
         """Push the accounts browser as the initial screen."""
@@ -110,3 +120,7 @@ class TulipTuiApp(App[None]):
     def action_open_imports(self) -> None:
         """Push the import batches browser onto the screen stack."""
         self.push_screen(ImportsScreen(loader=self._imports_loader))
+
+    def action_open_envelopes(self) -> None:
+        """Push the envelopes browser onto the screen stack."""
+        self.push_screen(EnvelopesScreen(loader=self._envelopes_loader))
