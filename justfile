@@ -95,6 +95,36 @@ mutate:
 mutate-results:
     uv run mutmut results
 
+# ---------------------------------------------------------------------------
+# Docker dev stack
+# ---------------------------------------------------------------------------
+
+# The DB lives in a host bind mount (./deploy/docker/data/db), so `down -v`
+# does not touch it — Docker only manages named volumes. This stops the
+# stack, removes the SQLite file + its WAL sidecars, then brings the stack
+# back up; the entrypoint re-runs `alembic upgrade head` against the empty
+# dir, leaving a schema-current DB.
+#
+# Pass extra flags through to `up`, e.g. after a Dockerfile or source change:
+#     just docker-reset --build
+# If just refuses the leading dash, separate with --:
+#     just docker-reset -- --build
+#
+# Attachments (still a named volume) are preserved; use docker-reset-all to
+# wipe those too.
+
+# Reset the local Docker stack's SQLite DB for a clean regression-test run.
+docker-reset *FLAGS:
+    docker compose -f deploy/docker/compose.yml down
+    rm -f deploy/docker/data/db/tulip.db deploy/docker/data/db/tulip.db-wal deploy/docker/data/db/tulip.db-shm
+    docker compose -f deploy/docker/compose.yml up --wait -d {{FLAGS}}
+
+# Same as docker-reset but also wipes the attachments named volume.
+docker-reset-all *FLAGS:
+    docker compose -f deploy/docker/compose.yml down -v
+    rm -f deploy/docker/data/db/tulip.db deploy/docker/data/db/tulip.db-wal deploy/docker/data/db/tulip.db-shm
+    docker compose -f deploy/docker/compose.yml up --wait -d {{FLAGS}}
+
 # Replay the docs/QUICKSTART.md flow end-to-end against a fresh stack
 # (#138). Intent is to surface drift between the doc and the code:
 # if any of the commands in the walkthrough stop returning a 0 exit
