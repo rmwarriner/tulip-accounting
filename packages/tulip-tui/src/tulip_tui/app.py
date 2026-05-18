@@ -23,12 +23,14 @@ from textual.binding import Binding, BindingType
 
 from tulip_tui.data.envelopes import EnvelopesData
 from tulip_tui.data.imports import ImportsData
+from tulip_tui.data.pending import PendingData
 from tulip_tui.data.reconciliations import ReconciliationsData
 from tulip_tui.data.reports import ReportPayload, ReportSpec
 from tulip_tui.data.sinking_funds import SinkingFundsData
 from tulip_tui.screens.accounts import AccountsLoader, AccountsScreen
 from tulip_tui.screens.envelopes import EnvelopesScreen
 from tulip_tui.screens.imports import ImportsScreen
+from tulip_tui.screens.pending import PendingScreen
 from tulip_tui.screens.reconciliations import ReconciliationsScreen
 from tulip_tui.screens.reports import ReportsScreen
 from tulip_tui.screens.sinking_funds import SinkingFundsScreen
@@ -40,6 +42,7 @@ ReconciliationsLoader = Callable[[], ReconciliationsData]
 ImportsLoader = Callable[[], ImportsData]
 EnvelopesLoader = Callable[[], EnvelopesData]
 SinkingFundsLoader = Callable[[], SinkingFundsData]
+PendingLoader = Callable[[], PendingData]
 
 
 def _no_op_transactions_factory(_account_id: str | None) -> TransactionsLoader:
@@ -75,6 +78,10 @@ def _no_op_sinking_funds_loader() -> SinkingFundsData:
     raise RuntimeError("sinking funds loader not configured")
 
 
+def _no_op_pending_loader() -> PendingData:
+    raise RuntimeError("pending loader not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -87,6 +94,7 @@ class TulipTuiApp(App[None]):
         Binding("i", "open_imports", "imports", show=True),
         Binding("e", "open_envelopes", "envelopes", show=True),
         Binding("s", "open_sinking_funds", "sinking funds", show=True),
+        Binding("n", "open_pending", "pending", show=True),
     ]
 
     def __init__(
@@ -99,6 +107,7 @@ class TulipTuiApp(App[None]):
         imports_loader: ImportsLoader = _no_op_imports_loader,
         envelopes_loader: EnvelopesLoader = _no_op_envelopes_loader,
         sinking_funds_loader: SinkingFundsLoader = _no_op_sinking_funds_loader,
+        pending_loader: PendingLoader = _no_op_pending_loader,
     ) -> None:
         """Store the per-screen loaders / factories used at mount and drill-in."""
         super().__init__()
@@ -109,6 +118,7 @@ class TulipTuiApp(App[None]):
         self._imports_loader = imports_loader
         self._envelopes_loader = envelopes_loader
         self._sinking_funds_loader = sinking_funds_loader
+        self._pending_loader = pending_loader
 
     def on_mount(self) -> None:
         """Push the accounts browser as the initial screen."""
@@ -138,3 +148,7 @@ class TulipTuiApp(App[None]):
     def action_open_sinking_funds(self) -> None:
         """Push the sinking funds browser onto the screen stack."""
         self.push_screen(SinkingFundsScreen(loader=self._sinking_funds_loader))
+
+    def action_open_pending(self) -> None:
+        """Push the pending transactions browser onto the screen stack."""
+        self.push_screen(PendingScreen(loader=self._pending_loader))

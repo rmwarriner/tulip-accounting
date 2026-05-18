@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse) + P9.5.a envelopes browser shipped + P9.5.b sinking funds browser in flight** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007. Phase 9 v1 read continuation ([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)) opens with three read-only browse slices (envelopes / sinking funds / pending) on the same loader-injection pattern; [#400](https://github.com/rmwarriner/tulip-accounting/issues/400) (envelopes) is the first.
+**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse) + P9.5 read continuation shipped (envelopes + sinking funds + pending browsers)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007. Phase 9 v1 read continuation ([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)) opens with three read-only browse slices (envelopes / sinking funds / pending) on the same loader-injection pattern; [#400](https://github.com/rmwarriner/tulip-accounting/issues/400) (envelopes) is the first.
 
 ---
 
@@ -1737,7 +1737,7 @@ envelopes browser.
   Bills / Family group headers (no `group` field on the API), every
   mutation (fund / move / edit stay on the CLI).
 
-#### P9.5.b — Sinking funds browser — ✅ *(2026-05-18)*
+#### P9.5.b — Sinking funds browser — ✅ *(2026-05-18, [#409](https://github.com/rmwarriner/tulip-accounting/pull/409))*
 
 Per [#408](https://github.com/rmwarriner/tulip-accounting/issues/408). New app-wide `s` binding pushes the
 sinking funds browser. Mirrors the P9.5.a envelopes pattern almost
@@ -1768,6 +1768,51 @@ exactly — pools are pools, so the data layer reuses the same
   sinking funds together; goal-date math ("on track / behind by
   N days") needs backend support; every mutation (contribute / edit /
   deactivate) stays on the CLI per ADR-0007.
+
+#### P9.5.c — Pending transactions browser — ✅ *(2026-05-18)*
+
+Per [#412](https://github.com/rmwarriner/tulip-accounting/issues/412). Final slice of [#399](https://github.com/rmwarriner/tulip-accounting/issues/399).
+New app-wide `n` binding pushes the pending browser (`p` is reports).
+
+- **Data layer** — `tulip_tui/data/pending.py` adds `PendingTransaction`
+  / `PendingData` (frozen). `load_pending(client, *, today=None,
+  stale_days=14)` joins `GET /v1/transactions?status=pending` with
+  `GET /v1/accounts` for label resolution, computes per-row `age_days`
+  from `today - tx.date`, and pre-splits into **Stale (>14d)** and
+  **Recent** (the stale threshold default is pinned in
+  [TUI_WIREFRAMES.md § Cross-cutting decisions § 3](TUI_WIREFRAMES.md#3-stale-thresholds)).
+  Strict boundary: age=14 is recent; age=15 is stale. `today` is
+  injectable so tests don't depend on wall-clock; production uses
+  `datetime.now(UTC).date()`.
+- **PendingScreen** — two stacked DataTables with group headers
+  (Stale / Recent), six columns each (Date / Description / Account /
+  Ref / Amount / Age). Detail pane below renders the full transaction
+  on cursor highlight, with a focus-aware handler so cross-table
+  navigation (tab between stale + recent) drives the right row. `r`
+  refreshes, `escape` pops, loader exceptions render inline.
+- **App wiring** — new `n` binding + `pending_loader` constructor seam
+  with a `_no_op_pending_loader` default. Production `main.run()`
+  installs the loader that opens a fresh `TulipClient` per fetch.
+- **Tests** — 5 data-layer tests (split at boundary, empty groups,
+  API-error path, unknown-account → `—` fallback, custom
+  `stale_days` threshold); 6 pilot-mode screen tests (rows render in
+  both groups, group counts in status strip, detail follows cursor
+  across tab-traversal, empty state, inline error, `n` binding pushes
+  the screen).
+- **Out of scope** — per-type filters (chk / hold / ach / xfer; the API
+  doesn't structure transaction types), paired-transfer `↔` marker
+  ([`paired_shadow_tx_id`](TUI_WIREFRAMES.md) exists but surfacing it
+  is post-v1 polish), real-liquid vitals strip (not a v1 thing), all
+  mutations (mark cleared / void / reissue / match-to-bank stay on
+  the CLI per ADR-0007).
+
+With this slice [#399](https://github.com/rmwarriner/tulip-accounting/issues/399) closes — every read-only domain surface
+the wireframes mock now has a TUI browser. App-wide bindings as
+shipped: `q` quit · `p` reports · `c` reconcile · `i` imports · `e`
+envelopes · `s` sinking funds · `n` pending · `enter` (on account
+row) → transactions · `escape` pop · `r` refresh. Mutation surfaces
+all remain on the CLI for v1; surfacing them as TUI flows is the
+next phase.
 
 ---
 
