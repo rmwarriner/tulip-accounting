@@ -294,7 +294,14 @@ def test_delete_aborts_on_no(authed_session: str) -> None:
 
 
 @pytest.mark.integration
-def test_edit_posted_returns_not_editable(authed_session: str) -> None:
+def test_edit_posted_transparently_replaces(authed_session: str) -> None:
+    """POSTED edits go through transparently via /replace (#209b).
+
+    EDITOR=cat returns the rendered buffer unchanged; the CLI parses
+    it, sees no diff in shape, and still completes the void+recreate
+    round-trip — the audit trail records the edit even when the user
+    saved without modification.
+    """
     _seed_accounts(authed_session)
     tx_id = _post_via_cli(authed_session)
     result = _run_cli(
@@ -302,9 +309,10 @@ def test_edit_posted_returns_not_editable(authed_session: str) -> None:
         "edit",
         tx_id,
         api_url=authed_session,
+        extra_env={"EDITOR": "cat"},
     )
-    assert result.returncode != 0
-    assert "not editable" in (result.stdout + result.stderr).lower()
+    assert result.returncode == 0, result.stderr
+    assert "replaced transaction" in (result.stdout + result.stderr).lower()
 
 
 # ---- unauthenticated rejections -------------------------------------------

@@ -36,8 +36,13 @@ from rich.table import Table
 
 from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
+from tulip_cli._preferences import (
+    get_reconciled_edit_confirm,
+    set_reconciled_edit_confirm,
+)
 from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
+from tulip_cli.commands._edit_decision import EditAction, decide_edit_action
 from tulip_cli.commands._editor import edit_buffer
 from tulip_cli.commands._ledger import LedgerParseError, parse_ledger_text
 from tulip_cli.commands.accounts import _resolve_account
@@ -865,6 +870,84 @@ def delete_transaction(
     typer.echo(f"Deleted transaction {resolved}.")
 
 
+# Module-level so the "[S] yes, don't ask again this session" answer
+# from the RECONCILED-edit prompt persists across multiple ``tulip
+# transactions edit`` calls within the same Typer invocation chain
+# (issue #209b). Reset to False on each fresh ``tulip`` process — a
+# new shell invocation gets a clean slate.
+_SESSION_RECONCILED_EDIT_CONFIRMED: bool = False
+
+
+def _reset_session_confirmation_for_tests() -> None:
+    """Test seam: reset the in-process RECONCILED-confirmation flag."""
+    global _SESSION_RECONCILED_EDIT_CONFIRMED
+    _SESSION_RECONCILED_EDIT_CONFIRMED = False
+
+
+def _reconciled_edit_required_confirmation_problem() -> dict[str, Any]:
+    return {
+        "type": "/.well-known/errors/transaction.reconciled_edit_requires_confirmation",
+        "title": "Editing a reconciled transaction requires explicit confirmation",
+        "status": 400,
+        "detail": (
+            "This transaction is RECONCILED; editing breaks the "
+            "reconciliation linkage. In machine-readable mode "
+            "(--json) you must explicitly opt in by re-running with "
+            "--force-reconciled-edit. To opt in once at an "
+            "interactive TTY (and persist for future sessions), run "
+            "`tulip transactions edit TXID` without --json and answer "
+            "[A]lways on the prompt."
+        ),
+        "instance": "",
+        "code": "transaction.reconciled_edit_requires_confirmation",
+    }
+
+
+def _prompt_reconciled_edit(reconciliation_hint: str) -> str:
+    """Render the Y/N/S/A prompt; return one of ``yes``, ``no``, ``session``, ``always``.
+
+    The ``reconciliation_hint`` is a human-readable string telling the
+    user *which* reconciliation the linkage will break (e.g., the
+    statement's period). Today it's the transaction's id-prefix; a
+    later slice could surface the reconciliation envelope id directly
+    when the API exposes it on TransactionRead.
+    """
+    typer.echo(
+        f"This transaction is RECONCILED ({reconciliation_hint}). Editing will "
+        "break the reconciliation linkage; the statement line will return to "
+        "the unmatched pool.",
+        err=True,
+    )
+    typer.echo(
+        "  [Y]es        proceed this time",
+        err=True,
+    )
+    typer.echo(
+        "  [N]o         cancel the edit (default)",
+        err=True,
+    )
+    typer.echo(
+        "  [S]          proceed and don't ask again this session",
+        err=True,
+    )
+    typer.echo(
+        "  [A]lways     proceed and don't ask again ever (persisted)",
+        err=True,
+    )
+    try:
+        raw = typer.prompt("Edit anyway?", default="n", show_default=True)
+    except (typer.Abort, EOFError):
+        return "no"
+    answer = raw.strip().lower()
+    if answer in ("y", "yes"):
+        return "yes"
+    if answer in ("s",):
+        return "session"
+    if answer in ("a", "always"):
+        return "always"
+    return "no"
+
+
 @transactions_app.command("edit")
 def edit_transaction(
     ctx: typer.Context,
@@ -875,33 +958,67 @@ def edit_transaction(
             metavar="TXID",
         ),
     ],
+    force_reconciled_edit: Annotated[
+        bool,
+        typer.Option(
+            "--force-reconciled-edit",
+            help=(
+                "Skip the interactive 'this transaction is RECONCILED' "
+                "prompt and proceed with the void+recreate immediately. "
+                "Required in --json mode to edit a RECONCILED transaction; "
+                "optional at a TTY. Has no effect on PENDING / POSTED "
+                "transactions."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Edit a PENDING transaction in ``$EDITOR`` (hledger format).
+    """Edit a transaction in ``$EDITOR`` (hledger format).
 
-    POSTED / RECONCILED transactions cannot be edited; use ``void``
-    + create a corrected entry instead.
+    Behaviour depends on the transaction's current status:
+
+    * **PENDING** — in-place PATCH, same as before.
+    * **POSTED** — transparent void + recreate via
+      ``POST /v1/transactions/{id}/replace`` (#209a). No prompt; the
+      reversal carries an "Edited via ``tulip transactions edit``"
+      reason for the audit trail.
+    * **RECONCILED** — same void + recreate, but at an interactive TTY
+      we first warn that the reconciliation linkage will break and
+      prompt ``[Y]es`` / ``[N]o`` (default) / ``[S]`` (don't ask again
+      this session) / ``[A]lways`` (persisted to
+      ``~/.config/tulip/preferences.json``). In ``--json`` mode without
+      ``--force-reconciled-edit``, the command rejects with the
+      ``transaction.reconciled_edit_requires_confirmation`` problem
+      detail rather than blocking on a prompt.
     """
+    global _SESSION_RECONCILED_EDIT_CONFIRMED
+
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
 
-    # Pre-flight: load the existing transaction so we can render it into the
-    # editor buffer and reject early when it's not PENDING.
     try:
         with _client(config, as_json=as_json) as client:
             resolved = _resolve_tx_id(client, tx_id, as_json=as_json)
             current = client.get(f"/v1/transactions/{resolved}", authenticated=True).json()
-            if current.get("status") != "pending":
+            status = str(current.get("status", "")).lower()
+            if status not in ("pending", "posted", "reconciled"):
+                # E.g. a voided transaction. The /replace endpoint
+                # would reject anyway with transaction.already_voided;
+                # surface the same clear error up front so we don't
+                # waste an editor cycle.
                 from tulip_cli.errors import CliError as _CliError
 
                 raise _CliError(
                     problem={
-                        "code": "transaction.not_editable",
+                        "type": "/.well-known/errors/transaction.not_editable",
                         "title": "Transaction is not editable",
                         "status": 409,
                         "detail": (
-                            "Only PENDING transactions can be edited. Use "
-                            "`tulip transactions void` for posted transactions."
+                            f"Cannot edit a transaction with status {status!r}. "
+                            "Only PENDING / POSTED / RECONCILED transactions "
+                            "are editable."
                         ),
+                        "instance": "",
+                        "code": "transaction.not_editable",
                     },
                     as_json=as_json,
                 )
@@ -921,6 +1038,34 @@ def edit_transaction(
                 except LedgerParseError as exc:
                     buffer = _with_banner(edited, str(exc))
                     continue
+
+                action = decide_edit_action(
+                    status=status,
+                    json_mode=as_json,
+                    force=force_reconciled_edit,
+                    session_confirmed=_SESSION_RECONCILED_EDIT_CONFIRMED,
+                    persisted_pref=get_reconciled_edit_confirm(),
+                )
+
+                if action is EditAction.REJECT_JSON_MODE:
+                    from tulip_cli.errors import CliError as _CliError
+
+                    raise _CliError(
+                        problem=_reconciled_edit_required_confirmation_problem(),
+                        as_json=as_json,
+                    )
+
+                if action is EditAction.PROMPT_REQUIRED:
+                    answer = _prompt_reconciled_edit(reconciliation_hint=str(resolved)[:8])
+                    if answer == "no":
+                        typer.echo("Cancelled; transaction unchanged.")
+                        return
+                    if answer == "session":
+                        _SESSION_RECONCILED_EDIT_CONFIRMED = True
+                    elif answer == "always":
+                        set_reconciled_edit_confirm("never_ask")
+                    action = EditAction.REPLACE_AFTER_PROMPT
+
                 try:
                     resolved_postings = _resolve_postings(
                         client,
@@ -931,14 +1076,27 @@ def edit_transaction(
                         "description": parsed.description,
                         "postings": resolved_postings,
                     }
-                    if not isinstance(notes_value, _UNSET_TYPE):
-                        # Explicit value (including None to clear).
-                        body["notes"] = notes_value
-                    response = client.patch(
-                        f"/v1/transactions/{resolved}",
-                        json=body,
-                        authenticated=True,
-                    )
+                    if action is EditAction.PATCH:
+                        if not isinstance(notes_value, _UNSET_TYPE):
+                            body["notes"] = notes_value
+                        response = client.patch(
+                            f"/v1/transactions/{resolved}",
+                            json=body,
+                            authenticated=True,
+                        )
+                    else:  # REPLACE_SILENT or REPLACE_AFTER_PROMPT
+                        body["reason"] = "Edited via `tulip transactions edit`"
+                        if not isinstance(notes_value, _UNSET_TYPE) and notes_value is not None:
+                            # /replace creates a new tx; only thread notes
+                            # through when the user explicitly set them.
+                            # An explicit clear (None) is meaningless for
+                            # a fresh tx and is dropped.
+                            body["notes"] = notes_value
+                        response = client.post(
+                            f"/v1/transactions/{resolved}/replace",
+                            json=body,
+                            authenticated=True,
+                        )
                 except CliError as err:
                     code = str(err.problem.get("code", ""))
                     if code in _RECOVERABLE_CODES:
@@ -950,7 +1108,15 @@ def edit_transaction(
                 if as_json:
                     sys.stdout.write(response.text + "\n")
                     return
-                _render_transaction(response.json())
+                if action is EditAction.PATCH:
+                    _render_transaction(response.json())
+                else:
+                    body_out = response.json()
+                    typer.echo(
+                        f"Replaced transaction {body_out['source_id']} → "
+                        f"{body_out['replacement_id']} "
+                        f"(reversal {body_out['reversal_id']})."
+                    )
                 return
     except CliError as err:
         err.render()
