@@ -902,12 +902,20 @@ tulip-accounting/
 │   │   │   └── templates/     # Jinja2 + tulip-print.css
 │   │   └── tests/
 │   │
-│   └── tulip-cli/             # CLI client (Typer)
-│       ├── src/tulip_cli/
-│       │   ├── commands/      # add, register, balance, accounts, import, export, ...
-│       │   ├── auth/          # token storage via keyring
+│   ├── tulip-cli/             # CLI client (Typer)
+│   │   ├── src/tulip_cli/
+│   │   │   ├── commands/      # add, register, balance, accounts, import, export, ...
+│   │   │   ├── auth/          # token storage via keyring
+│   │   │   └── main.py
+│   │   └── tests/
+│   │
+│   └── tulip-tui/             # Terminal UI client (Textual) — Phase 9 v1, read-only
+│       ├── src/tulip_tui/
+│       │   ├── data/          # API → value-object adapters (accounts, transactions, reports, …)
+│       │   ├── screens/       # Textual Screen subclasses, one per browse surface
+│       │   ├── app.py         # TulipTuiApp + app-wide bindings
 │       │   └── main.py
-│       └── tests/
+│       └── tests/             # pilot-mode tests via Textual's headless harness
 │
 ├── deploy/
 │   ├── docker/                # Dockerfile + docker-compose.yml for home-server install
@@ -931,6 +939,7 @@ tulip-accounting/
 - `tulip-storage` may import `tulip-core`. The reverse is forbidden.
 - `tulip-api` orchestrates `tulip-core`, `tulip-storage`, `tulip-ai`. It is the only layer that knows about HTTP.
 - `tulip-cli` talks to `tulip-api` over HTTP. It does not import `tulip-storage` or `tulip-core` directly. (This is the same contract a future web client will follow.)
+- `tulip-tui` talks to `tulip-api` over HTTP via the `tulip-cli` HTTP client + token store (the only `tulip-cli` import it makes). It must not import `tulip-storage`, `tulip-api`, `tulip-ai`, `tulip-importers`, `tulip-reports`, `sqlalchemy`, `alembic`, `fastapi`, `starlette`, or `uvicorn`; the boundary is enforced by `packages/tulip-tui/tests/test_architecture.py`.
 - `tulip-importers` and `tulip-reports` are CLI tools / libraries that call the API.
 
 ---
@@ -1033,7 +1042,7 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - 🔄 **Documentation pass** — ARCHITECTURE, THREAT_MODEL, PHASE_STATUS, README, QUICKSTART brought current through Phase 8. DEPLOYMENT, SECURITY, AI docs still pending.
 - Performance pass on common queries *(pending)*
 
-### Phase 9 — Terminal UI (TUI)
+### Phase 9 — Terminal UI (TUI) — ✅ v1 shipped (2026-05-17 → 2026-05-18)
 
 Per [ADR-0007](adrs/0007-terminal-ui.md). A [Textual](https://textual.textualize.io/)
 terminal UI as an **additive client** — the CLI stays as the scriptable
@@ -1041,15 +1050,22 @@ terminal UI as an **additive client** — the CLI stays as the scriptable
 review surface. Same HTTP API, no backend changes, no new attack
 surface.
 
-- New workspace package `tulip-tui` — an API client like `tulip-cli`;
-  the architecture-boundary test extends to it (no server / storage
-  imports).
-- **v1 TUI scope is read / browse only** — navigable account browser,
-  transaction register, reports, reconciliation status, import
-  batches. No mutations in the first cut; editing / posting /
-  reconcile actions land in later Phase 9 slices once the navigation
-  shell + read surfaces are proven.
-- Tested headlessly via Textual's pilot mode; a `Test (tulip-tui)`
+- ✅ Workspace package `tulip-tui` lives in the tree — an API client
+  like `tulip-cli`; the architecture-boundary test rejects any
+  `tulip_storage` / `tulip_api` / `tulip_ai` / `tulip_importers` /
+  `tulip_reports` / `sqlalchemy` / `alembic` / `fastapi` / `starlette`
+  / `uvicorn` import.
+- ✅ **v1 TUI scope is read / browse only** — slices P9.0 (skeleton),
+  P9.1 (accounts browser), P9.2 (transactions register with
+  account drill-in), P9.3 (reports viewer over the eight
+  `/v1/reports/*` reports), P9.4 (reconciliations + import-batches
+  browse). App-wide bindings: `q` quit · `p` reports · `c` reconcile
+  · `i` imports · `enter` (on account row) → transactions · `escape`
+  pop · `r` refresh.
+- Mutation surfaces (categorize / split / edit / reconcile-action /
+  apply-import) stay on the CLI for v1 and surface as later Phase 9
+  slices when the read surfaces have soaked.
+- ✅ Tested headlessly via Textual's pilot mode; the `Test (tulip-tui)`
   shard joins the per-package CI matrix (ADR-0006).
 - The CLI is **not** deprecated — the README's "scriptable CLI client"
   value proposition stands.

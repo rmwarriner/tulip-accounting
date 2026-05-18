@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + Phase 9 v1 shipped (skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
+**Last updated:** 2026-05-18 · `main` @ **Phase 8 deep security audit complete + Phase 9 v1 shipped (read-only TUI: skeleton + accounts browser + transactions register + reports viewer + reconciliations / imports browse)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318) and all five P9.0–P9.4 slices merged across PRs #383 / #384 / #385 / #386 against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309); mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1 per ADR-0007.
 
 ---
 
@@ -30,9 +30,9 @@ Single source of truth for what's shipped, what's in flight, and what's queued. 
 
 - **CLI + importers usability bundle (post-audit):** ✅ shipped — transaction id-prefix display + prefix resolution (#207/#211), interactive reconciliation wizard (#205), `tulip imports show`/`list` (#203/#272), QIF split-posting fidelity (#270) + non-transaction-section skipping (#198) + multi-account import with transfer pairing (#195a/#195b), paper-statement reconciliation (#275), `tulip imports apply --posted` (#210), currency-natural amount precision (#213), account names in `transactions list`/`show` (#214), transaction-level notes (#271), account resolution by name / hierarchical path (#197), interactive UUID picker (#273), `--pending` balance toggle (#274), Rich `Console` honouring `COLUMNS` (#285), right-aligned numeric columns (#289), `/reject` OpenAPI 400 (#194).
 
-- **Phase 9 (terminal UI):** 🔄 design pass complete (2026-05-17) + P9.0 skeleton shipped (2026-05-17) + P9.1 accounts browser shipped (2026-05-17) — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (CLI stays the scriptable surface). v1 scope is read/browse only. Cross-cutting design questions resolved: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). `packages/tulip-tui/` workspace package, pilot-mode smoke test, and the accounts browser (grouped DataTable with per-currency subtotals, loader-seam tested in-memory) now in tree; P9.2–P9.4 (transaction register, reports viewer, reconciliation/import status) queued per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). Sits after Phase 8 wraps; pre-cloud preparation renumbers to **Phase 10**.
+- **Phase 9 (terminal UI):** ✅ **v1 shipped** (read-only, 2026-05-17 → 2026-05-18) — per [ADR-0007](adrs/0007-terminal-ui.md), a Textual TUI as an additive client (the CLI stays the scriptable surface). All five P9.0–P9.4 slices merged: workspace skeleton, accounts browser, transactions register with account drill-in, reports viewer (eight `/v1/reports/*` reports), and reconciliations + import-batches browse. App-wide bindings: `q` quit · `p` reports · `c` reconcile · `i` imports · `enter` (on account row) → transactions · `escape` pop · `r` refresh. Cross-cutting design questions resolved during the design pass: bill data-model in [ADR-0008](adrs/0008-bills-data-model.md), other four in [TUI_WIREFRAMES.md § Cross-cutting decisions](TUI_WIREFRAMES.md#cross-cutting-decisions-2026-05-17). Mutation surfaces (categorize / split / edit / reconcile-action / apply-import) deliberately remain on the CLI for v1; surfacing them as TUI flows is the next slice. Pre-cloud preparation remains **Phase 10**.
 
-**Tests:** 1828 passing · **CI:** green on `main`
+**Tests:** 2182 collected (3 benchmark-marker skips) · **CI:** green on `main`
 
 ---
 
@@ -1481,13 +1481,14 @@ No code changes; design-only slice. Implementation begins with P6.1.
 
 ---
 
-## Phase 9 — Terminal UI (TUI) — P9.0 shipped, P9.1+ queued
+## Phase 9 — Terminal UI (TUI) — ✅ v1 shipped (P9.0–P9.4)
 
 Per [ADR-0007](adrs/0007-terminal-ui.md). A Textual TUI as an **additive
 client** (CLI stays the scriptable surface; the TUI is the comfortable
-human surface). v1 scope is read/browse only — mutations land in later
-slices after the read surfaces prove out. Phase 9 sits after Phase 8
-wraps; pre-cloud preparation moved to Phase 10 when ADR-0007 was accepted.
+human surface). v1 scope is read/browse only — mutations stay on the
+CLI and surface as a follow-up phase once the read surfaces have
+soaked. Pre-cloud preparation moved to Phase 10 when ADR-0007 was
+accepted.
 
 ### P9.D — design pass — ✅ *(2026-05-17; closes [#318](https://github.com/rmwarriner/tulip-accounting/issues/318))*
 
@@ -1749,4 +1750,4 @@ Supporting changes:
 
 ## Reference: full phase roadmap
 
-See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 0–7 are complete; Phase 8 (operations + hardening) is in progress — the deep security + privacy audits and security/privacy Wave-1 are done. Phase 9 (terminal UI — [ADR-0007](adrs/0007-terminal-ui.md)) is scoped but not started. Phase 10 (pre-cloud preparation + re-audit) follows.
+See [ARCHITECTURE.md §10](ARCHITECTURE.md). Phases 0–7 are complete; Phase 8 (operations + hardening) is in progress — the deep security + privacy audits and security/privacy Wave-1 are done. Phase 9 (terminal UI — [ADR-0007](adrs/0007-terminal-ui.md)) v1 read-only surface shipped (2026-05-17 → 2026-05-18); TUI mutation flows are a follow-up phase. Phase 10 (pre-cloud preparation + re-audit) follows.
