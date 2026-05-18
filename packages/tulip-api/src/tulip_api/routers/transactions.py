@@ -14,6 +14,7 @@ from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.config import get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
+    FRAMEWORK_BODY_RESPONSES,
     AccountUnknownError,
     PeriodClosedError,
     PoolCurrencyMismatchError,
@@ -823,11 +824,11 @@ def patch_transaction(
     "/{tx_id}/description",
     response_model=TransactionRead,
     responses={
+        **FRAMEWORK_BODY_RESPONSES,
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("transaction.not_found"),
         409: problem_response("transaction.not_rectifiable"),
-        422: problem_response("validation.failed"),
     },
 )
 def rectify_transaction_description(
