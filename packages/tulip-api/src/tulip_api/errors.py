@@ -540,6 +540,30 @@ class AccountUnknownError(TulipProblem):
         )
 
 
+class AccountPathInvalidError(TulipProblem):
+    """``code`` passed with ``create_parents=true`` failed path validation (#46)."""
+
+    def __init__(self, reason: str) -> None:
+        """Build the account.path_invalid problem.
+
+        ``reason`` is the specific validation that tripped (empty
+        segment, unknown root, type/inference mismatch, etc.) — surfaced
+        verbatim in ``detail`` so the caller knows exactly what to fix.
+        """
+        super().__init__(
+            code="account.path_invalid",
+            title="Invalid account path for create_parents",
+            status=400,
+            detail=(
+                f"Account path is invalid: {reason}. With "
+                "``create_parents=true``, ``code`` must be a non-empty "
+                "colon-delimited path whose root segment names an account "
+                "type (assets / liabilities / equity / income / expenses) "
+                "and whose remaining segments are non-empty."
+            ),
+        )
+
+
 class TagInvalidError(TulipProblem):
     """A tag string failed validation on POST/PATCH /v1/transactions (#39)."""
 
