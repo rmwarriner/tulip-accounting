@@ -207,3 +207,23 @@ class ImportBatchRepository:
         batch.reverted_at = datetime.now(tz=UTC)
         self._session.flush()
         return batch
+
+    def delete(self, batch_id: UUID) -> None:
+        """Hard-delete an import batch (#345).
+
+        Cascades ``statement_lines`` via the FK ``ondelete="CASCADE"``.
+        Caller MUST first verify no statement_line has a non-NULL
+        ``promoted_transaction_id`` — promoted lines have a RESTRICT FK
+        from ``transactions`` that would otherwise block the delete.
+        See ``DELETE /v1/imports/{batch_id}`` for the application-layer
+        guard that surfaces a typed 409 in that case.
+        """
+        from sqlalchemy import delete as _sa_delete
+
+        self._session.execute(
+            _sa_delete(ImportBatch).where(
+                ImportBatch.household_id == self._household_id,
+                ImportBatch.id == batch_id,
+            )
+        )
+        self._session.flush()

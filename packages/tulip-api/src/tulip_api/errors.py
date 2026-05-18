@@ -1364,6 +1364,26 @@ class ImportAlreadyAppliedError(TulipProblem):
         )
 
 
+class ImportBatchHasPromotedLinesError(TulipProblem):
+    """The import batch can't be deleted while promoted lines still exist (#345)."""
+
+    def __init__(self, *, batch_id: str, promoted_count: int) -> None:
+        """Build the import.batch_has_promoted_lines problem (409)."""
+        super().__init__(
+            code="import.batch_has_promoted_lines",
+            title="Import batch has promoted ledger transactions",
+            status=409,
+            detail=(
+                f"This import batch has {promoted_count} statement line(s) already "
+                "promoted to ledger transactions. Delete or void each promoted "
+                "transaction first (via POST /v1/transactions/{id}/void or "
+                "DELETE /v1/transactions/{id}) — that nulls the back-reference — "
+                "then re-try DELETE /v1/imports/{batch_id}."
+            ),
+            extensions={"batch_id": batch_id, "promoted_count": promoted_count},
+        )
+
+
 class StatementLineNotFoundError(TulipProblem):
     """No statement line with that ID exists in this household / batch (P5.4.a)."""
 
