@@ -27,6 +27,7 @@ from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.auth.passwords import verify_password
 from tulip_api.deps import get_session
 from tulip_api.errors import (
+    FRAMEWORK_BODY_RESPONSES,
     DuplicateEmailError,
     InvalidCredentialsError,
     LastAdminDeletionError,
@@ -151,11 +152,11 @@ def delete_user(
     "/me",
     response_model=UserMeRead,
     responses={
+        **FRAMEWORK_BODY_RESPONSES,
         401: problem_response(
             "auth.unauthorized", "auth.invalid_credentials", "auth.reauth_required"
         ),
         409: problem_response("auth.duplicate_email"),
-        422: problem_response("validation.failed"),
     },
 )
 def patch_own_profile(
@@ -268,8 +269,8 @@ def _apply_ai_policy(
     "/me/ai-policy",
     response_model=UserAIPolicyRead,
     responses={
+        **FRAMEWORK_BODY_RESPONSES,
         401: problem_response("auth.unauthorized"),
-        422: problem_response("validation.failed"),
     },
 )
 def put_own_ai_policy(
@@ -300,10 +301,10 @@ def put_own_ai_policy(
     "/{user_id}/ai-policy",
     response_model=UserAIPolicyRead,
     responses={
+        **FRAMEWORK_BODY_RESPONSES,
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("user.not_found"),
-        422: problem_response("validation.failed"),
     },
 )
 def put_user_ai_policy(
