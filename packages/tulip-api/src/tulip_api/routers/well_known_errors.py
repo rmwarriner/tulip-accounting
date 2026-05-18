@@ -31,6 +31,7 @@ router = APIRouter(prefix="/.well-known/errors", tags=["docs"])
 # subclasses shouldn't be coupled to docs availability).
 _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     "MfaRequiredError": {"mfa_token": "<mfa-challenge-jwt>", "expires_in": 300},
+    "AccountPathInvalidError": {"reason": "root segment 'widgets' does not name an account type"},
     "AccountUnknownError": {"account_id": "<account-uuid>"},
     "AccountParentTypeMismatchError": {"child_type": "expense", "parent_type": "asset"},
     "AccountParentCurrencyMismatchError": {
