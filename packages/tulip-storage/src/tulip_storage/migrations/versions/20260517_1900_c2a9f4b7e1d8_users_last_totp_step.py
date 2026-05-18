@@ -19,12 +19,9 @@ Revision ID: c2a9f4b7e1d8
 Revises: c7a3f9e2b1d8
 Create Date: 2026-05-17 19:00:00.000000+00:00
 
-Down-revision was originally ``a6f1c9b3d8e4``; rebased to
-``c7a3f9e2b1d8`` in #347 because the audit_log composite-PK migration
-(c7a3f9e2b1d8) landed in parallel from a different branch and the two
-created a multi-head tree. Both migrations only depend on schema-state
-that exists after ``a6f1c9b3d8e4``; chaining them is order-independent
-for the actual DDL.
+Down-revision rebased from ``a6f1c9b3d8e4`` to ``c7a3f9e2b1d8`` to keep
+the alembic chain linear after #380 (composite PK) landed in parallel
+(see #347 / #338 PR bodies for the merge-order story).
 """
 
 from __future__ import annotations

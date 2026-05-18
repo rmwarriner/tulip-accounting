@@ -16,7 +16,7 @@ from tulip_ai.forecast import (
     bucket_time_series,
     build_forecast_prompt,
 )
-from tulip_storage.encryption import encrypt_field
+from tulip_storage.encryption import encrypt_field, field_aad
 from tulip_storage.models import AIInvocation, Household
 
 
@@ -115,7 +115,14 @@ def _set_keys_and_policy(
     ai_policy: dict[str, object] | None = None,
 ) -> None:
     blob = encrypt_field(
-        json.dumps({"anthropic": "sk-test"}).encode("utf-8"), master_key=master_key
+        json.dumps({"anthropic": "sk-test"}).encode("utf-8"),
+        master_key=master_key,
+        aad=field_aad(
+            table="households",
+            column="ai_keys_encrypted",
+            household_id=household.id,
+            row_id=household.id,
+        ),
     )
     with session_maker() as s:
         h = s.get(Household, household.id)

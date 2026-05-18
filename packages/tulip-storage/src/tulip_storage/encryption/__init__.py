@@ -15,6 +15,8 @@ from tulip_storage.encryption.field import (
     decrypt_field,
     derive_master_key,
     encrypt_field,
+    field_aad,
+    wrap_legacy_v1_blob,
 )
 
 __all__ = [
@@ -23,4 +25,6 @@ __all__ = [
     "decrypt_field",
     "derive_master_key",
     "encrypt_field",
+    "field_aad",
+    "wrap_legacy_v1_blob",
 ]

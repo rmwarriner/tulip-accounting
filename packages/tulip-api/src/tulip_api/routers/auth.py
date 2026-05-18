@@ -355,7 +355,12 @@ def login_mfa(
         session.commit()
         raise InvalidMfaTokenError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     verified, matched_step = verify_totp_code(secret, body.code, last_step=user.last_totp_step)
     if not verified:
         log.info("user.login.mfa_code_rejected", user_id=str(user.id))
@@ -574,7 +579,12 @@ def mfa_enroll(
         raise MfaAlreadyEnrolledError()
 
     secret = generate_totp_secret()
-    user.totp_secret_encrypted = encrypt_totp_secret(secret, master_key=settings.master_key)
+    user.totp_secret_encrypted = encrypt_totp_secret(
+        secret,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     session.flush()
 
     AuditLogWriter(session, user.household_id).write(
@@ -633,7 +643,12 @@ def mfa_verify(
     if user.totp_secret_encrypted is None:
         raise MfaNotPendingError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     # Replay defence (#330) does NOT apply on enrollment-verify: the
     # user has just typed the code from their authenticator app and is
     # about to log in with the same code — the replay gate would lock
@@ -770,7 +785,12 @@ def mfa_regenerate_recovery_codes(
     if user is None or user.totp_secret_encrypted is None or user.totp_enrolled_at is None:
         raise MfaNotEnrolledError()
 
-    secret = decrypt_totp_secret(user.totp_secret_encrypted, master_key=settings.master_key)
+    secret = decrypt_totp_secret(
+        user.totp_secret_encrypted,
+        master_key=settings.master_key,
+        household_id=user.household_id,
+        user_id=user.id,
+    )
     # Replay defence (#330) does not apply on the regenerate-recovery
     # path either — the same fresh-MFA gate as enroll. The login-mfa
     # path is the load-bearing site.
