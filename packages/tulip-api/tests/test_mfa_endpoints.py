@@ -70,7 +70,12 @@ class TestEnroll:
         assert user.totp_enrolled_at is None
         # Stored blob round-trips back to the secret returned to the user.
         assert (
-            decrypt_totp_secret(user.totp_secret_encrypted, master_key=MASTER_KEY)
+            decrypt_totp_secret(
+                user.totp_secret_encrypted,
+                master_key=MASTER_KEY,
+                household_id=user.household_id,
+                user_id=user.id,
+            )
             == secret_returned
         )
 
@@ -86,7 +91,12 @@ class TestEnroll:
         # Stored blob matches the most recent enrollment.
         user = _load_user(session_maker)
         assert (
-            decrypt_totp_secret(user.totp_secret_encrypted, master_key=MASTER_KEY)
+            decrypt_totp_secret(
+                user.totp_secret_encrypted,
+                master_key=MASTER_KEY,
+                household_id=user.household_id,
+                user_id=user.id,
+            )
             == second["secret"]
         )
 

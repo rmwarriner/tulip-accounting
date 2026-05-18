@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from tulip_storage.encryption import decrypt_field, encrypt_field
+from tulip_storage.encryption import decrypt_field, encrypt_field, field_aad
 from tulip_storage.models import ImportBatch, ImportBatchStatus, SourceFormat
 from tulip_storage.repositories.transaction import MasterKeyRequiredError
 
@@ -44,6 +44,14 @@ class ImportBatchRepository:
                 "decrypt summary_json; construct with master_key=..."
             )
         return self._master_key
+
+    def _summary_aad(self, batch_id: UUID) -> bytes:
+        return field_aad(
+            table="import_batches",
+            column="summary_json_encrypted",
+            household_id=self._household_id,
+            row_id=batch_id,
+        )
 
     def get(self, batch_id: UUID) -> ImportBatch | None:
         """Return the ImportBatch header by id, or None."""
@@ -134,13 +142,20 @@ class ImportBatchRepository:
         ``summary_json`` is encrypted at rest (#238); passing a non-None
         value requires the repository to have a ``master_key``.
         """
+        # Allocate the id before encryption so the AAD can bind to the
+        # exact row this ciphertext will live on (#338, M-1).
+        batch_id = uuid4()
         summary_blob: bytes | None = None
         if summary_json is not None:
             key = self._require_master_key()
-            summary_blob = encrypt_field(json.dumps(summary_json).encode("utf-8"), key)
+            summary_blob = encrypt_field(
+                json.dumps(summary_json).encode("utf-8"),
+                key,
+                aad=self._summary_aad(batch_id),
+            )
         batch = ImportBatch(
             household_id=self._household_id,
-            id=uuid4(),
+            id=batch_id,
             account_id=account_id,
             source_format=source_format,
             source_filename=source_filename,
@@ -163,7 +178,9 @@ class ImportBatchRepository:
             return None
         key = self._require_master_key()
         decoded: dict[str, Any] = json.loads(
-            decrypt_field(batch.summary_json_encrypted, key).decode("utf-8")
+            decrypt_field(
+                batch.summary_json_encrypted, key, aad=self._summary_aad(batch.id)
+            ).decode("utf-8")
         )
         return decoded
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tulip_ai.adapters import RecordingAdapter
 from tulip_ai.proposals import AIProposalCapability
-from tulip_storage.encryption import encrypt_field
+from tulip_storage.encryption import encrypt_field, field_aad
 from tulip_storage.models import AIInvocation, Household
 
 
@@ -32,6 +32,12 @@ def _set_policy(
         blob = encrypt_field(
             json.dumps({"anthropic": "sk-test"}).encode("utf-8"),
             master_key=master_key,
+            aad=field_aad(
+                table="households",
+                column="ai_keys_encrypted",
+                household_id=household.id,
+                row_id=household.id,
+            ),
         )
     else:
         blob = None

@@ -24,7 +24,7 @@ from tulip_ai.redaction import ChartEntry
 from tulip_core.money import Money
 from tulip_core.reconciliation.categorizer import HouseholdContext
 from tulip_core.reconciliation.statement_line import StatementLine
-from tulip_storage.encryption import encrypt_field
+from tulip_storage.encryption import encrypt_field, field_aad
 from tulip_storage.models import (
     Account,
     AccountType,
@@ -62,7 +62,16 @@ def _set_ai_keys(
     provider: str = "anthropic",
     model: str = "claude-opus-4-7",
 ) -> None:
-    blob = encrypt_field(json.dumps(keys).encode("utf-8"), master_key=master_key)
+    blob = encrypt_field(
+        json.dumps(keys).encode("utf-8"),
+        master_key=master_key,
+        aad=field_aad(
+            table="households",
+            column="ai_keys_encrypted",
+            household_id=household_id,
+            row_id=household_id,
+        ),
+    )
     with session_maker() as s:
         h = s.get(Household, household_id)
         assert h is not None
@@ -153,12 +162,21 @@ async def test_categorize_uses_user_key_over_household_when_set(
     _set_ai_keys(
         session_maker, household.id, keys={"anthropic": "sk-household"}, master_key=master_key
     )
-    from tulip_storage.encryption import encrypt_field
+    from tulip_storage.encryption import encrypt_field as _encrypt_field
 
     with session_maker() as s:
         u = s.get(type(user), (household.id, user.id))
         assert u is not None
-        u.ai_keys_encrypted = encrypt_field(b'{"anthropic": "sk-user-only"}', master_key=master_key)
+        u.ai_keys_encrypted = _encrypt_field(
+            b'{"anthropic": "sk-user-only"}',
+            master_key=master_key,
+            aad=field_aad(
+                table="users",
+                column="ai_keys_encrypted",
+                household_id=household.id,
+                row_id=user.id,
+            ),
+        )
         s.commit()
 
     adapter = _KeyCapturingAdapter(canned_reply='{"account_code": "5100", "confidence": 0.9}')
