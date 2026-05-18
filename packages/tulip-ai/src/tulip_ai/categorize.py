@@ -160,6 +160,13 @@ class AICategorizer:
 
             if policy.level == "disabled":
                 payload = build_categorize_prompt(line, inputs.chart)
+                # #347 M-12: hash the redacted body even on the
+                # disabled / no-key paths so the audit invariant
+                # "same redacted prompt ⇒ same hash" holds across
+                # outcomes. Pre-#347, these branches hashed the
+                # pre-redaction payload, which compared unequal to a
+                # success-path row for the same prompt.
+                body = PromptRedactor(policy.profile).to_message_body(payload)
                 writer.write(
                     AIInvocationRecord(
                         household_id=household_context.household_id,
@@ -167,7 +174,7 @@ class AICategorizer:
                         policy_resolved="disabled",
                         profile=policy.profile,
                         outcome="policy_disabled",
-                        prompt_hash=hash_prompt_payload(payload.to_dict()),
+                        prompt_hash=hash_prompt_payload(body),
                     )
                 )
                 if should_commit:
@@ -176,6 +183,7 @@ class AICategorizer:
 
             if inputs.api_key is None and policy.provider != "ollama":
                 payload = build_categorize_prompt(line, inputs.chart)
+                body = PromptRedactor(policy.profile).to_message_body(payload)
                 writer.write(
                     AIInvocationRecord(
                         household_id=household_context.household_id,
@@ -185,7 +193,7 @@ class AICategorizer:
                         provider=policy.provider,
                         model=policy.model,
                         outcome="provider_error",
-                        prompt_hash=hash_prompt_payload(payload.to_dict()),
+                        prompt_hash=hash_prompt_payload(body),
                         # H-1 (#234): gate error-path response_text on log_prompts.
                         response_text=(
                             "no api key configured for provider" if policy.log_prompts else None

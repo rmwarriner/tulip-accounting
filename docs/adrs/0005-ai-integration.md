@@ -200,6 +200,16 @@ Note the chart filters to expense accounts only (categorize never proposes posti
 
 **Three profiles** — `default`, `strict`, `local_only`. The profile is chosen per-capability (in `households.ai_policy`); the `local_only` profile pins to an Ollama provider regardless of `default_provider`.
 
+**Profile alignment (#347, audit M-9).** Every capability applies the profiles with the same intent:
+
+| Profile | Description handling | Amount handling | Identifier handling |
+|---|---|---|---|
+| `default` | Pass-through (raw description) | Pass-through (exact amount) | Pass-through |
+| `strict` | Token-redacted (counterparty stripped, category-signal tokens kept) | Bucketed to order-of-magnitude (categorize) or 25% of series max (forecast / proposals) | Names elided (envelope name → id only for forecast / proposals) |
+| `local_only` | Pass-through, asserts local provider | Pass-through | Pass-through |
+
+Pre-#347 the NL-query path applied strict-style description scrubbing under `default`, contradicting this table. The audit-M-9 fix moved NL-row redaction into `PromptRedactor.redact_nl_row` so the `default = pass-through` rule holds across capabilities.
+
 The redactor (`tulip_ai/redaction.py`) is a pure function operating on prompt-shaped dicts:
 
 ```python

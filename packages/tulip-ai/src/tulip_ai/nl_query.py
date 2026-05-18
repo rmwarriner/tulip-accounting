@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -40,7 +39,7 @@ from tulip_ai.audit import AIInvocationRecord, AIInvocationWriter, hash_prompt_p
 from tulip_ai.cost import PreCallApproval, enforce_pre_call
 from tulip_ai.errors import AIProviderError
 from tulip_ai.policy import resolve_policy
-from tulip_ai.redaction import RedactionProfile
+from tulip_ai.redaction import PromptRedactor
 from tulip_ai.sql_safety import UnsafeSQLError, schema_card, validate_and_rewrite
 
 if TYPE_CHECKING:
@@ -62,49 +61,10 @@ class NLAnswer:
     error: str | None = None
 
 
-# Tokens worth keeping in descriptions even at the short-length threshold
-# (mirrors PromptRedactor's strict heuristic for the categorize path; the
-# concrete list lives in redaction.py but NL rows pull the same shape).
-_KEEP_SHORT = frozenset({"GAS", "ATM", "FEE", "TAX", "BAR", "DMV", "USPS"})
-_TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9]+")
-
-
-def _redact_description(description: str | None) -> str:
-    """Drop counterparty tokens, keep category-signal tokens (4+ chars or whitelist)."""
-    if not description:
-        return ""
-    tokens: list[str] = []
-    for tok in _TOKEN_SPLIT.split(description):
-        if not tok:
-            continue
-        keep = tok.upper() in _KEEP_SHORT or len(tok) >= 4
-        tokens.append(tok if keep else "*")
-    return " ".join(tokens) if tokens else "(redacted)"
-
-
-def _redact_row(
-    row: dict[str, Any],
-    *,
-    profile: RedactionProfile,
-) -> dict[str, Any]:
-    """Per-row redaction before rows ship to the summarisation turn.
-
-    Default + strict both redact the ``description`` column. Amounts and
-    dates pass through — they're the structured grounding the summary
-    relies on. ``local_only`` skips redaction entirely (local model
-    already sees raw data on the way in via the schema card).
-    """
-    if profile == "local_only":
-        return dict(row)
-    out: dict[str, Any] = {}
-    for key, value in row.items():
-        if key == "description":
-            out[key] = _redact_description(value)
-        elif isinstance(value, Decimal):
-            out[key] = str(value)
-        else:
-            out[key] = value
-    return out
+# NL-row redaction now delegates to ``PromptRedactor.redact_nl_rows`` —
+# see #347, audit M-8 (centralisation) + M-9 (profile alignment). Pre-#347
+# this module re-implemented a strict-style description scrub that fired
+# even under ``default``, contradicting ADR-0005 §Q3.
 
 
 def _build_turn1_messages(
@@ -402,7 +362,7 @@ class AINLQueryCapability:
 
         # --- Execute --------------------------------------------------------
         rows = self._execute_safe(safe.sql, safe.parameters)
-        redacted = [_redact_row(r, profile=policy.profile) for r in rows]
+        redacted = PromptRedactor(policy.profile).redact_nl_rows(rows)
 
         # --- Turn 2: summarise ---------------------------------------------
         turn2_msgs = _build_turn2_messages(question, redacted)
