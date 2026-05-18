@@ -7,12 +7,12 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import Date, ForeignKeyConstraint, Numeric
+from sqlalchemy import Date, ForeignKeyConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tulip_storage.models.allocation_pool import AllocationPool
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class ContributionStrategy(Enum):
@@ -38,7 +38,7 @@ class SinkingFund(Base):
 
     household_id: Mapped[UUID] = mapped_column(GUID(), primary_key=True)
     pool_id: Mapped[UUID] = mapped_column(GUID(), primary_key=True)
-    target_amount: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    target_amount: Mapped[Decimal] = mapped_column(SqliteDecimal(20, 8), nullable=False)
     target_date: Mapped[date_type] = mapped_column(Date, nullable=False)
     contribution_strategy: Mapped[ContributionStrategy] = mapped_column(
         SAEnum(
@@ -49,7 +49,7 @@ class SinkingFund(Base):
         ),
         nullable=False,
     )
-    contribution_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    contribution_amount: Mapped[Decimal | None] = mapped_column(SqliteDecimal(20, 8), nullable=True)
 
     pool: Mapped[AllocationPool] = relationship(
         primaryjoin=(

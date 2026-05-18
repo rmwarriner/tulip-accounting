@@ -62,11 +62,17 @@ _TRANSACTIONS_VIEW = AIView(
         ("status", "TEXT"),
         ("reconciled_at", "DATETIME"),
     ),
+    # ``p.amount * 1.0 / 1e8``: ``postings.amount`` is stored as scaled
+    # INT64 on SQLite to keep the per-currency balance trigger exact
+    # (#395). For AI consumption we expose the original Decimal value —
+    # multiplying by 1.0 forces REAL division so the AI gets ``87.42``
+    # not ``8742000000``. The view is display-only; ledger arithmetic
+    # never goes through it.
     select_fragment=(
         "SELECT t.id AS transaction_id, t.date AS date, t.description AS description, "
-        "p.amount AS amount, p.currency AS currency, a.code AS account_code, "
-        "a.name AS account_name, a.type AS account_type, t.status AS status, "
-        "t.reconciled_at AS reconciled_at "
+        "(p.amount * 1.0 / 100000000.0) AS amount, p.currency AS currency, "
+        "a.code AS account_code, a.name AS account_name, a.type AS account_type, "
+        "t.status AS status, t.reconciled_at AS reconciled_at "
         "FROM transactions t "
         "JOIN postings p ON p.household_id = t.household_id AND p.transaction_id = t.id "
         "JOIN accounts a ON a.household_id = p.household_id AND a.id = p.account_id"

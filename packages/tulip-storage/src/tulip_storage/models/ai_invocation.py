@@ -10,6 +10,7 @@ columns are AI-specific so a single table is clearer than overloading
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
@@ -19,14 +20,13 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     LargeBinary,
-    Numeric,
     String,
     Text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class AICapability(Enum):
@@ -71,7 +71,9 @@ class AIInvocation(Base):
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Decimal so the cost-cap arithmetic doesn't sprout floats.
-    cost_estimate_usd: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    cost_estimate_usd: Mapped[Decimal] = mapped_column(
+        SqliteDecimal(12, 6), nullable=False, default=Decimal("0")
+    )
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     outcome: Mapped[str] = mapped_column(String(30), nullable=False)
     provider_response_id: Mapped[str | None] = mapped_column(String(200), nullable=True)

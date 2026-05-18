@@ -377,7 +377,7 @@ def _build_user_export(session: Session, user: User) -> UserDataExport:
             model=r.model,
             tokens_in=r.tokens_in,
             tokens_out=r.tokens_out,
-            cost_estimate_usd=r.cost_estimate_usd,
+            cost_estimate_usd=float(r.cost_estimate_usd),
             outcome=r.outcome,
             prompt_json=r.prompt_json,
             response_text=r.response_text,

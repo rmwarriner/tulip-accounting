@@ -17,7 +17,6 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKeyConstraint,
-    Numeric,
     PrimaryKeyConstraint,
     String,
     func,
@@ -25,7 +24,7 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class ReconciliationStatus(Enum):
@@ -47,11 +46,9 @@ class Reconciliation(Base):
     statement_period_start: Mapped[date_type] = mapped_column(Date, nullable=False)
     statement_period_end: Mapped[date_type] = mapped_column(Date, nullable=False)
     statement_starting_balance: Mapped[Decimal] = mapped_column(
-        Numeric(precision=20, scale=8), nullable=False
+        SqliteDecimal(20, 8), nullable=False
     )
-    statement_ending_balance: Mapped[Decimal] = mapped_column(
-        Numeric(precision=20, scale=8), nullable=False
-    )
+    statement_ending_balance: Mapped[Decimal] = mapped_column(SqliteDecimal(20, 8), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     status: Mapped[ReconciliationStatus] = mapped_column(
         SAEnum(

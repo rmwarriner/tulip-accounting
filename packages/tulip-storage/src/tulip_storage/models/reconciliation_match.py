@@ -20,7 +20,6 @@ from uuid import UUID
 from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
-    Numeric,
     PrimaryKeyConstraint,
     String,
     func,
@@ -28,7 +27,7 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class MatchConfidence(Enum):
@@ -49,7 +48,7 @@ class ReconciliationMatch(Base):
     reconciliation_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     statement_line_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)
     ledger_transaction_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
-    match_amount: Mapped[Decimal] = mapped_column(Numeric(precision=20, scale=8), nullable=False)
+    match_amount: Mapped[Decimal] = mapped_column(SqliteDecimal(20, 8), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     confidence: Mapped[MatchConfidence | None] = mapped_column(
         SAEnum(
