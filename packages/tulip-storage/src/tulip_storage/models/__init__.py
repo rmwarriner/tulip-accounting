@@ -60,6 +60,7 @@ from tulip_storage.models.shadow_transaction import (
 from tulip_storage.models.sinking_fund import ContributionStrategy, SinkingFund
 from tulip_storage.models.statement_line import StatementLine
 from tulip_storage.models.transaction import Transaction, TransactionStatus
+from tulip_storage.models.transaction_tag import TransactionTag
 from tulip_storage.models.used_mfa_challenge import UsedMfaChallenge
 from tulip_storage.models.user import User, UserRole
 
@@ -112,6 +113,7 @@ __all__ = [
     "StatementLine",
     "Transaction",
     "TransactionStatus",
+    "TransactionTag",
     "UsedMfaChallenge",
     "User",
     "UserRole",

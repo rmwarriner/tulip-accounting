@@ -564,6 +564,29 @@ class AccountPathInvalidError(TulipProblem):
         )
 
 
+class TagInvalidError(TulipProblem):
+    """A tag string failed validation on POST/PATCH /v1/transactions (#39)."""
+
+    def __init__(self, reason: str) -> None:
+        """Build the tag.invalid problem.
+
+        ``reason`` is the specific validation message (empty, too long,
+        illegal characters) — surfaced verbatim in ``detail`` so the
+        caller knows which tag to fix.
+        """
+        super().__init__(
+            code="tag.invalid",
+            title="Invalid tag",
+            status=400,
+            detail=(
+                f"Tag rejected: {reason}. Tags must be 1-64 characters "
+                "of letters, digits, ``_``, ``-``, ``.``, ``/``, or ``:`` — "
+                "no spaces (the URL filter would be ambiguous) and no "
+                "control characters."
+            ),
+        )
+
+
 class TransactionInvalidError(TulipProblem):
     """A transaction failed domain-level validation (e.g. empty postings, bad shape)."""
 

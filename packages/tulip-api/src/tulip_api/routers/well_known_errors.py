@@ -33,6 +33,7 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     "MfaRequiredError": {"mfa_token": "<mfa-challenge-jwt>", "expires_in": 300},
     "AccountPathInvalidError": {"reason": "root segment 'widgets' does not name an account type"},
     "AccountUnknownError": {"account_id": "<account-uuid>"},
+    "TagInvalidError": {"reason": "tag 'has space' must be 1-64 chars of [A-Za-z0-9_-./:]"},
     "AccountParentTypeMismatchError": {"child_type": "expense", "parent_type": "asset"},
     "AccountParentCurrencyMismatchError": {
         "child_currency": "EUR",

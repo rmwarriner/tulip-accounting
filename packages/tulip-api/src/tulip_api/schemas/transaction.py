@@ -43,6 +43,15 @@ class TransactionCreate(BaseModel):
         ),
     )
     postings: list[PostingCreate] = Field(min_length=2)
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Free-form labels attached to this transaction (#39 v1). Each "
+            "tag is 1-64 chars of ``[A-Za-z0-9_-./:]``; case-insensitive "
+            "and deduplicated on store. Filter via ``?tag=foo`` on the "
+            "list endpoint."
+        ),
+    )
 
 
 class PostingRead(BaseModel):
@@ -69,6 +78,13 @@ class TransactionRead(BaseModel):
     paired_shadow_tx_id: UUID | None = None
     voided_by_transaction_id: UUID | None = None
     voided_at: datetime | None = None
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Free-form labels attached to this transaction (#39 v1), "
+            "alphabetised and lowercased. Empty list when no tags are set."
+        ),
+    )
 
 
 class TransactionVoidRequest(BaseModel):
@@ -206,3 +222,11 @@ class TransactionUpdate(BaseModel):
         ),
     )
     postings: list[PostingCreate] | None = Field(default=None, min_length=2)
+    tags: list[str] | None = Field(
+        default=None,
+        description=(
+            "Free-form labels (#39 v1). Omit to leave the current set "
+            "unchanged; pass an explicit list (including ``[]``) to "
+            "replace the set wholesale."
+        ),
+    )
