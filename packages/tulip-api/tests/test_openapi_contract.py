@@ -178,15 +178,26 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
     # other methods, and (for the documented method's own case) exclude
     # the unsupported-method check so the probe-driven 405 expectation
     # doesn't false-positive on the parametric sibling's response.
+    # Value is the set of documented methods. The endpoints listed here
+    # carry methods that have *real* handlers; the schemathesis probe
+    # for any other method on the same path routes to the parameterised
+    # sibling and looks like an undocumented response. Per path, methods
+    # in the set run normally (with the ``unsupported_method`` check
+    # excluded so the sibling's response doesn't false-positive); methods
+    # not in the set are skipped entirely.
     _SHADOWED_STATIC_PATHS = {
-        "/v1/imports/profiles/import": "POST",
-        "/v1/imports/multi-account": "POST",
-        "/v1/ai/proposals/kinds": "GET",
-        "/v1/users/me": "PATCH",
-        "/v1/ai/keys/me": "GET",
+        "/v1/imports/profiles/import": {"POST"},
+        "/v1/imports/multi-account": {"POST"},
+        "/v1/ai/proposals/kinds": {"GET"},
+        "/v1/users/me": {"PATCH"},
+        "/v1/ai/keys/me": {"GET"},
+        # /v1/imports/profiles has both GET (list) and POST (create);
+        # other methods collide with DELETE /v1/imports/{batch_id} (#345)
+        # which treats "profiles" as a valid {batch_id} segment.
+        "/v1/imports/profiles": {"GET", "POST"},
     }
-    documented_method = _SHADOWED_STATIC_PATHS.get(str(case.path))
-    if documented_method is not None and case.method.upper() != documented_method:
+    documented_methods = _SHADOWED_STATIC_PATHS.get(str(case.path))
+    if documented_methods is not None and case.method.upper() not in documented_methods:
         pytest.skip(
             "path-collision: an undocumented method on a static path routes to "
             "a parameterised sibling; harmless — see comment."
@@ -194,5 +205,5 @@ def test_api_conforms_to_schema(case: schemathesis.Case) -> None:
 
     from schemathesis.specs.openapi.checks import unsupported_method
 
-    excluded = [unsupported_method] if documented_method is not None else None
+    excluded = [unsupported_method] if documented_methods is not None else None
     case.call_and_validate(excluded_checks=excluded)
