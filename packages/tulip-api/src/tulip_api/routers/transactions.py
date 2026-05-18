@@ -21,6 +21,7 @@ from tulip_api.errors import (
     PoolInvalidAccountTypePairingError,
     PoolNotFoundError,
     ShadowLedgerInternalError,
+    TagInvalidError,
     TransactionAlreadyVoidedError,
     TransactionInvalidError,
     TransactionNotDeletableError,
@@ -76,6 +77,7 @@ from tulip_storage.repositories import (
     PeriodRepository,
     ShadowTransactionRepository,
     TransactionRepository,
+    TransactionTagRepository,
 )
 from tulip_storage.repositories.transaction import (
     UNSET,
@@ -88,6 +90,9 @@ from tulip_storage.repositories.transaction import (
 )
 from tulip_storage.repositories.transaction import (
     TransactionNotRectifiableError as RepoNotRectifiableError,
+)
+from tulip_storage.repositories.transaction_tag import (
+    TagInvalidError as RepoTagInvalidError,
 )
 
 if TYPE_CHECKING:
@@ -115,6 +120,7 @@ log = structlog.get_logger("tulip_api.transactions")
             "pool.currency_mismatch",
             "pool.invalid_account_type_pairing",
             "request.body_invalid",
+            "tag.invalid",
         ),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
@@ -252,6 +258,16 @@ def create_transaction(
         shadow_repo = ShadowTransactionRepository(session, claims.household_id)
         saved_shadow = shadow_repo.save_balanced(shadow_tx)
         paired_shadow_tx_id = saved_shadow.id
+
+    # #39: write tags after the transaction lands so the FK target exists.
+    # Tag validation runs inside the repo; surface failures as 400 tag.invalid.
+    if body.tags:
+        try:
+            TransactionTagRepository(session, claims.household_id).set_tags(
+                saved.id, list(body.tags)
+            )
+        except RepoTagInvalidError as exc:
+            raise TagInvalidError(reason=str(exc)) from exc
 
     audit_after: dict[str, str] = {
         "description": saved.description,
@@ -696,7 +712,7 @@ def _resolve_notes_patch(body: TransactionUpdate) -> str | None | object:
     "/{tx_id}",
     response_model=TransactionRead,
     responses={
-        400: problem_response("account.unknown"),
+        400: problem_response("account.unknown", "tag.invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("transaction.not_found"),
@@ -772,6 +788,14 @@ def patch_transaction(
         )
     except RepoNotEditableError as exc:
         raise TransactionNotEditableError() from exc
+
+    # #39: PATCH semantics for tags — omitting the field leaves the
+    # current set alone; passing a list (including []) replaces it.
+    if body.tags is not None:
+        try:
+            TransactionTagRepository(session, claims.household_id).set_tags(tx_id, list(body.tags))
+        except RepoTagInvalidError as exc:
+            raise TagInvalidError(reason=str(exc)) from exc
 
     after_snapshot: dict[str, object] = {
         "date": new_date.isoformat(),
@@ -981,6 +1005,14 @@ def list_transactions(
         ),
         pattern="^[0-9a-fA-F-]{1,36}$",
     ),
+    tag: str | None = Query(
+        default=None,
+        description=(
+            "Restrict to transactions that carry this tag (#39 v1). "
+            "Tags are case-insensitive on lookup. Single-tag filter only "
+            "in v1; multi-tag / boolean grammar is a follow-up slice."
+        ),
+    ),
     limit: int | None = Query(
         default=None,
         ge=1,
@@ -994,11 +1026,24 @@ def list_transactions(
 
     All filter params are optional and AND together. ``account_id`` is
     a UUID. Date params use the ``from`` / ``to`` query keys (inclusive
-    on both ends). ``status`` is one of the lifecycle states.
+    on both ends). ``status`` is one of the lifecycle states. ``tag``
+    restricts to transactions carrying the given label (#39 v1).
     """
     storage_status: StorageTxStatus | None = (
         StorageTxStatus(status_) if status_ is not None else None
     )
+    tag_tx_ids: list[UUID] | None
+    if tag is not None:
+        try:
+            tag_tx_ids = TransactionTagRepository(
+                session, claims.household_id
+            ).find_transaction_ids_by_tag(tag)
+        except RepoTagInvalidError as exc:
+            raise TagInvalidError(reason=str(exc)) from exc
+        if not tag_tx_ids:
+            return []
+    else:
+        tag_tx_ids = None
     rows = TransactionRepository(session, claims.household_id).list_headers(
         account_id=account_id,
         from_date=from_date,
@@ -1007,6 +1052,9 @@ def list_transactions(
         id_prefix=id_prefix,
         limit=limit,
     )
+    if tag_tx_ids is not None:
+        tag_id_set = set(tag_tx_ids)
+        rows = [r for r in rows if r.id in tag_id_set]
     return [_read_response(t.id, claims.household_id, session) for t in rows]
 
 
@@ -1044,6 +1092,7 @@ def _read_response(
         paired_shadow_tx_id = ShadowTransactionRepository(
             session, household_id
         ).get_paired_id_for_main_tx(tx_id)
+    tags = TransactionTagRepository(session, household_id).list_tags(tx_id)
     return TransactionRead(
         id=header.id,
         date=header.date,
@@ -1065,6 +1114,7 @@ def _read_response(
         paired_shadow_tx_id=paired_shadow_tx_id,
         voided_by_transaction_id=header.voided_by_transaction_id,
         voided_at=header.voided_at,
+        tags=tags,
     )
 
 

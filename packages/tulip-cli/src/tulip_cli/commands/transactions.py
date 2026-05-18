@@ -171,6 +171,17 @@ def add(
             help="Optional external reference (check number, statement id, etc.).",
         ),
     ] = None,
+    tags: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help=(
+                "Free-form label to attach to this transaction (#39). "
+                "Repeat the flag for multiple tags. Tags are case-"
+                "insensitive and deduplicated server-side."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Create a balanced transaction.
 
@@ -203,6 +214,8 @@ def add(
         with _client(config, as_json=as_json) as client:
             postings_body = _resolve_postings(client, parsed)
             body = _build_tx_body(tx_date, description, postings_body, reference)
+            if tags:
+                body["tags"] = list(tags)
             response = client.post("/v1/transactions", json=body, authenticated=True)
     except CliError as err:
         err.render()
@@ -593,6 +606,16 @@ def list_transactions(
             help="One of: pending, posted, reconciled.",
         ),
     ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option(
+            "--tag",
+            help=(
+                "Filter to transactions carrying this label (#39 v1). "
+                "Case-insensitive. Single-tag filter in v1."
+            ),
+        ),
+    ] = None,
     limit: Annotated[
         int | None,
         typer.Option(
@@ -625,6 +648,8 @@ def list_transactions(
                 params["to"] = to_date
             if status_ is not None:
                 params["status"] = status_
+            if tag is not None:
+                params["tag"] = tag
             if limit is not None:
                 params["limit"] = str(limit)
             response = client.get("/v1/transactions", authenticated=True, params=params)

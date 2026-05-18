@@ -540,26 +540,25 @@ class AccountUnknownError(TulipProblem):
         )
 
 
-class AccountPathInvalidError(TulipProblem):
-    """``code`` passed with ``create_parents=true`` failed path validation (#46)."""
+class TagInvalidError(TulipProblem):
+    """A tag string failed validation on POST/PATCH /v1/transactions (#39)."""
 
     def __init__(self, reason: str) -> None:
-        """Build the account.path_invalid problem.
+        """Build the tag.invalid problem.
 
-        ``reason`` is the specific validation that tripped (empty
-        segment, unknown root, type/inference mismatch, etc.) — surfaced
-        verbatim in ``detail`` so the caller knows exactly what to fix.
+        ``reason`` is the specific validation message (empty, too long,
+        illegal characters) — surfaced verbatim in ``detail`` so the
+        caller knows which tag to fix.
         """
         super().__init__(
-            code="account.path_invalid",
-            title="Invalid account path for create_parents",
+            code="tag.invalid",
+            title="Invalid tag",
             status=400,
             detail=(
-                f"Account path is invalid: {reason}. With "
-                "``create_parents=true``, ``code`` must be a non-empty "
-                "colon-delimited path whose root segment names an account "
-                "type (assets / liabilities / equity / income / expenses) "
-                "and whose remaining segments are non-empty."
+                f"Tag rejected: {reason}. Tags must be 1-64 characters "
+                "of letters, digits, ``_``, ``-``, ``.``, ``/``, or ``:`` — "
+                "no spaces (the URL filter would be ambiguous) and no "
+                "control characters."
             ),
         )
 

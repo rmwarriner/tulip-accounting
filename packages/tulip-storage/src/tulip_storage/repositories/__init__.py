@@ -34,6 +34,11 @@ from tulip_storage.repositories.transaction import (
     TransactionRepository,
     TrialBalanceRow,
 )
+from tulip_storage.repositories.transaction_tag import (
+    TagInvalidError,
+    TransactionTagRepository,
+    normalise_tag,
+)
 
 __all__ = [
     "AIInvocationRepository",
@@ -55,6 +60,9 @@ __all__ = [
     "ShadowTransactionRepository",
     "SinkingFundRepository",
     "StatementLineRepository",
+    "TagInvalidError",
     "TransactionRepository",
+    "TransactionTagRepository",
     "TrialBalanceRow",
+    "normalise_tag",
 ]
