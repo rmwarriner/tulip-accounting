@@ -1,6 +1,30 @@
 # ADR-0007: Terminal UI (TUI) as Phase 9 — an additive Textual client
 
-**Status:** Accepted. No code shipped with this ADR; it scopes Phase 9.
+**Status:** Accepted (2026-05-14). **Phase 9 v1 shipped 2026-05-17 → 2026-05-18.**
+
+## Phase 9 v1 implementation note (2026-05-18)
+
+The read-only scope this ADR proposes is now in tree on `main`. Five
+slices merged against umbrella [#309](https://github.com/rmwarriner/tulip-accounting/issues/309):
+
+- **P9.0** — `packages/tulip-tui/` workspace skeleton + pilot-mode
+  smoke test + architecture-boundary test (PR #382 predecessor;
+  P9.0 itself landed earlier as the skeleton commit).
+- **P9.1** — accounts browser (PR #383 → `7bb52a0`).
+- **P9.2** — transactions register with account drill-in
+  (PR #384 → `164424a`).
+- **P9.3** — reports viewer over the eight `/v1/reports/*` reports
+  (PR #385 → `32e456b`).
+- **P9.4** — reconciliations + import-batches browse
+  (PR #386 → `0bd5d32`).
+
+App-wide bindings as shipped: `q` quit · `p` reports · `c` reconcile ·
+`i` imports · `enter` (on account row) → transactions · `escape` pop ·
+`r` refresh. Mutation surfaces (categorize / split / edit /
+reconcile-action / apply-import) stay on the CLI for v1 as scoped; a
+follow-up phase will pull them into the TUI once the read surfaces
+have soaked. The ADR's "rejected for now: web / desktop GUI" stance is
+unchanged.
 
 **Date:** 2026-05-14
 

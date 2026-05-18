@@ -44,7 +44,7 @@ When the command returns, the API is live on `http://127.0.0.1:8000`. The full w
 
 Honest expectations matter for internal-beta. The following are deliberately deferred:
 
-- **Web / mobile UI.** Tulip is API-first with a Typer CLI client; the web client lands as a separate phase. The CLI is the supported UI.
+- **Web / mobile UI.** Tulip is API-first with two clients today: the Typer CLI (the scriptable / automation surface) and `tulip-tui`, a Textual terminal UI for interactive browsing (Phase 9 v1, read-only — accounts, transactions, reports, reconciliations + import batches; mutations stay on the CLI). A web / mobile client lands as a separate phase.
 - **Multi-tenant cloud hosting.** Tulip is single-machine, single-tenant SQLite for internal beta. Postgres + KMS + multi-tenant scaling is a future phase.
 - **Reverse-proxy / TLS tutorial.** Run behind Caddy or Tailscale Funnel; we don't ship a TLS setup guide.
 - **Full-DB encryption at rest (SQLCipher).** Field-level AES-256-GCM protects the most sensitive columns + attachments today; whole-database SQLCipher is a Phase 8 hardening item still in flight.
@@ -57,11 +57,11 @@ The full deferred-features list and the ordered roadmap is the contributor-side 
 
 ## For contributors
 
-> **Status:** Internal beta. Phases 0–7 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation, opt-in AI integration with BYOK provider keys + cost-cap + rate limit + audited proposals, nine reports in HTML/PDF/CSV + hledger journal export/import + `tulip reports` and `tulip journal` CLI). **Phase 8 (operations + hardening) is in progress:** the deep security and deep privacy audits have shipped ([docs/audits/](docs/audits/)), along with their highest-severity Wave-1 follow-ups (auth rate limiting, single-use MFA-challenge tokens, GDPR right-to-erasure) and a post-audit CLI/importers usability bundle. See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
+> **Status:** Internal beta. Phases 0–7 complete (project bootstrap, storage + accounting engine, API surface, scriptable CLI, envelopes + sinking funds + scheduled refills, OFX/QIF/CSV importers + statement-driven reconciliation, opt-in AI integration with BYOK provider keys + cost-cap + rate limit + audited proposals, nine reports in HTML/PDF/CSV + hledger journal export/import + `tulip reports` and `tulip journal` CLI). **Phase 8 (operations + hardening) is in progress:** the deep security and deep privacy audits have shipped ([docs/audits/](docs/audits/)), along with their highest-severity Wave-1 follow-ups (auth rate limiting, single-use MFA-challenge tokens, GDPR right-to-erasure) and a post-audit CLI/importers usability bundle. **Phase 9 (terminal UI) v1 shipped** — a Textual TUI (`tulip-tui`) as an additive read-only browse surface alongside the CLI; mutations stay on the CLI per [ADR-0007](docs/adrs/0007-terminal-ui.md). See [docs/PHASE_STATUS.md](docs/PHASE_STATUS.md) for the full picture and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ### Architecture at a glance
 
-Python 3.14 + FastAPI + SQLAlchemy 2.0 + Pydantic v2, as a `uv` workspace monorepo of seven packages, with TDD-mandatory development discipline. Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Python 3.14 + FastAPI + SQLAlchemy 2.0 + Pydantic v2, as a `uv` workspace monorepo of eight packages, with TDD-mandatory development discipline. Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```
 tulip-accounting/
@@ -72,7 +72,8 @@ tulip-accounting/
 │   ├── tulip-ai/           # AI adapter layer (litellm)
 │   ├── tulip-importers/    # OFX, QIF, CSV, journal-format
 │   ├── tulip-reports/      # toner-friendly PDF, HTML, CSV
-│   └── tulip-cli/          # Typer-based CLI client
+│   ├── tulip-cli/          # Typer-based CLI client
+│   └── tulip-tui/          # Textual terminal UI client (read-only; reuses tulip-cli HTTP layer)
 ├── deploy/                 # Docker, systemd, deployment scripts
 └── docs/                   # ARCHITECTURE, QUICKSTART, THREAT_MODEL, ADRs
 ```
