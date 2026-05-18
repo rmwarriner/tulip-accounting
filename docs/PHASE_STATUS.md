@@ -2,7 +2,7 @@
 
 Single source of truth for what's shipped, what's in flight, and what's queued. The phase definitions live in [ARCHITECTURE.md §10](ARCHITECTURE.md); this file just tracks the state.
 
-**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0–P9.2 shipped (skeleton + accounts browser + transactions register with account drill-in)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
+**Last updated:** 2026-05-17 · `main` @ **Phase 8 deep security audit complete + Phase 9 design pass complete + P9.0–P9.3 shipped (skeleton + accounts browser + transactions register + reports viewer)** — security + privacy Wave-1 follow-ups landing (#239 per-user AI policy + keys, #242 GDPR Art. 16 rectification, #244 THREAT_MODEL §2 refresh, #245 audit-log tiered retention + backup-leak warning, #246 IP+UA redaction whitelist, #247 ai.consent_changed audit, #248 litellm telemetry pin, #249 USER_RIGHTS.md operator map merged), plus a CLI/importers usability bundle. Phase 9 (terminal UI) design questions resolved (#318); P9.0 `tulip-tui` workspace package + Textual app shell landed; P9.1 first real screen (accounts browser, grouped DataTable, in-memory loader seam) landed; P9.2–P9.4 queued per #309.
 
 ---
 
@@ -1628,10 +1628,40 @@ accounts browser).
   "marker column" badges from the wireframe (those depend on data
   the API doesn't yet expose).
 
-### P9.3 — Reports viewer — ⏳ queued
+### P9.3 — Reports viewer — ✅ *(2026-05-17)*
 
-On-screen render of the nine Phase 7 reports. The HTML/PDF/CSV exporters
-stay on `tulip reports` (CLI); this slice is the in-TUI browse surface.
+Per [#309](https://github.com/rmwarriner/tulip-accounting/issues/309). In-TUI browse surface for the
+eight `/v1/reports/*` reports (custom-query stays CLI-only — it needs
+SQL the user has to type).
+
+- **Data layer** — `tulip_tui/data/reports.py` defines a
+  `ReportSpec` (key, title, endpoint, default-params factory) and the
+  immutable `REPORT_CATALOGUE` tuple of all eight v1 reports.
+  `load_report(client, spec)` round-trips the matching endpoint with
+  `?format=json` and the spec's default params (current month for
+  income-statement / cash-flow; `as_of`-defaults for the rest).
+- **ReportsScreen** — left pane is a `DataTable` menu of the eight
+  reports; right pane is a Static with the cursor's report rendered
+  in place. The generic body renderer turns top-level arrays into
+  fixed-width tables, nested objects into key/value blocks, and
+  scalars into `key: value` lines — enough structure for browsing
+  without per-report hand-tuning.
+- **App wiring** — new app-wide binding `p` ("peek at reports")
+  pushes `ReportsScreen`; `escape` pops it. New
+  `reports_loader: ReportLoader = Callable[[ReportSpec], ReportPayload]`
+  constructor seam mirrors the accounts / transactions pattern.
+  Production `main.run()` installs the loader that opens a
+  `TulipClient` per fetch.
+- **Failure mode** — loader exceptions render inline in the content
+  pane; `escape` + `q` still work.
+- **Tests** — 5 data-layer tests (catalogue contents, JSON
+  round-trip, default-param passthrough, API-error propagation,
+  spec immutability); 5 screen tests (menu populated, first report
+  loads on mount, cursor swap triggers re-fetch, inline-error path,
+  non-rows body rendering).
+- **Out of scope** — per-report hand-tuned views (sparklines on
+  cash-flow, year-over-year diffs on income-statement, etc.); a
+  custom-query screen with a SQL editor.
 
 ### P9.4 — Reconciliation + import status (read-only) — ⏳ queued
 
