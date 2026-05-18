@@ -7,11 +7,11 @@ from enum import Enum
 from uuid import UUID
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKeyConstraint, Numeric, Text
+from sqlalchemy import ForeignKeyConstraint, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tulip_storage.models.allocation_pool import AllocationPool
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class BudgetPeriod(Enum):
@@ -57,7 +57,7 @@ class Envelope(Base):
         ),
         nullable=False,
     )
-    budget_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    budget_amount: Mapped[Decimal | None] = mapped_column(SqliteDecimal(20, 8), nullable=True)
     rollover_policy: Mapped[RolloverPolicy] = mapped_column(
         SAEnum(
             RolloverPolicy,

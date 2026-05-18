@@ -5,11 +5,11 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import ForeignKeyConstraint, Numeric, String
+from sqlalchemy import ForeignKeyConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tulip_storage.models.allocation_pool import AllocationPool
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 from tulip_storage.models.shadow_transaction import ShadowTransaction
 
 
@@ -41,7 +41,7 @@ class ShadowPosting(Base):
     household_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, index=True)
     shadow_transaction_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, index=True)
     pool_id: Mapped[UUID] = mapped_column(GUID(), nullable=False, index=True)
-    amount: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(SqliteDecimal(20, 8), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     memo: Mapped[str | None] = mapped_column(String(500), nullable=True)
 

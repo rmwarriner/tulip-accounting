@@ -20,14 +20,13 @@ from sqlalchemy import (
     Date,
     ForeignKeyConstraint,
     Integer,
-    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tulip_storage.models.base import GUID, Base
+from tulip_storage.models.base import GUID, Base, SqliteDecimal
 
 
 class StatementLine(Base):
@@ -40,7 +39,7 @@ class StatementLine(Base):
     import_batch_id: Mapped[UUID] = mapped_column(GUID(), nullable=False)
     line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     posted_date: Mapped[date_type] = mapped_column(Date, nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(precision=20, scale=8), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(SqliteDecimal(20, 8), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     counterparty: Mapped[str | None] = mapped_column(String(500), nullable=True)
