@@ -20,6 +20,7 @@ from typing import Annotated, Any
 import httpx
 import typer
 
+from tulip_cli._account_prompt import prompt_create_missing_account
 from tulip_cli._picker import is_interactive, pick
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
@@ -27,6 +28,30 @@ from tulip_cli.commands.csv_profiles import csv_profiles_app
 from tulip_cli.config import Config
 from tulip_cli.errors import EXIT_USER, CliError
 from tulip_cli.http import TulipClient
+
+
+def _resolve_or_offer_create(
+    client: TulipClient, identifier: str, *, as_json: bool
+) -> dict[str, Any]:
+    """Resolve ``identifier`` to an account, offering to create on miss (#196).
+
+    On ``account.not_found`` AND a TTY (and not ``--json``), prompt the
+    user to create the account inline and return the freshly-created
+    record. Any other failure mode — non-interactive, ``--json``,
+    declined prompt, or a different error code — re-raises the original
+    :class:`CliError` so the import command's existing render-and-exit
+    path is unchanged.
+    """
+    try:
+        return _resolve_account(client, identifier)
+    except CliError as err:
+        if err.problem.get("code") != "account.not_found":
+            raise
+        created = prompt_create_missing_account(client, identifier, as_json=as_json)
+        if created is None:
+            raise
+        return created
+
 
 imports_app = typer.Typer(
     name="imports",
@@ -78,7 +103,7 @@ def _do_import(
 
     try:
         with _client(config, as_json=as_json) as client:
-            account_record = _resolve_account(client, account)
+            account_record = _resolve_or_offer_create(client, account, as_json=as_json)
             account_id = str(account_record["id"])
             raw_bytes = file_path.read_bytes()
             data: dict[str, str] = {
@@ -820,7 +845,7 @@ def import_qif(
         # can render the friendly starter map instead of the raw error.
         try:
             with _client(config, as_json=as_json) as client:
-                account_record = _resolve_account(client, account)
+                account_record = _resolve_or_offer_create(client, account, as_json=as_json)
                 summary = _post_qif_single(
                     client, file_path, raw_bytes, account_id=str(account_record["id"])
                 )
@@ -863,8 +888,12 @@ def import_qif(
     name_to_identifier = _load_account_map(account_map)
     try:
         with _client(config, as_json=as_json) as client:
+            # Iteratively resolve each map entry so a missing account can
+            # surface the create-it prompt inline (#196) and the rest of
+            # the map still resolves cleanly. Each prompt landing creates
+            # an account in this household; subsequent attempts find it.
             resolved: dict[str, str] = {
-                qif_name: str(_resolve_account(client, identifier)["id"])
+                qif_name: str(_resolve_or_offer_create(client, identifier, as_json=as_json)["id"])
                 for qif_name, identifier in name_to_identifier.items()
             }
             response = client.post_multipart(
