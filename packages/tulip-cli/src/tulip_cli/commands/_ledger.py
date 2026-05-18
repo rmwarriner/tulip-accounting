@@ -29,7 +29,23 @@ from datetime import date as date_type
 from decimal import Decimal, InvalidOperation
 
 _HEADER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:\s+(.+))?\s*$")
+# Posting line: ``<account>  <amount> [<currency>]``.
+#
+# The account/amount separator is **two or more whitespace characters**
+# (hledger convention). This lets account names contain single spaces —
+# `My Checking Account  -12.50 USD` parses cleanly because the parser
+# splits at the first run of 2+ whitespace. Single-space separators
+# (`assets:cash -1.00`) used to work pre-#304 and still do, but only
+# when the account itself is a single non-whitespace token.
 _POSTING_RE = re.compile(
+    r"^(?P<account>\S+(?:[ \t]\S+)*)"
+    r"\s{2,}"
+    r"(?P<amount>-?\d+(?:\.\d+)?)\s*(?P<currency>\S+)?\s*$"
+)
+# Fallback: tolerates a single-space separator when the account is a
+# single non-whitespace token. Preserves backward compat with buffers
+# that pre-date the two-space rule. Tried in order after _POSTING_RE.
+_POSTING_RE_SINGLE_SPACE = re.compile(
     r"^(?P<account>\S+)\s+(?P<amount>-?\d+(?:\.\d+)?)\s*(?P<currency>\S+)?\s*$"
 )
 _CURRENCY_RE = re.compile(r"^[A-Za-z]{3}$")
@@ -114,13 +130,15 @@ def parse_ledger_text(text: str) -> ParsedLedgerTransaction:
                 f"Line {line_idx}: posting lines must be indented (start with whitespace)."
             )
         body = raw.strip()
-        match = _POSTING_RE.match(body)
+        match = _POSTING_RE.match(body) or _POSTING_RE_SINGLE_SPACE.match(body)
         if match is None:
             raise LedgerParseError(
                 f"Line {line_idx}: could not parse posting "
-                f"(expected '<account>  <amount> [<currency>]')."
+                f"(expected '<account>  <amount> [<currency>]'; "
+                "separate the account from the amount with two-or-more "
+                "spaces if the account name contains a space)."
             )
-        account = match.group("account")
+        account = match.group("account").strip()
         amount_str = match.group("amount")
         currency = match.group("currency")
         try:

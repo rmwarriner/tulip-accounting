@@ -142,6 +142,32 @@ def test_unparseable_amount_raises() -> None:
         parse_ledger_text("2026-05-01 Lunch\n  expenses:food not-a-number\n  assets:cash -1.00\n")
 
 
+def test_account_name_can_contain_spaces_with_two_space_separator() -> None:
+    """hledger-style two-space separator lets account names contain spaces (#304)."""
+    text = """
+    2026-05-01 Groceries
+      expenses:groceries     12.50
+      My Checking Account   -12.50 USD
+    """
+    parsed = parse_ledger_text(text)
+    assert parsed.postings[0].account == "expenses:groceries"
+    assert parsed.postings[1].account == "My Checking Account"
+    assert parsed.postings[1].amount == Decimal("-12.50")
+    assert parsed.postings[1].currency == "USD"
+
+
+def test_single_token_account_with_single_space_still_works() -> None:
+    """Pre-#304 buffers with single-space separator remain accepted."""
+    text = """
+    2026-05-01 Coffee
+      expenses:coffee 3.50
+      assets:cash -3.50
+    """
+    parsed = parse_ledger_text(text)
+    assert parsed.postings[0].account == "expenses:coffee"
+    assert parsed.postings[1].account == "assets:cash"
+
+
 def test_unindented_after_header_raises_or_ignores() -> None:
     """A non-indented, non-blank, non-comment line after the header is invalid."""
     with pytest.raises(LedgerParseError):
