@@ -23,6 +23,7 @@ import typer
 from rich.table import Table
 from rich.tree import Tree
 
+from tulip_cli._account_path import split_path
 from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
@@ -148,22 +149,27 @@ def _account_full_path(account: dict[str, Any], by_id: dict[str, dict[str, Any]]
 
 
 def _match_name_or_path(accounts: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
-    """Return accounts matching ``identifier`` as a name or hierarchical path.
+    r"""Return accounts matching ``identifier`` as a name or hierarchical path.
 
-    The identifier is split on ``:`` into case-insensitive segments. A
-    leading segment that names an account type (``assets``/``asset``…)
-    constrains the match to that type; the remaining segments must be a
-    suffix of the candidate's root→leaf name chain. A single segment is
-    just a plain (unique) name lookup.
+    The identifier is split on ``:`` into case-insensitive segments
+    via :func:`tulip_cli._account_path.split_path`, which honours
+    backslash escapes — ``Hardware\:Drills`` resolves as a single
+    segment to an account literally named ``Hardware: Drills`` (#416,
+    closing the round trip with the output-side path renderer in
+    #300). A leading segment that names an account type
+    (``assets``/``asset``…) constrains the match to that type; the
+    remaining segments must be a suffix of the candidate's root→leaf
+    name chain. A single segment is just a plain (unique) name
+    lookup.
 
     Empty segments (``::``, a trailing ``:``) make the identifier
     un-resolvable as a path — returns no matches so the caller falls
     through to the not-found error.
     """
-    raw_segments = [seg.strip() for seg in identifier.split(":")]
-    if any(not seg for seg in raw_segments):
+    parsed = split_path(identifier)
+    if parsed is None:
         return []
-    tokens = [seg.lower() for seg in raw_segments]
+    tokens = [seg.lower() for seg in parsed]
 
     type_constraint: str | None = None
     name_tokens = tokens
@@ -413,9 +419,10 @@ def add_account(
         typer.Option(
             "--parent",
             help=(
-                "Optional parent account (code or UUID). The parent's type "
-                "and currency must match this account, and a private parent "
-                "forces a private child."
+                "Optional parent account. Accepts UUID, code, name, or "
+                "hierarchical path (e.g. 'Assets:Current Assets'). The "
+                "parent's type and currency must match this account, and a "
+                "private parent forces a private child."
             ),
         ),
     ] = None,
@@ -424,28 +431,44 @@ def add_account(
         typer.Option(
             "--create-parents",
             help=(
-                "Parse --code as a colon-delimited path (e.g. "
-                "'assets:current:checking') and auto-create any missing "
-                "ancestor accounts in one atomic call (#46). The root "
-                "segment determines the type — it must match --type. "
-                "Mutually exclusive with --parent (parents come from the "
-                "path)."
+                "Parse --name OR --code as a colon-delimited path and "
+                "auto-create any missing ancestor accounts in one atomic "
+                "call. Name-path form (PTA / Quicken convention, #416): "
+                "--name 'Assets:Current Assets:Checking' creates segments "
+                "as proper display names with code=None on each. Code-"
+                "path form (#46): --code 'assets:current:checking' uses "
+                "the segments for both name and code. The root segment "
+                "determines the type — it must match --type. Mutually "
+                "exclusive with --parent (parents come from the path)."
             ),
         ),
     ] = False,
 ) -> None:
     """Create a new account in the logged-in user's household.
 
-    With ``--create-parents``, ``--code`` is parsed as a colon-path and
-    any missing ancestors are auto-created in the same atomic request.
+    With ``--create-parents``, either ``--name`` or ``--code`` is
+    parsed as a colon-path and any missing ancestors are auto-created
+    in the same atomic request. Passing colons in both ``--name`` and
+    ``--code`` is rejected as ambiguous.
     """
     if create_parents and parent is not None:
         raise typer.BadParameter(
-            "--create-parents derives the parent chain from --code; "
-            "passing --parent at the same time is ambiguous"
+            "--create-parents derives the parent chain from --name or "
+            "--code; passing --parent at the same time is ambiguous"
         )
-    if create_parents and not code:
-        raise typer.BadParameter("--create-parents requires --code (the colon-path)")
+    name_is_path = ":" in (name or "")
+    code_is_path = ":" in (code or "")
+    if create_parents and name_is_path and code_is_path:
+        raise typer.BadParameter(
+            "--create-parents: --name and --code both contain colons; "
+            "pass the hierarchy in one or the other, not both"
+        )
+    if create_parents and not name_is_path and not code_is_path:
+        raise typer.BadParameter(
+            "--create-parents needs a colon-path in --name (e.g. "
+            "'Assets:Current Assets:Checking') or --code (e.g. "
+            "'assets:current:checking')"
+        )
 
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
@@ -499,7 +522,10 @@ def edit_account(
     identifier: Annotated[
         str,
         typer.Argument(
-            help="Account code (e.g. assets:checking) or UUID.",
+            help=(
+                "Account UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking')."
+            ),
             metavar="ACCOUNT",
         ),
     ],
@@ -524,7 +550,8 @@ def edit_account(
         typer.Option(
             "--parent",
             help=(
-                "New parent account (code or UUID). The same parent-validation "
+                "New parent account. Accepts UUID, code, name, or "
+                "hierarchical path. The same parent-validation "
                 "rules from `accounts add` apply (type/currency match, "
                 "visibility, no cycles)."
             ),
@@ -576,7 +603,10 @@ def deactivate_account(
     identifier: Annotated[
         str,
         typer.Argument(
-            help="Account code (e.g. assets:checking) or UUID.",
+            help=(
+                "Account UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking')."
+            ),
             metavar="ACCOUNT",
         ),
     ],
@@ -627,12 +657,15 @@ def show_account(
     identifier: Annotated[
         str,
         typer.Argument(
-            help="Account code (e.g. assets:checking) or UUID.",
+            help=(
+                "Account UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking')."
+            ),
             metavar="ACCOUNT",
         ),
     ],
 ) -> None:
-    """Show one account by code or UUID."""
+    """Show one account by UUID, code, name, or hierarchical path."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     parent: dict[str, Any] | None = None

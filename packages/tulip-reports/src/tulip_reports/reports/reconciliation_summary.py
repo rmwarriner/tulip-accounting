@@ -35,6 +35,8 @@ class ReconciliationRow:
     status: str
     match_count: int
     carry_forward_count: int
+    #: Full ``Type:Name:...:Name`` path per #300.
+    account_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,7 @@ def build(
     """List reconciliations newest-first with match + carry-forward counts."""
     from sqlalchemy import func, select
 
+    from tulip_reports._account_path import account_path as _account_path_fn
     from tulip_storage.models import (
         Account,
         Household,
@@ -62,9 +65,12 @@ def build(
         ReconciliationMatch,
         Transaction,
     )
+    from tulip_storage.repositories import AccountRepository
 
     household = session.get(Household, household_id)
     assert household is not None  # noqa: S101
+
+    accounts_by_id = {a.id: a for a in AccountRepository(session, household_id).list_active()}
 
     query = (
         select(Reconciliation, Account)
@@ -116,6 +122,7 @@ def build(
                 status=recon.status,
                 match_count=int(match_count),
                 carry_forward_count=int(carry_count),
+                account_path=_account_path_fn(account.id, accounts_by_id),
             )
         )
 
@@ -148,6 +155,7 @@ def render_csv(data: ReconciliationSummaryData) -> bytes:
         "Reconciliation id",
         "Account code",
         "Account name",
+        "Account Path",
         "Period start",
         "Period end",
         "Starting",
@@ -162,6 +170,7 @@ def render_csv(data: ReconciliationSummaryData) -> bytes:
             row.reconciliation_id,
             row.account_code or "",
             row.account_name,
+            row.account_path,
             row.period_start.isoformat(),
             row.period_end.isoformat(),
             row.starting_balance,

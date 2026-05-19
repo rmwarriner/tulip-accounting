@@ -335,6 +335,42 @@ class TestMatchNameOrPath:
         # "cash:sub" skips the intermediate "joint" — not a valid suffix.
         assert _match_name_or_path(chart, "cash:sub") == []
 
+    def test_backslash_escaped_colon_matches_literal_colon_in_name(self) -> None:
+        """``Imbalance\\:Unknown`` resolves to an account literally named ``Imbalance:Unknown``."""
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        chart = [
+            {
+                "id": "imb",
+                "name": "Imbalance:Unknown",
+                "type": "equity",
+                "parent_account_id": None,
+            },
+        ]
+        # Without the escape, the colon would split the identifier into
+        # two segments, neither of which exists.
+        assert _match_name_or_path(chart, "Imbalance:Unknown") == []
+        # With the escape, the single segment matches.
+        matches = _match_name_or_path(chart, r"Imbalance\:Unknown")
+        assert [m["id"] for m in matches] == ["imb"]
+        # Type prefix + escaped name also works.
+        prefixed = _match_name_or_path(chart, r"equity:Imbalance\:Unknown")
+        assert [m["id"] for m in prefixed] == ["imb"]
+
+    def test_backslash_escaped_backslash_in_name(self) -> None:
+        from tulip_cli.commands.accounts import _match_name_or_path
+
+        chart = [
+            {
+                "id": "wb",
+                "name": r"foo\bar",
+                "type": "asset",
+                "parent_account_id": None,
+            },
+        ]
+        matches = _match_name_or_path(chart, r"foo\\bar")
+        assert [m["id"] for m in matches] == ["wb"]
+
 
 def _seed_path_chart(api_url: str) -> str:
     """Seed Alice's household with a nested chart for path-resolution tests."""

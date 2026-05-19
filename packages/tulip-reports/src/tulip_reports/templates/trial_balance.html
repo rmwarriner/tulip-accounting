@@ -19,9 +19,7 @@
 <table>
   <thead>
     <tr>
-      <th>Code</th>
       <th>Account</th>
-      <th>Type</th>
       <th class="num">Balance</th>
       <th>Currency</th>
     </tr>
@@ -29,9 +27,7 @@
   <tbody>
     {% for row in data.rows %}
     <tr>
-      <td>{{ row.code or "" }}</td>
-      <td>{{ row.name }}{% if row.has_pending %} <span class="pending-marker" title="includes pending transactions">(P)</span>{% endif %}</td>
-      <td>{{ row.type }}</td>
+      <td>{{ row.path }}{% if row.has_pending %} <span class="pending-marker" title="includes pending transactions">(P)</span>{% endif %}</td>
       <td class="num{% if row.balance is negative %} negative{% endif %}">
         {{ row.balance | money }}
       </td>
@@ -43,7 +39,7 @@
   <tfoot>
     {% for total in data.totals_by_currency %}
     <tr class="totals">
-      <td colspan="3">Totals · {{ total.currency }}</td>
+      <td>Totals · {{ total.currency }}</td>
       <td class="num">DR {{ total.debits | money }} / CR {{ total.credits | money }}</td>
       <td>{{ total.currency }}</td>
     </tr>

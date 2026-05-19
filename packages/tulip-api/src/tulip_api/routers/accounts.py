@@ -73,25 +73,32 @@ _PATH_ROOT_TYPES: dict[str, str] = {
 }
 
 
-def _parse_account_path(code: str | None, leaf_type: str) -> tuple[list[str], str]:
-    """Validate ``code`` as a colon-path; return (segments, inferred_type).
+def _parse_account_path(
+    path: str | None,
+    leaf_type: str,
+    *,
+    source: str = "code",
+) -> tuple[list[str], str]:
+    """Validate a colon-path; return ``(segments, inferred_type)``.
 
-    Used only when ``create_parents=True``. Raises
+    Used only when ``create_parents=True``. ``source`` names the body
+    field the path came from (``"code"`` or ``"name"``) so error
+    messages point at the right input. Raises
     :class:`AccountPathInvalidError` for empty input, single-segment
     input, empty / whitespace-only segments, leading/trailing colons,
     unknown root segment, or root → ``leaf_type`` type mismatch.
     """
-    if not code:
-        raise AccountPathInvalidError("``code`` is required when create_parents=true")
-    if ":" not in code:
+    if not path:
+        raise AccountPathInvalidError(f"``{source}`` is required when create_parents=true")
+    if ":" not in path:
         raise AccountPathInvalidError(
-            f"path {code!r} has a single segment; create_parents needs at "
+            f"path {path!r} has a single segment; create_parents needs at "
             "least one parent to create (use create_parents=false instead)"
         )
-    raw_segments = code.split(":")
+    raw_segments = path.split(":")
     if any(not seg.strip() for seg in raw_segments):
         raise AccountPathInvalidError(
-            f"path {code!r} has an empty / whitespace-only segment; every "
+            f"path {path!r} has an empty / whitespace-only segment; every "
             "segment must be a non-empty identifier"
         )
     segments = [seg.strip() for seg in raw_segments]
@@ -293,15 +300,72 @@ def _create_with_parents(
     claims: Claims,
     request_id: UUID | None,
 ) -> tuple[Account, list[Account]]:
-    """Walk the path root → leaf, creating any missing segment.
+    """Dispatch to the name-path or code-path walker (#46, #416).
 
-    Returns ``(leaf, parents_created)`` where ``parents_created`` is the
-    list of auto-created ancestors in creation order (root first). Pre-
-    existing accounts along the path are reused — they don't appear in
-    ``parents_created``. Idempotent: re-running with the same path
-    returns the original leaf and an empty ``parents_created``.
+    Two modes the user can request:
+
+    * **Name-path** — ``body.name`` is the colon-delimited hierarchy
+      (PTA / Quicken convention: ``Assets:Current Assets:Checking``).
+      Intermediates take each segment as ``name`` with ``code=None``;
+      the leaf takes the last segment as ``name`` and ``body.code``
+      (which may be ``None``) as its optional short code.
+    * **Code-path** — legacy. ``body.code`` is the colon-delimited
+      hierarchy (``assets:current:checking``). Each intermediate's
+      ``name`` and ``code`` both come from the segments; the leaf
+      keeps ``body.name`` as its display name and uses the full
+      ``body.code`` as its code.
+
+    Both paths return ``(leaf, parents_created)`` where
+    ``parents_created`` is the list of auto-created ancestors in
+    creation order (root first). Pre-existing accounts along the path
+    are reused — they don't appear in ``parents_created``. Idempotent:
+    re-running with the same path returns the original leaf and an
+    empty ``parents_created``.
     """
-    segments, inferred_type = _parse_account_path(body.code, body.type)
+    name_is_path = ":" in (body.name or "")
+    code_is_path = ":" in (body.code or "")
+    if name_is_path and code_is_path:
+        raise AccountPathInvalidError(
+            "create_parents=true: both ``name`` and ``code`` contain "
+            "colons; pass the hierarchy in one or the other, not both"
+        )
+    if not name_is_path and not code_is_path:
+        raise AccountPathInvalidError(
+            "create_parents=true requires a colon-path in either "
+            "``name`` (PTA-style) or ``code`` (short-code style)"
+        )
+
+    if name_is_path:
+        segments, _inferred = _parse_account_path(body.name, body.type, source="name")
+        return _walk_name_path(
+            repo=repo,
+            audit=audit,
+            body=body,
+            claims=claims,
+            request_id=request_id,
+            segments=segments,
+        )
+    segments, _inferred = _parse_account_path(body.code, body.type, source="code")
+    return _walk_code_path(
+        repo=repo,
+        audit=audit,
+        body=body,
+        claims=claims,
+        request_id=request_id,
+        segments=segments,
+    )
+
+
+def _walk_code_path(
+    *,
+    repo: AccountRepository,
+    audit: AuditLogWriter,
+    body: AccountCreate,
+    claims: Claims,
+    request_id: UUID | None,
+    segments: list[str],
+) -> tuple[Account, list[Account]]:
+    """Original ``--create-parents --code`` walker (#46)."""
     parents_created: list[Account] = []
     parent: Account | None = None
     for index, segment in enumerate(segments):
@@ -311,9 +375,9 @@ def _create_with_parents(
         if existing is not None:
             parent = existing
             continue
-        # Need to create this segment. Leaf takes body.name / subtype /
-        # visibility; intermediates take their segment as the name and
-        # share currency + visibility with the leaf.
+        # Leaf keeps body.name / subtype; intermediates take their
+        # segment as the name and inherit currency + visibility from
+        # the body.
         if is_leaf:
             new_name = body.name
             new_subtype = body.subtype
@@ -323,7 +387,7 @@ def _create_with_parents(
         parent_id = parent.id if parent is not None else None
         created = repo.create(
             name=new_name,
-            type=AccountType(inferred_type),
+            type=AccountType(body.type),
             currency=body.currency,
             code=prefix_code,
             subtype=new_subtype,
@@ -348,8 +412,68 @@ def _create_with_parents(
         parent = created
         if not is_leaf:
             parents_created.append(created)
-    # ``parent`` is the leaf — either the freshly-created last segment
-    # or the pre-existing account when the path already terminated.
+    assert parent is not None  # noqa: S101 — segments non-empty by validation
+    return parent, parents_created
+
+
+def _walk_name_path(
+    *,
+    repo: AccountRepository,
+    audit: AuditLogWriter,
+    body: AccountCreate,
+    claims: Claims,
+    request_id: UUID | None,
+    segments: list[str],
+) -> tuple[Account, list[Account]]:
+    """Name-path walker (#416). Intermediates have ``code=None``."""
+    parents_created: list[Account] = []
+    parent: Account | None = None
+    for index, segment in enumerate(segments):
+        is_leaf = index == len(segments) - 1
+        existing = repo.get_by_parent_and_name(
+            parent_id=parent.id if parent is not None else None,
+            name=segment,
+        )
+        if existing is not None:
+            parent = existing
+            continue
+        # Leaf segment carries ``body.code`` (the optional short code
+        # for the leaf alone) + ``body.subtype``; intermediates have
+        # neither.
+        if is_leaf:
+            new_code = body.code
+            new_subtype = body.subtype
+        else:
+            new_code = None
+            new_subtype = None
+        parent_id = parent.id if parent is not None else None
+        created = repo.create(
+            name=segment,
+            type=AccountType(body.type),
+            currency=body.currency,
+            code=new_code,
+            subtype=new_subtype,
+            parent_account_id=parent_id,
+            visibility=body.visibility,
+            created_by_user_id=claims.user_id,
+        )
+        audit.write(
+            action="create",
+            actor_kind="user",
+            actor_user_id=claims.user_id,
+            entity_type="account",
+            entity_id=created.id,
+            after={
+                "name": created.name,
+                "type": created.type.value,
+                "currency": created.currency,
+                "auto_created_parent_of": (":".join(segments) if not is_leaf else None),
+            },
+            request_id=request_id,
+        )
+        parent = created
+        if not is_leaf:
+            parents_created.append(created)
     assert parent is not None  # noqa: S101 — segments non-empty by validation
     return parent, parents_created
 

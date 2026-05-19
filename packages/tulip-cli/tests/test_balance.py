@@ -143,9 +143,10 @@ def test_balance_no_arg_renders_trial_balance(authed_session: tuple[str, str]) -
 
     result = _run_cli("balance", api_url=api_url)
     assert result.returncode == 0, result.stderr
-    assert "expenses:food" in result.stdout
+    # Trial balance renders the full Type:Name path per #300 (was code+name).
+    assert "Expense:Food" in result.stdout
     assert "12.50" in result.stdout
-    assert "assets:cash" in result.stdout
+    assert "Asset:Cash" in result.stdout
     assert "-12.50" in result.stdout
 
 
@@ -173,7 +174,8 @@ def test_balance_for_single_account_by_code(authed_session: tuple[str, str]) -> 
 
     result = _run_cli("balance", "expenses:food", api_url=api_url)
     assert result.returncode == 0, result.stderr
-    assert "expenses:food" in result.stdout
+    # Single-account header renders the full path (#300) instead of bare code.
+    assert "Expense:Food" in result.stdout
     assert "20.00" in result.stdout
     assert "USD" in result.stdout
 

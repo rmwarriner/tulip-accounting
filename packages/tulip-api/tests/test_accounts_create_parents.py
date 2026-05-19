@@ -273,10 +273,10 @@ class TestCreateParentsValidation:
         assert r.status_code == 400, r.text
         assert_problem(r, code="account.path_invalid", status=400)
 
-    def test_create_parents_without_code_rejected(
+    def test_create_parents_without_any_path_rejected(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
-        """create_parents=true requires a path-shaped `code`."""
+        """create_parents=true requires a colon-path in *either* ``code`` or ``name``."""
         r = client.post(
             "/v1/accounts",
             headers=auth_h,
@@ -289,6 +289,180 @@ class TestCreateParentsValidation:
         )
         assert r.status_code == 400
         assert_problem(r, code="account.path_invalid", status=400)
+
+
+class TestCreateParentsNamePath:
+    """Name colon-paths are first-class for ``create_parents`` (#416).
+
+    The user-facing convention from PTA tools and Quicken:
+    ``Assets:Current Assets:Checking`` is a hierarchy of *names*, not
+    codes. ``code`` stays optional throughout — the leaf takes
+    ``body.code`` if provided, intermediates have ``code=None``.
+    """
+
+    def test_creates_chain_from_name_path_with_no_codes(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Checking",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # Leaf takes the last segment as its name; no code was provided.
+        assert body["name"] == "Checking"
+        assert body["code"] is None
+        parents = body.get("parents_created") or []
+        assert len(parents) == 2
+        assert parents[0]["name"] == "Assets"
+        assert parents[0]["code"] is None
+        assert parents[0]["parent_account_id"] is None
+        assert parents[1]["name"] == "Current Assets"
+        assert parents[1]["code"] is None
+        assert parents[1]["parent_account_id"] == parents[0]["id"]
+        assert body["parent_account_id"] == parents[1]["id"]
+
+    def test_name_path_with_leaf_code_only(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """``code`` without a colon is treated as the leaf's short code."""
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Checking",
+                "code": "1100",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["name"] == "Checking"
+        assert body["code"] == "1100"
+        parents = body.get("parents_created") or []
+        assert all(p["code"] is None for p in parents)
+
+    def test_name_path_root_segment_drives_type_inference(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """``Liabilities:...`` must be paired with ``type='liability'``."""
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Liabilities:Credit Cards:Visa",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert_problem(r, code="account.path_invalid", status=400)
+
+    def test_name_path_root_matches_type(self, client: TestClient, auth_h: dict[str, str]) -> None:
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Liabilities:Credit Cards:Visa",
+                "type": "liability",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["name"] == "Visa"
+        assert body["type"] == "liability"
+        parents = body.get("parents_created") or []
+        assert [p["name"] for p in parents] == ["Liabilities", "Credit Cards"]
+        assert all(p["type"] == "liability" for p in parents)
+
+    def test_both_name_and_code_are_paths_rejected_as_ambiguous(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Checking",
+                "code": "assets:current:checking",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert_problem(r, code="account.path_invalid", status=400)
+
+    def test_name_path_reuses_existing_by_parent_and_name(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """Pre-existing intermediate (matched by parent + name) is reused."""
+        # Seed the root.
+        existing_root = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets",
+                "type": "asset",
+                "currency": "USD",
+            },
+        ).json()
+        # Create the leaf with a name-path that traverses the existing root.
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Savings",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        parents = body.get("parents_created") or []
+        # Only ``Current Assets`` was newly created; ``Assets`` was reused.
+        assert [p["name"] for p in parents] == ["Current Assets"]
+        assert parents[0]["parent_account_id"] == existing_root["id"]
+
+    def test_name_path_idempotent_when_full_chain_exists(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        first = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Checking",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert first.status_code == 201, first.text
+        second = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Assets:Current Assets:Checking",
+                "type": "asset",
+                "currency": "USD",
+                "create_parents": True,
+            },
+        )
+        assert second.status_code == 201, second.text
+        # Same leaf id; no new parents were created the second time.
+        assert second.json()["id"] == first.json()["id"]
+        assert (second.json().get("parents_created") or []) == []
 
 
 class TestCreateParentsBackwardCompat:

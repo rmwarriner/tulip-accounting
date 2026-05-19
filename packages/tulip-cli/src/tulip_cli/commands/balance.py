@@ -16,10 +16,12 @@ from typing import Annotated, Any
 import typer
 from rich.table import Table
 
+from tulip_cli._account_path import account_path
 from tulip_cli._console import make_console
 from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
+from tulip_cli.commands.transactions import _load_accounts_by_id
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
 from tulip_cli.http import TulipClient
@@ -29,16 +31,20 @@ def _client(config: Config, *, as_json: bool) -> TulipClient:
     return TulipClient(config, token_store=default_token_store(), as_json=as_json)
 
 
-def _render_account_balance(body: dict[str, Any]) -> None:
-    """Render a single ``AccountBalanceRead`` body."""
+def _render_account_balance(
+    body: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Render a single ``AccountBalanceRead`` body with the account's full path."""
     from tulip_cli._money_format import format_amount
 
-    code = body.get("code") or "—"
+    account_id = body.get("account_id")
+    path = account_path(str(account_id), accounts_by_id) if account_id else (body.get("name") or "")
     currency = body.get("currency", "")
     balance = format_amount(body.get("balance"), currency)
     pending_included = bool(body.get("pending_included"))
     label = "balance (incl. pending)" if pending_included else "balance"
-    typer.echo(f"{code} — {body.get('name', '')}")
+    typer.echo(path)
     typer.echo(f"  {label}: {balance} {currency}")
     typer.echo(f"  as of:   {body.get('as_of', '')}")
     if pending_included:
@@ -47,8 +53,11 @@ def _render_account_balance(body: dict[str, Any]) -> None:
         typer.echo(f"  includes {count} pending transaction{plural}")
 
 
-def _render_trial_balance(body: dict[str, Any]) -> None:
-    """Render a ``TrialBalanceRead`` body as a table + totals."""
+def _render_trial_balance(
+    body: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Render a ``TrialBalanceRead`` body as a path-keyed table + totals (#300)."""
     from tulip_cli._money_format import format_amount
 
     rows = body.get("rows") or []
@@ -65,22 +74,21 @@ def _render_trial_balance(body: dict[str, Any]) -> None:
     balance_header = "balance (incl. pending)" if pending_included else "balance"
 
     table = Table(title=title, show_header=True)
-    table.add_column("code")
-    table.add_column("name")
-    table.add_column("type")
+    table.add_column("account")
     table.add_column("currency")
     add_numeric_column(table, balance_header)
     for r in rows:
         currency = r.get("currency") or ""
-        name = r.get("name") or ""
+        account_id = r.get("account_id")
+        label = (
+            account_path(str(account_id), accounts_by_id) if account_id else (r.get("name") or "")
+        )
         # A row that drew a PENDING posting gets a (P) marker — only
         # meaningful when the caller opted into --pending.
         if pending_included and r.get("has_pending"):
-            name = f"{name} (P)"
+            label = f"{label} (P)"
         table.add_row(
-            r.get("code") or "—",
-            name,
-            r.get("type") or "",
+            label,
             currency,
             format_amount(r.get("balance"), currency),
         )
@@ -107,7 +115,11 @@ def balance(
     account: Annotated[
         str | None,
         typer.Argument(
-            help="Account code (e.g. assets:cash) or UUID. Omit for a trial-balance summary.",
+            help=(
+                "Account UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking'). Omit for a "
+                "trial-balance summary."
+            ),
             metavar="ACCOUNT",
         ),
     ] = None,
@@ -178,7 +190,16 @@ def balance(
         return
 
     body = response.json()
+    # One round-trip to /v1/accounts so path rendering walks the
+    # parent chain locally. Failure is non-fatal — ``account_path``
+    # falls back to the raw UUID on an empty map (#300).
+    try:
+        with _client(config, as_json=False) as client:
+            accounts_by_id = _load_accounts_by_id(client)
+    except CliError:
+        accounts_by_id = {}
+
     if account is None:
-        _render_trial_balance(body)
+        _render_trial_balance(body, accounts_by_id)
     else:
-        _render_account_balance(body)
+        _render_account_balance(body, accounts_by_id)

@@ -32,6 +32,8 @@ class IncomeStatementRow:
     name: str
     amount: Decimal
     currency: str
+    #: Full ``Type:Name:...:Name`` path per #300.
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +78,7 @@ def _build_period(
     visible_account_filter: VisibleAccountFilter | None,
 ) -> IncomeStatementPeriod:
     """Compute one period's revenue / expense sections."""
+    from tulip_reports._account_path import account_path
     from tulip_storage.repositories import AccountRepository, TransactionRepository
 
     tx_repo = TransactionRepository(session, household_id)
@@ -121,6 +124,7 @@ def _build_period(
                     name=a.name,
                     amount=(-delta).quantize(Decimal("0.01")),
                     currency=currency,
+                    path=account_path(a.id, accounts_by_id),
                 )
             )
         elif type_value == "expense":
@@ -130,6 +134,7 @@ def _build_period(
                     name=a.name,
                     amount=delta.quantize(Decimal("0.01")),
                     currency=currency,
+                    path=account_path(a.id, accounts_by_id),
                 )
             )
 
@@ -216,7 +221,15 @@ def render_csv(data: IncomeStatementData) -> bytes:
     """Render income statement as CSV (P7.3): one row per (period, section, account)."""
     from tulip_reports.engine import ReportRenderer
 
-    headers = ["Period", "Section", "Code", "Account", "Currency", "Amount"]
+    headers = [
+        "Period",
+        "Section",
+        "Code",
+        "Account",
+        "Account Path",
+        "Currency",
+        "Amount",
+    ]
     rows: list[list[object]] = []
     for label, period in [("current", data.current_period)] + (
         [("prior", data.prior_period)] if data.prior_period else []
@@ -224,12 +237,20 @@ def render_csv(data: IncomeStatementData) -> bytes:
         for section in (period.revenue, period.expenses):
             for row in section.rows:
                 rows.append(
-                    [label, section.title, row.code or "", row.name, row.currency, row.amount]
+                    [
+                        label,
+                        section.title,
+                        row.code or "",
+                        row.name,
+                        row.path,
+                        row.currency,
+                        row.amount,
+                    ]
                 )
             for currency, subtotal in section.subtotals_by_currency.items():
-                rows.append([label, section.title, "SUBTOTAL", "", currency, subtotal])
+                rows.append([label, section.title, "SUBTOTAL", "", "", currency, subtotal])
         for currency, net in period.net_income_by_currency.items():
-            rows.append([label, "Net income", "", "", currency, net])
+            rows.append([label, "Net income", "", "", "", currency, net])
     return ReportRenderer.csv_bytes(headers, rows)
 
 

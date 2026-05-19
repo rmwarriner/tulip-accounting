@@ -34,6 +34,7 @@ from uuid import UUID
 import typer
 from rich.table import Table
 
+from tulip_cli._account_path import account_path
 from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
 from tulip_cli._preferences import (
@@ -57,7 +58,7 @@ _CURRENCY_RE = re.compile(r"^[A-Za-z]{3}$")
 class ParsedPosting:
     """One ``--post`` value, parsed but not yet resolved against the API."""
 
-    account: str  # code or UUID; resolution happens later
+    account: str  # UUID, code, name, or hierarchical path; resolved later
     amount: Decimal
     currency: str | None  # None means "inherit from the account"
 
@@ -460,40 +461,15 @@ def _resolve_tx_id(client: TulipClient, identifier: str, *, as_json: bool) -> UU
     return UUID(str(rows[0]["id"]))
 
 
-def _format_account_label(
-    accounts_by_id: dict[str, dict[str, Any]],
-    account_id: str,
-) -> str:
-    """Render a human-readable label for a posting's ``account_id`` (#214).
-
-    Preferred form is ``<code>:<name>`` when both are set
-    (e.g. ``5100:Groceries`` or ``expenses:rent:Rent``). When the account
-    has no code we fall back to ``<name>``. An ``account_id`` that isn't
-    in ``accounts_by_id`` (an orphaned posting — shouldn't happen, but
-    the issue calls it out as a graceful-degrade requirement) renders
-    as the raw UUID string so the row is still printable.
-    """
-    account = accounts_by_id.get(account_id)
-    if account is None:
-        return account_id
-    code = account.get("code")
-    name = account.get("name")
-    if code and name:
-        return f"{code}:{name}"
-    if name:
-        return str(name)
-    return account_id
-
-
 def _load_accounts_by_id(client: TulipClient) -> dict[str, dict[str, Any]]:
-    """Fetch ``/v1/accounts`` once and key it by ``id`` for label resolution.
+    """Fetch ``/v1/accounts`` once and key it by ``id`` for path resolution.
 
     The accounts list per household is small (dozens, not thousands), so
     one round-trip per command beats N+1 ``/v1/accounts/{id}`` lookups
     while rendering a multi-row table. Failures are non-fatal: an empty
-    map causes :func:`_format_account_label` to fall through to the raw
-    UUID, which preserves today's behaviour rather than aborting the
-    render.
+    map causes :func:`tulip_cli._account_path.account_path` to fall
+    through to the raw UUID, which preserves today's graceful-degrade
+    behaviour rather than aborting the render (#300).
     """
     try:
         response = client.get("/v1/accounts", authenticated=True)
@@ -522,7 +498,7 @@ def _render_tx_list_table(
         for p in postings:
             currency = p.get("currency", "")
             amount = format_amount(p.get("amount"), currency)
-            label = _format_account_label(accounts_by_id, str(p.get("account_id", "")))
+            label = account_path(str(p.get("account_id", "")), accounts_by_id)
             summary_parts.append(f"{label} {amount} {currency}")
         summary = "\n".join(summary_parts)
         tx_id = row.get("id") or ""
@@ -564,7 +540,7 @@ def _render_tx_detail(
     for p in tx.get("postings") or []:
         currency = str(p.get("currency", ""))
         table.add_row(
-            _format_account_label(accounts_by_id, str(p.get("account_id", ""))),
+            account_path(str(p.get("account_id", "")), accounts_by_id),
             format_amount(p.get("amount"), currency),
             currency,
             str(p.get("memo") or ""),
@@ -580,8 +556,10 @@ def list_transactions(
         typer.Option(
             "--account",
             help=(
-                "Filter to transactions touching this account (code or UUID). "
-                "Resolved via the same UUID-or-code lookup as `accounts show`."
+                "Filter to transactions touching this account. Accepts "
+                "UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking'). Resolved via "
+                "the same lookup as `accounts show`."
             ),
         ),
     ] = None,

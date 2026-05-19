@@ -200,38 +200,16 @@ def test_transactions_list_omits_raw_uuids_from_table(
     non-TTY default is 80 columns and ignores ``COLUMNS`` env, so
     per-column content gets truncated unpredictably across runners.
     The width-independent contract is "no raw UUIDs in the rendered
-    output." The label *content* is covered by the unit test on
-    ``_format_account_label`` below.
+    output." The label *content* is now full hierarchical paths
+    (``Asset:Cash:Checking``) via :func:`tulip_cli._account_path.account_path`;
+    unit coverage for the path helper lives in
+    ``packages/tulip-cli/tests/test_account_path.py``.
     """
     api_url, checking_id, food_id, rent_id = seeded_session
     table_result = _run_cli("transactions", "list", api_url=api_url)
     assert table_result.returncode == 0, table_result.stderr
     for account_id in (checking_id, food_id, rent_id):
         assert account_id not in table_result.stdout
-
-
-def test_format_account_label_builds_code_colon_name() -> None:
-    """Unit test for the label builder feeding ``transactions list`` rendering.
-
-    Covers the three branches: (code, name) → ``<code>:<name>``,
-    (name only) → ``<name>``, and (orphan UUID, no row in the map) →
-    raw UUID. See #214.
-    """
-    from tulip_cli.commands.transactions import _format_account_label
-
-    accounts_by_id = {
-        "rent-uuid": {"id": "rent-uuid", "code": "expenses:rent", "name": "Rent"},
-        "food-uuid": {"id": "food-uuid", "code": "expenses:food", "name": "Food"},
-        "cash-uuid": {"id": "cash-uuid", "code": None, "name": "Petty Cash"},
-        "blank-uuid": {"id": "blank-uuid", "code": None, "name": None},
-    }
-    assert _format_account_label(accounts_by_id, "rent-uuid") == "expenses:rent:Rent"
-    assert _format_account_label(accounts_by_id, "food-uuid") == "expenses:food:Food"
-    assert _format_account_label(accounts_by_id, "cash-uuid") == "Petty Cash"
-    # Orphan UUID (no entry in the map) → raw UUID, lets the row stay printable.
-    assert _format_account_label(accounts_by_id, "unknown-uuid") == "unknown-uuid"
-    # Account with neither code nor name → fall back to the raw UUID.
-    assert _format_account_label(accounts_by_id, "blank-uuid") == "blank-uuid"
 
 
 @pytest.mark.integration
@@ -261,15 +239,16 @@ def test_transactions_list_json_keeps_account_id_uuid(
 def test_transactions_show_renders_account_labels_not_uuids(
     seeded_session: tuple[str, str, str, str],
 ) -> None:
-    """``transactions show`` swaps each posting's UUID for ``<code>:<name>``."""
+    """``transactions show`` swaps each posting's UUID for its full path (#300)."""
     api_url, _checking, _food, rent_id = seeded_session
     list_result = _run_cli("--json", "transactions", "list", api_url=api_url)
     target = next(r for r in json.loads(list_result.stdout) if r["description"] == "rent-jun")
 
     result = _run_cli("transactions", "show", target["id"], api_url=api_url)
     assert result.returncode == 0, result.stderr
-    assert "expenses:rent:Rent" in result.stdout
-    assert "assets:checking:Checking" in result.stdout
+    # Full Type:Name path replaces the old code-based label per #300.
+    assert "Expense:Rent" in result.stdout
+    assert "Asset:Checking" in result.stdout
     # The transaction id is still shown in the header (it's the user-facing
     # handle for `void` / `delete` / `edit`); the posting account UUIDs are not.
     assert rent_id not in result.stdout
