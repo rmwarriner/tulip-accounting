@@ -354,7 +354,10 @@ class TestTrialBalance:
         assert r.headers["content-type"].startswith("text/csv")
         body = r.content.decode()
         # Header row + at least one data row.
-        assert body.startswith("Code,Account,Type,Currency,Balance\r\n")
+        # CSV gains an ``Account Path`` column alongside ``Code`` + ``Account``
+        # per #300; the existing two columns stay so spreadsheets that key on
+        # them aren't broken.
+        assert body.startswith("Code,Account,Account Path,Type,Currency,Balance\r\n")
         assert "Cash" in body
         assert "Food" in body
         assert "TOTAL" in body  # sentinel for currency totals
