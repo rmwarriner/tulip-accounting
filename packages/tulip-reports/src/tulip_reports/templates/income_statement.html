@@ -17,12 +17,11 @@
 <h3>{{ section.title }}</h3>
 {% if section.rows %}
 <table>
-  <thead><tr><th>Code</th><th>Account</th><th class="num">Amount</th><th>Currency</th></tr></thead>
+  <thead><tr><th>Account</th><th class="num">Amount</th><th>Currency</th></tr></thead>
   <tbody>
     {% for row in section.rows %}
     <tr>
-      <td>{{ row.code or "" }}</td>
-      <td>{{ row.name }}</td>
+      <td>{{ row.path }}</td>
       <td class="num{% if row.amount is negative %} negative{% endif %}">{{ row.amount | money }}</td>
       <td>{{ row.currency }}</td>
     </tr>
@@ -31,7 +30,7 @@
   <tfoot>
     {% for currency, subtotal in section.subtotals_by_currency.items() %}
     <tr class="totals">
-      <td colspan="2">Subtotal</td>
+      <td>Subtotal</td>
       <td class="num">{{ subtotal | money }}</td>
       <td>{{ currency }}</td>
     </tr>

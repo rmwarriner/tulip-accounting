@@ -69,6 +69,38 @@ class AccountRepository:
             )
         ).scalar_one_or_none()
 
+    def get_by_parent_and_name(
+        self,
+        *,
+        parent_id: UUID | None,
+        name: str,
+    ) -> Account | None:
+        """Return the Account with this name under the given parent, or None.
+
+        Used by the name-path ``create_parents`` walker (#416) to decide
+        whether an intermediate at a given (parent, name) position
+        already exists. ``parent_id=None`` matches top-level accounts
+        whose ``parent_account_id`` is NULL.
+
+        Names are compared case-sensitively and exactly. Multiple
+        accounts under the same parent can share a name today (no
+        DB-level uniqueness constraint), so two siblings named "Cash"
+        would both match — caller treats that as ambiguous reuse and
+        creates a fresh row rather than picking one arbitrarily.
+        """
+        stmt = select(Account).where(
+            Account.household_id == self._household_id,
+            Account.name == name,
+        )
+        if parent_id is None:
+            stmt = stmt.where(Account.parent_account_id.is_(None))
+        else:
+            stmt = stmt.where(Account.parent_account_id == parent_id)
+        rows = list(self._session.execute(stmt).scalars().all())
+        if len(rows) == 1:
+            return rows[0]
+        return None
+
     def list_active(self) -> list[Account]:
         """Return all active accounts in this household, ordered by code/name."""
         return list(

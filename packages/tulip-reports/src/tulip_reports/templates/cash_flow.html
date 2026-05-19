@@ -14,12 +14,11 @@
 <h3>{{ title }}</h3>
 {% if rows %}
 <table>
-  <thead><tr><th>Code</th><th>Account</th><th class="num">Net change</th><th>Currency</th></tr></thead>
+  <thead><tr><th>Account</th><th class="num">Net change</th><th>Currency</th></tr></thead>
   <tbody>
     {% for row in rows %}
     <tr>
-      <td>{{ row.code or "" }}</td>
-      <td>{{ row.name }}</td>
+      <td>{{ row.path }}</td>
       <td class="num{% if row.delta is negative %} negative{% endif %}">{{ row.delta | money }}</td>
       <td>{{ row.currency }}</td>
     </tr>

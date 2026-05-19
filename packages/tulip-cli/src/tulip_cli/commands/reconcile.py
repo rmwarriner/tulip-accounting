@@ -25,11 +25,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from tulip_cli._account_path import account_path
 from tulip_cli._console import make_console
 from tulip_cli._picker import is_interactive, pick
 from tulip_cli._tables import add_numeric_column
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.commands.accounts import _resolve_account
+from tulip_cli.commands.transactions import _load_accounts_by_id
 from tulip_cli.config import Config
 from tulip_cli.errors import CliError
 from tulip_cli.http import TulipClient
@@ -72,12 +74,14 @@ def _render_section_header(console: Console, title: str, count: int) -> None:
     console.print(f"\n[bold]{title}[/bold] ({count})")
 
 
-def _render_envelope(console: Console, recon: dict[str, Any]) -> None:
+def _render_envelope(
+    console: Console,
+    recon: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
     console.print(f"[bold]Reconciliation[/bold] {recon['id']}")
-    console.print(
-        f"  account: {recon['account_id']}  currency: {recon['currency']}  "
-        f"status: {recon['status']}"
-    )
+    label = account_path(str(recon["account_id"]), accounts_by_id)
+    console.print(f"  account: {label}  currency: {recon['currency']}  status: {recon['status']}")
     console.print(f"  period: {recon['statement_period_start']}..{recon['statement_period_end']}")
     console.print(
         f"  starting: {recon['statement_starting_balance']}  "
@@ -152,10 +156,13 @@ def _render_unmatched_txs(console: Console, txs: list[dict[str, Any]]) -> None:
     console.print(table)
 
 
-def _render_inbox(body: dict[str, Any]) -> None:
-    """Render the four-section reconciliation review pane."""
+def _render_inbox(
+    body: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Render the four-section reconciliation review pane (#300)."""
     console = make_console()
-    _render_envelope(console, body["reconciliation"])
+    _render_envelope(console, body["reconciliation"], accounts_by_id)
     _render_matches(console, body["matches"])
     _render_unmatched_lines(console, body["unmatched_statement_lines"])
     _render_unmatched_txs(console, body["unmatched_ledger_transactions"])
@@ -171,7 +178,11 @@ def create_command(
         str,
         typer.Option(
             "--account",
-            help="Account this reconciliation belongs to. UUID or code.",
+            help=(
+                "Account this reconciliation belongs to. Accepts UUID, "
+                "code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking')."
+            ),
         ),
     ],
     batch: Annotated[
@@ -259,7 +270,10 @@ def list_command(
         str | None,
         typer.Option(
             "--account",
-            help="Filter to one account (UUID or code).",
+            help=(
+                "Filter to one account. Accepts UUID, code, name, or "
+                "hierarchical path (e.g. 'Assets:Current Assets:Checking')."
+            ),
         ),
     ] = None,
     status: Annotated[
@@ -297,16 +311,18 @@ def list_command(
     if not items:
         typer.echo("No reconciliations.")
         return
+    with _client(config, as_json=False) as client:
+        accounts_by_id = _load_accounts_by_id(client)
     table = Table()
     table.add_column("id")
-    table.add_column("account_id")
+    table.add_column("account")
     table.add_column("period")
     table.add_column("status")
     add_numeric_column(table, "ending")
     for item in items:
         table.add_row(
             item["id"],
-            item["account_id"],
+            account_path(str(item["account_id"]), accounts_by_id),
             f"{item['statement_period_start']}..{item['statement_period_end']}",
             item["status"],
             str(item["statement_ending_balance"]),
@@ -317,13 +333,16 @@ def list_command(
 # ---- show -----------------------------------------------------------------
 
 
-def _format_recon_picker_label(item: dict[str, Any]) -> str:
+def _format_recon_picker_label(
+    item: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> str:
     """One-line label for an in-progress reconciliation row in the picker."""
     recon_id = str(item.get("id") or "")
-    account = str(item.get("account_id") or "")
     period = f"{item.get('statement_period_start', '?')}..{item.get('statement_period_end', '?')}"
     ending = str(item.get("statement_ending_balance") or "?")
-    return f"{recon_id[:8] if recon_id else '—'}  account={account[:8]}  {period}  ending={ending}"
+    label = account_path(str(item.get("account_id") or ""), accounts_by_id)
+    return f"{recon_id[:8] if recon_id else '—'}  {label}  {period}  ending={ending}"
 
 
 def _pick_reconciliation_id(config: Config, *, as_json: bool) -> str | None:
@@ -346,13 +365,14 @@ def _pick_reconciliation_id(config: Config, *, as_json: bool) -> str | None:
                 authenticated=True,
                 params={"status": "in_progress"},
             )
+            accounts_by_id = _load_accounts_by_id(client)
     except CliError as err:
         err.render()
         return None
     items = response.json().get("items") or []
     return pick(
         items,
-        label=_format_recon_picker_label,
+        label=lambda item: _format_recon_picker_label(item, accounts_by_id),
         title="Pick an in-progress reconciliation:",
         empty_message=(
             "No in-progress reconciliations. Open one with "
@@ -381,6 +401,9 @@ def show_command(
     try:
         with _client(config, as_json=as_json) as client:
             response = client.get(f"/v1/reconciliations/{reconciliation_id}", authenticated=True)
+            accounts_by_id: dict[str, dict[str, Any]] = (
+                {} if as_json else _load_accounts_by_id(client)
+            )
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
@@ -388,7 +411,7 @@ def show_command(
     if as_json:
         sys.stdout.write(response.text + "\n")
         return
-    _render_inbox(response.json())
+    _render_inbox(response.json(), accounts_by_id)
 
 
 # ---- auto-match -----------------------------------------------------------
@@ -634,7 +657,11 @@ def start_command(
         str,
         typer.Option(
             "--account",
-            help="Account this reconciliation belongs to. UUID or code.",
+            help=(
+                "Account this reconciliation belongs to. Accepts UUID, "
+                "code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking')."
+            ),
         ),
     ],
     statement_date: Annotated[

@@ -35,6 +35,9 @@ class BalanceSheetRow:
     name: str
     balance: Decimal
     currency: str
+    #: Full ``Type:Name:...:Name`` path per #300. Templates render
+    #: this; ``code`` + ``name`` stay on the dataclass for CSV.
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +73,7 @@ def build(
     visible_account_filter: VisibleAccountFilter | None = None,
 ) -> BalanceSheetData:
     """Compute balance-sheet sections grouped by account type."""
+    from tulip_reports._account_path import account_path
     from tulip_storage.models import Household
     from tulip_storage.repositories import AccountRepository, TransactionRepository
 
@@ -102,6 +106,7 @@ def build(
             name=a.name,
             balance=balance,
             currency=r.currency,
+            path=account_path(a.id, accounts_by_id),
         )
         type_value = a.type.value
         if type_value in ("asset", "liability", "equity"):
@@ -153,15 +158,17 @@ def render_csv(data: BalanceSheetData) -> bytes:
     """Render balance sheet as CSV (P7.3): one row per (section, account)."""
     from tulip_reports.engine import ReportRenderer
 
-    headers = ["Section", "Code", "Account", "Currency", "Balance"]
+    headers = ["Section", "Code", "Account", "Account Path", "Currency", "Balance"]
     rows: list[list[object]] = []
     for section in (data.assets, data.liabilities, data.equity):
         for row in section.rows:
-            rows.append([section.title, row.code or "", row.name, row.currency, row.balance])
+            rows.append(
+                [section.title, row.code or "", row.name, row.path, row.currency, row.balance]
+            )
         for currency, subtotal in section.subtotals_by_currency.items():
-            rows.append([section.title, "SUBTOTAL", "", currency, subtotal])
+            rows.append([section.title, "SUBTOTAL", "", "", currency, subtotal])
     for currency, amount in data.retained_earnings.items():
-        rows.append(["Retained earnings", "", "", currency, amount])
+        rows.append(["Retained earnings", "", "", "", currency, amount])
     return ReportRenderer.csv_bytes(headers, rows)
 
 

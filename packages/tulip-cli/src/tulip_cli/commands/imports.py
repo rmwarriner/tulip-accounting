@@ -199,8 +199,10 @@ def import_ofx(
         typer.Option(
             "--account",
             help=(
-                "Account this statement belongs to. UUID or code (resolved "
-                "the same way as `accounts show`)."
+                "Account this statement belongs to. Accepts UUID, code, "
+                "name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking') — resolved the "
+                "same way as `accounts show`."
             ),
         ),
     ],
@@ -262,8 +264,10 @@ def import_csv(
         typer.Option(
             "--account",
             help=(
-                "Account this statement belongs to. UUID or code. The "
-                "account's currency is applied to every line."
+                "Account this statement belongs to. Accepts UUID, code, "
+                "name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking'). The account's "
+                "currency is applied to every line."
             ),
         ),
     ],
@@ -342,8 +346,10 @@ def list_imports(
         typer.Option(
             "--account",
             help=(
-                "Filter to batches uploaded against this account. UUID or code "
-                "(resolved the same way as `accounts show`)."
+                "Filter to batches uploaded against this account. Accepts "
+                "UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking') — resolved the "
+                "same way as `accounts show`."
             ),
         ),
     ] = None,
@@ -394,17 +400,25 @@ def list_imports(
     if not items:
         typer.echo("No import batches match.")
         return
-    _render_list_table(items)
+    from tulip_cli.commands.transactions import _load_accounts_by_id
+
+    with _client(config, as_json=False) as client:
+        accounts_by_id = _load_accounts_by_id(client)
+    _render_list_table(items, accounts_by_id)
     if body.get("next_cursor"):
         typer.echo(
             "\nMore batches available. Re-run with --limit to widen the page, or filter further."
         )
 
 
-def _render_list_table(items: list[dict[str, Any]]) -> None:
-    """Render a list of ``ImportBatchListItem`` dicts as a Rich table."""
+def _render_list_table(
+    items: list[dict[str, Any]],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Render a list of ``ImportBatchListItem`` dicts as a Rich table (#300)."""
     from rich.table import Table
 
+    from tulip_cli._account_path import account_path
     from tulip_cli._console import make_console
     from tulip_cli._tables import add_numeric_column
 
@@ -429,7 +443,7 @@ def _render_list_table(items: list[dict[str, Any]]) -> None:
             created,
             str(item.get("status") or ""),
             str(item.get("source_format") or "").upper(),
-            account_id[:8] if account_id else "—",
+            account_path(account_id, accounts_by_id) if account_id else "—",
             str(item.get("source_filename") or ""),
             f"{item.get('imported_count', 0)}/{item.get('skipped_count', 0)}",
         )
@@ -460,21 +474,30 @@ def show_import(
     if as_json:
         sys.stdout.write(response.text + "\n")
         return
-    _render_batch(response.json())
+    from tulip_cli.commands.transactions import _load_accounts_by_id
+
+    with _client(config, as_json=False) as client:
+        accounts_by_id = _load_accounts_by_id(client)
+    _render_batch(response.json(), accounts_by_id)
 
 
-def _render_batch(body: dict[str, Any]) -> None:
-    """Render an ``ImportBatchRead`` body to stdout."""
+def _render_batch(
+    body: dict[str, Any],
+    accounts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Render an ``ImportBatchRead`` body to stdout (#300: path not UUID)."""
     from rich.table import Table
 
+    from tulip_cli._account_path import account_path
     from tulip_cli._console import make_console
     from tulip_cli._tables import add_numeric_column
 
     console = make_console()
+    account_label = account_path(str(body.get("account_id") or ""), accounts_by_id)
     header_lines = [
         f"Batch:    {body.get('id', '')}",
         f"Source:   {body.get('source_filename', '')} ({body.get('source_format', '?').upper()})",
-        f"Account:  {body.get('account_id', '')}",
+        f"Account:  {account_label}",
         f"Status:   {body.get('status', '?')}",
         f"Counts:   imported={body.get('imported_count', 0)}  "
         f"skipped={body.get('skipped_count', 0)}  "
@@ -688,14 +711,15 @@ def _load_account_map(path: Path) -> dict[str, str]:
     if not isinstance(raw, dict) or not raw:
         raise typer.BadParameter(
             f"--account-map {path} must be a non-empty JSON object "
-            '({"QIF account name": "tulip account code or UUID"}).'
+            '({"QIF account name": "<tulip UUID, code, name, or path>"}).'
         )
     out: dict[str, str] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
             raise typer.BadParameter(
                 f"--account-map {path}: every entry must map a QIF account "
-                "name (string) to a non-empty account code / UUID (string)."
+                "name (string) to a non-empty tulip account identifier "
+                "(UUID, code, name, or hierarchical path)."
             )
         out[key] = value.strip()
     return out
@@ -708,7 +732,7 @@ def _render_starter_map(account_names: list[str]) -> None:
         "Create a JSON account map and re-run with --account-map:\n",
         err=True,
     )
-    starter = {name: "<tulip account code or UUID>" for name in account_names}
+    starter = {name: "<tulip UUID, code, name, or path>" for name in account_names}
     typer.echo(json.dumps(starter, indent=2), err=True)
 
 
@@ -767,8 +791,10 @@ def import_qif(
             "--account",
             help=(
                 "Account this statement belongs to (single-account QIF). "
-                "UUID or code. The account's currency is applied to every "
-                "line — QIF doesn't carry currency in the file itself. "
+                "Accepts UUID, code, name, or hierarchical path "
+                "(e.g. 'Assets:Current Assets:Checking'). The account's "
+                "currency is applied to every line — QIF doesn't carry "
+                "currency in the file itself. "
                 "Mutually exclusive with --account-map."
             ),
         ),

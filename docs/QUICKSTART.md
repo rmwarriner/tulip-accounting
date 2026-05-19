@@ -119,6 +119,11 @@ Tulip is double-entry — every transaction has at least two postings
 that sum to zero. You need at least one asset account (your bank) and
 one or more expense accounts to post against.
 
+`--code` is optional throughout — use it when you want a short
+identifier (a hledger-style mnemonic, a chart-of-accounts number, etc.),
+or leave it off and refer to accounts by name or hierarchical path.
+Either style works; the example below uses short codes.
+
 ```bash
 uv run tulip accounts add --code 1010 --name "Checking" --type asset --currency USD
 uv run tulip accounts add --code 5100 --name "Groceries" --type expense --currency USD
@@ -127,6 +132,23 @@ uv run tulip accounts add --code 5300 --name "Fuel"      --type expense --curren
 uv run tulip accounts add --code 5400 --name "Dining"    --type expense --currency USD
 uv run tulip accounts add --code 4000 --name "Salary"    --type income  --currency USD
 ```
+
+### Alternative: PTA / Quicken-style hierarchical names
+
+If you'd rather think in `Assets:Current Assets:Checking` (the convention
+in hledger / ledger-cli / beancount / Quicken), pass the colon-path in
+`--name` with `--create-parents` and codes stay out of the picture:
+
+```bash
+uv run tulip accounts add --name "Assets:Current Assets:Checking" --type asset --currency USD --create-parents
+uv run tulip accounts add --name "Expenses:Groceries" --type expense --currency USD --create-parents
+```
+
+Each segment becomes a proper display name; intermediates have no code.
+Every Tulip surface that accepts an account argument (`tulip balance`,
+`tulip transactions list --account …`, `tulip reconcile create
+--account …`) accepts the same colon-path back, so the round trip
+works without UUIDs or codes at all.
 
 List to confirm:
 

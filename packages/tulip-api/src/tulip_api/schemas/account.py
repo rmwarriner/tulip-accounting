@@ -24,11 +24,20 @@ class AccountCreate(BaseModel):
     create_parents: bool = Field(
         default=False,
         description=(
-            "When true, ``code`` is parsed as a colon-delimited path "
-            "(``assets:current:checking``) and every segment that doesn't "
-            "already exist is auto-created in the same commit. The root "
-            "segment maps to the account type via the same ``_TYPE_ALIASES`` "
-            "table the resolver uses for hierarchical-path lookups (#46)."
+            "When true, either ``name`` or ``code`` is parsed as a "
+            "colon-delimited path and every segment that doesn't already "
+            "exist is auto-created in the same commit. **Name-path mode** "
+            "(``name='Assets:Current Assets:Checking'``, #416) follows "
+            "PTA / Quicken convention: each segment is a display name; "
+            "intermediates have ``code=None``; the leaf takes ``body.code`` "
+            "as its optional short code. **Code-path mode** "
+            "(``code='assets:current:checking'``, #46) is the legacy form: "
+            "each segment is both name and code prefix; the leaf keeps "
+            "``body.name`` as its display label. Passing colons in both "
+            "``name`` and ``code`` is rejected as ambiguous. The root "
+            "segment maps to the account type via the same "
+            "``_TYPE_ALIASES`` table the resolver uses for hierarchical-"
+            "path lookups (#197)."
         ),
     )
 

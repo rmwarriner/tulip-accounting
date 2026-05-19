@@ -15,13 +15,12 @@
 {% if section.rows %}
 <table>
   <thead>
-    <tr><th>Code</th><th>Account</th><th class="num">Balance</th><th>Currency</th></tr>
+    <tr><th>Account</th><th class="num">Balance</th><th>Currency</th></tr>
   </thead>
   <tbody>
     {% for row in section.rows %}
     <tr>
-      <td>{{ row.code or "" }}</td>
-      <td>{{ row.name }}</td>
+      <td>{{ row.path }}</td>
       <td class="num{% if row.balance is negative %} negative{% endif %}">{{ row.balance | money }}</td>
       <td>{{ row.currency }}</td>
     </tr>
@@ -30,7 +29,7 @@
   <tfoot>
     {% for currency, subtotal in section.subtotals_by_currency.items() %}
     <tr class="totals">
-      <td colspan="2">Subtotal</td>
+      <td>Subtotal</td>
       <td class="num{% if subtotal is negative %} negative{% endif %}">{{ subtotal | money }}</td>
       <td>{{ currency }}</td>
     </tr>

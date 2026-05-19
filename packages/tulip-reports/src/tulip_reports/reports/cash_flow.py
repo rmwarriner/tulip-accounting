@@ -31,6 +31,8 @@ class CashFlowRow:
     name: str
     delta: Decimal
     currency: str
+    #: Full ``Type:Name:...:Name`` path per #300.
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,7 @@ def build(
     visible_account_filter: VisibleAccountFilter | None = None,
 ) -> CashFlowData:
     """Compute per-asset-account net change between ``start`` and ``end``."""
+    from tulip_reports._account_path import account_path
     from tulip_storage.models import Household
     from tulip_storage.repositories import AccountRepository, TransactionRepository
 
@@ -94,7 +97,13 @@ def build(
         )
         if delta == 0:
             continue
-        row = CashFlowRow(code=a.code, name=a.name, delta=delta, currency=currency)
+        row = CashFlowRow(
+            code=a.code,
+            name=a.name,
+            delta=delta,
+            currency=currency,
+            path=account_path(a.id, accounts_by_id),
+        )
         if delta > 0:
             inflows.append(row)
         else:
@@ -133,14 +142,14 @@ def render_csv(data: CashFlowData) -> bytes:
     """Render cash flow as CSV (P7.3): one row per (direction, account)."""
     from tulip_reports.engine import ReportRenderer
 
-    headers = ["Direction", "Code", "Account", "Currency", "Net change"]
+    headers = ["Direction", "Code", "Account", "Account Path", "Currency", "Net change"]
     rows: list[list[object]] = []
     for row in data.inflows:
-        rows.append(["inflow", row.code or "", row.name, row.currency, row.delta])
+        rows.append(["inflow", row.code or "", row.name, row.path, row.currency, row.delta])
     for row in data.outflows:
-        rows.append(["outflow", row.code or "", row.name, row.currency, row.delta])
+        rows.append(["outflow", row.code or "", row.name, row.path, row.currency, row.delta])
     for currency, net in data.net_by_currency.items():
-        rows.append(["NET", "", "", currency, net])
+        rows.append(["NET", "", "", "", currency, net])
     return ReportRenderer.csv_bytes(headers, rows)
 
 

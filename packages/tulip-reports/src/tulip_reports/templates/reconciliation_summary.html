@@ -27,7 +27,7 @@
   <tbody>
     {% for row in data.rows %}
     <tr>
-      <td>{{ row.account_code or "" }} {{ row.account_name }}</td>
+      <td>{{ row.account_path }}</td>
       <td>{{ row.period_start | isodate }} → {{ row.period_end | isodate }}</td>
       <td class="num">{{ row.starting_balance | money }}</td>
       <td class="num">{{ row.ending_balance | money }}</td>

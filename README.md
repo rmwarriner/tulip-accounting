@@ -160,6 +160,10 @@ uv run tulip auth login --email me@example.com
 uv run tulip accounts add --name Checking --type asset --currency USD --code 1110
 uv run tulip accounts add --name Food --type expense --currency USD --code 5100
 
+# Or, hledger / Quicken style — colon-path in --name, no codes:
+uv run tulip accounts add --name "Assets:Current Assets:Checking" --type asset --currency USD --create-parents
+uv run tulip accounts add --name "Expenses:Groceries" --type expense --currency USD --create-parents
+
 # A manual transaction.
 uv run tulip add --date 2026-05-12 --description 'Grocery store' \
   --post 5100=87.42 \

@@ -38,6 +38,10 @@ class TrialBalanceRow:
     currency: str
     balance: Decimal
     has_pending: bool = False
+    #: Full ``Type:Name:...:Name`` path per #300. ``code`` and ``name``
+    #: are kept for back-compat in CSV output (which adds ``path`` as
+    #: a new column rather than replacing the existing ones).
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +91,7 @@ def build(
     balances and stamps ``has_pending`` on each row that drew one; the
     rendered report shows a "includes N pending transactions" subtitle.
     """
+    from tulip_reports._account_path import account_path
     from tulip_storage.models import Household
     from tulip_storage.repositories import AccountRepository, TransactionRepository
 
@@ -122,6 +127,7 @@ def build(
                 currency=r.currency,
                 balance=balance,
                 has_pending=r.has_pending,
+                path=account_path(a.id, accounts_by_id),
             )
         )
         if balance > 0:
@@ -180,15 +186,17 @@ def render_csv(data: TrialBalanceData) -> bytes:
     """
     from tulip_reports.engine import ReportRenderer
 
-    headers = ["Code", "Account", "Type", "Currency", "Balance"]
+    headers = ["Code", "Account", "Account Path", "Type", "Currency", "Balance"]
     rows: list[list[object]] = [
-        [row.code or "", row.name, row.type, row.currency, row.balance] for row in data.rows
+        [row.code or "", row.name, row.path, row.type, row.currency, row.balance]
+        for row in data.rows
     ]
     for total in data.totals_by_currency:
         rows.append(
             [
                 "TOTAL",
                 f"Debits / Credits in {total.currency}",
+                "",
                 "",
                 total.currency,
                 f"DR {total.debits} / CR {total.credits}",
