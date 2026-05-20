@@ -754,12 +754,16 @@ def show_transaction(
 def void_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Transaction UUID or unambiguous hex prefix to void.",
+            help=(
+                "Transaction UUID or unambiguous hex prefix to void. Omit to "
+                "pick interactively from recent transactions (TTY only — "
+                "scripts still get the usage error)."
+            ),
             metavar="TXID",
         ),
-    ],
+    ] = None,
     reason: Annotated[
         str,
         typer.Option(
@@ -767,7 +771,7 @@ def void_transaction(
             "-r",
             help="Reason for the void; surfaced in the reversal's description.",
         ),
-    ],
+    ] = "",
     yes: Annotated[
         bool,
         typer.Option(
@@ -790,6 +794,14 @@ def void_transaction(
     """Void a POSTED transaction by posting a sign-flipped sibling reversal."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+
+    if tx_id is None:
+        tx_id = _pick_tx_id(config, as_json=as_json)
+        if tx_id is None:
+            raise typer.Exit(2)
+
+    if not reason:
+        raise typer.BadParameter("--reason is required (use -r/--reason).")
 
     if reversal_date is not None:
         _validate_iso_date(reversal_date, flag="--date")
@@ -831,12 +843,16 @@ def void_transaction(
 def delete_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Transaction UUID or unambiguous hex prefix to delete.",
+            help=(
+                "Transaction UUID or unambiguous hex prefix to delete. Omit "
+                "to pick interactively from recent transactions (TTY only — "
+                "scripts still get the usage error)."
+            ),
             metavar="TXID",
         ),
-    ],
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -849,6 +865,11 @@ def delete_transaction(
     """Hard-delete a PENDING transaction. Use ``void`` for POSTED transactions."""
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+
+    if tx_id is None:
+        tx_id = _pick_tx_id(config, as_json=as_json)
+        if tx_id is None:
+            raise typer.Exit(2)
 
     try:
         with _client(config, as_json=as_json) as client:
@@ -955,12 +976,16 @@ def _prompt_reconciled_edit(reconciliation_hint: str) -> str:
 def edit_transaction(
     ctx: typer.Context,
     tx_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Transaction UUID or unambiguous hex prefix to edit.",
+            help=(
+                "Transaction UUID or unambiguous hex prefix to edit. Omit to "
+                "pick interactively from recent transactions (TTY only — "
+                "scripts still get the usage error)."
+            ),
             metavar="TXID",
         ),
-    ],
+    ] = None,
     force_reconciled_edit: Annotated[
         bool,
         typer.Option(
@@ -997,6 +1022,11 @@ def edit_transaction(
 
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
+
+    if tx_id is None:
+        tx_id = _pick_tx_id(config, as_json=as_json)
+        if tx_id is None:
+            raise typer.Exit(2)
 
     try:
         with _client(config, as_json=as_json) as client:
