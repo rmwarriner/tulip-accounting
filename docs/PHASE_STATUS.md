@@ -1824,6 +1824,43 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### P9.6.b — Reconcile actioning in the TUI — ✅ *(2026-05-20)*
+
+Per [#420](https://github.com/rmwarriner/tulip-accounting/issues/420). New `ReconciliationDetailScreen` reachable with
+`enter` on a row in the reconciliations browser. Renders three
+stacked tables — Matches / Unmatched Lines / Unmatched
+Transactions — plus a header (period / opening + closing balances /
+paper-or-imported marker / status) and a cursor-driven detail pane.
+Six new bindings turn the whole reconciliation workflow into
+in-TUI actions:
+
+- **`a`** runs auto-match via
+  `POST /v1/reconciliations/{id}/auto-match` (refused if matches
+  already exist; reject one first to re-run).
+- **`x`** rejects the focused match (matches-table-only) via
+  `POST /v1/reconciliations/{id}/matches/{id}/reject`.
+- **`m`** opens a `ManualMatchPickerModal` listing the unmatched
+  ledger transactions; user picks one to pair with the focused
+  unmatched line. Amount + currency default to the line's. Fires
+  `POST /v1/reconciliations/{id}/matches`.
+- **`k`** mark-cleared via
+  `POST /v1/reconciliations/{id}/paper-matches` on paper recons
+  only (the API enforces; the screen renders a notice on imported
+  recons rather than calling the endpoint).
+- **`f`** carry-forward the focused unmatched tx via
+  `POST /v1/reconciliations/{id}/carry-forward`.
+- **`c`** completes the reconciliation via
+  `POST /v1/reconciliations/{id}/complete` (the server's balance
+  check surfaces inline if the envelope isn't balanced).
+
+No backend changes — every endpoint shipped with P5.4.a/b/c/d.
+Tests: 11 data-layer tests (loader + classify match-kind +
+paper-flag + amount-fmt + 404 + the six action wrappers' wire
+shapes), 16 pilot-mode screen tests (rendering across the three
+tables, every binding's happy + refuse path, modal open + confirm,
+inline error on load failure, drill-in from the reconciliations
+list).
+
 #### P9.6.a — Apply imports inside the TUI — ✅ *(2026-05-20)*
 
 Per [#418](https://github.com/rmwarriner/tulip-accounting/issues/418). New `ImportBatchDetailScreen` reachable with

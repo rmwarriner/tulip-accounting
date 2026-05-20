@@ -25,6 +25,16 @@ from tulip_tui.data.import_batch_detail import (
 from tulip_tui.data.import_batch_detail import apply_batch as _apply_batch_call
 from tulip_tui.data.imports import ImportsData, load_import_batches
 from tulip_tui.data.pending import PendingData, load_pending
+from tulip_tui.data.reconciliation_detail import (
+    ReconciliationDetail,
+    auto_match,
+    carry_forward,
+    complete,
+    load_reconciliation_detail,
+    manual_match,
+    paper_match,
+    reject_match,
+)
 from tulip_tui.data.reconciliations import ReconciliationsData, load_reconciliations
 from tulip_tui.data.reports import ReportPayload, ReportSpec, load_report
 from tulip_tui.data.sinking_funds import SinkingFundsData, load_sinking_funds
@@ -129,6 +139,66 @@ def _pending_loader() -> PendingData:
         return load_pending(client)
 
 
+def _reconciliation_detail_factory(
+    reconciliation_id: str,
+) -> Callable[[], ReconciliationDetail]:
+    def _load() -> ReconciliationDetail:
+        config = load_config()
+        with TulipClient(config, token_store=default_token_store()) as client:
+            return load_reconciliation_detail(client, reconciliation_id)
+
+    return _load
+
+
+def _reconciliation_auto_match(reconciliation_id: str) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return auto_match(client, reconciliation_id)
+
+
+def _reconciliation_reject(reconciliation_id: str, match_id: str) -> None:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        reject_match(client, reconciliation_id, match_id)
+
+
+def _reconciliation_manual_match(
+    reconciliation_id: str,
+    statement_line_id: str,
+    ledger_transaction_id: str,
+    match_amount: str,
+    currency: str,
+) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return manual_match(
+            client,
+            reconciliation_id,
+            statement_line_id=statement_line_id,
+            ledger_transaction_id=ledger_transaction_id,
+            match_amount=match_amount,
+            currency=currency,
+        )
+
+
+def _reconciliation_paper_match(reconciliation_id: str, ledger_transaction_id: str) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return paper_match(client, reconciliation_id, ledger_transaction_id=ledger_transaction_id)
+
+
+def _reconciliation_carry_forward(reconciliation_id: str, transaction_id: str) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return carry_forward(client, reconciliation_id, transaction_ids=[transaction_id])
+
+
+def _reconciliation_complete(reconciliation_id: str) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return complete(client, reconciliation_id)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
@@ -144,4 +214,11 @@ def run() -> None:
         envelopes_loader=_envelopes_loader,
         sinking_funds_loader=_sinking_funds_loader,
         pending_loader=_pending_loader,
+        reconciliation_detail_factory=_reconciliation_detail_factory,
+        reconciliation_auto_match=_reconciliation_auto_match,
+        reconciliation_reject=_reconciliation_reject,
+        reconciliation_manual_match=_reconciliation_manual_match,
+        reconciliation_paper_match=_reconciliation_paper_match,
+        reconciliation_carry_forward=_reconciliation_carry_forward,
+        reconciliation_complete=_reconciliation_complete,
     ).run()

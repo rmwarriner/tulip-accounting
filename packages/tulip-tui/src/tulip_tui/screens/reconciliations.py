@@ -21,6 +21,11 @@ from textual.widgets import DataTable, Footer, Header, Static
 from tulip_tui.data.reconciliations import ReconciliationsData, ReconciliationSummary
 
 ReconciliationsLoader = Callable[[], ReconciliationsData]
+OpenReconciliationHandler = Callable[[str], None]
+
+
+def _noop_open_reconciliation(_reconciliation_id: str) -> None:
+    """Default drill-in handler — used when no detail screen is wired."""
 
 
 def _fmt_balance(value: str) -> str:
@@ -81,10 +86,16 @@ class ReconciliationsScreen(Screen[None]):
     }
     """
 
-    def __init__(self, loader: ReconciliationsLoader) -> None:
-        """Store the loader; the screen populates on mount."""
+    def __init__(
+        self,
+        loader: ReconciliationsLoader,
+        *,
+        on_open_reconciliation: OpenReconciliationHandler = _noop_open_reconciliation,
+    ) -> None:
+        """Store the loader and the drill-in handler used by ``enter``."""
         super().__init__()
         self._loader = loader
+        self._on_open_reconciliation = on_open_reconciliation
         self._rendered_rows: list[str] = []
         self._index: list[ReconciliationSummary] = []
         self._detail: str = ""
@@ -111,6 +122,16 @@ class ReconciliationsScreen(Screen[None]):
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         """Re-render the detail pane to match the newly-highlighted row."""
         self._refresh_detail()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """``enter`` drills into the per-reconciliation actioning screen (P9.6.b)."""
+        index = event.cursor_row
+        if index < 0 or index >= len(self._index):
+            return
+        rec = self._index[index]
+        if not rec.id:
+            return
+        self._on_open_reconciliation(rec.id)
 
     # -- internals -----------------------------------------------------
 
