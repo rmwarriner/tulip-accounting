@@ -38,6 +38,12 @@ from tulip_tui.data.reconciliation_detail import (
 from tulip_tui.data.reconciliations import ReconciliationsData, load_reconciliations
 from tulip_tui.data.reports import ReportPayload, ReportSpec, load_report
 from tulip_tui.data.sinking_funds import SinkingFundsData, load_sinking_funds
+from tulip_tui.data.transaction_write import (
+    TransactionDraft,
+    create_transaction,
+    update_transaction,
+    void_transaction,
+)
 from tulip_tui.data.transactions import TransactionsData, load_transactions
 from tulip_tui.screens.transactions import TransactionsLoader
 
@@ -199,6 +205,35 @@ def _reconciliation_complete(reconciliation_id: str) -> object:
         return complete(client, reconciliation_id)
 
 
+def _tx_create_action(draft: TransactionDraft) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return create_transaction(client, draft)
+
+
+def _tx_edit_action(tx_id: str, draft: TransactionDraft) -> object:
+    """Best-effort PATCH for PENDING transactions.
+
+    The TUI screen routes only PENDING transactions to ``e``; the API
+    will 409 if the user managed to slip a POSTED one through.
+    """
+    config = load_config()
+    patch: dict[str, object] = {
+        "date": draft.date,
+        "description": draft.description,
+    }
+    if draft.reference is not None:
+        patch["reference"] = draft.reference
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return update_transaction(client, tx_id, patch)
+
+
+def _tx_void_action(tx_id: str, reason: str) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return void_transaction(client, tx_id, reason=reason)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
@@ -221,4 +256,7 @@ def run() -> None:
         reconciliation_paper_match=_reconciliation_paper_match,
         reconciliation_carry_forward=_reconciliation_carry_forward,
         reconciliation_complete=_reconciliation_complete,
+        tx_create_action=_tx_create_action,
+        tx_edit_action=_tx_edit_action,
+        tx_void_action=_tx_void_action,
     ).run()

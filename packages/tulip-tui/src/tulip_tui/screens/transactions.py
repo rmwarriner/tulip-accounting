@@ -22,13 +22,33 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from tulip_tui.data.transaction_write import TransactionDraft
 from tulip_tui.data.transactions import (
     PostingSummary,
     TransactionsData,
     TransactionSummary,
 )
+from tulip_tui.screens.transaction_modal import (
+    TransactionEditModal,
+    VoidConfirmModal,
+)
 
 TransactionsLoader = Callable[[], TransactionsData]
+CreateTransactionAction = Callable[[TransactionDraft], object]
+EditTransactionAction = Callable[[str, TransactionDraft], object]
+VoidTransactionAction = Callable[[str, str], object]
+
+
+def _noop_create(_draft: TransactionDraft) -> object:
+    raise RuntimeError("create action not configured")
+
+
+def _noop_edit(_tx_id: str, _draft: TransactionDraft) -> object:
+    raise RuntimeError("edit action not configured")
+
+
+def _noop_void(_tx_id: str, _reason: str) -> object:
+    raise RuntimeError("void action not configured")
 
 
 def _row_text(tx: TransactionSummary) -> tuple[str, str, str, str, str]:
@@ -62,6 +82,9 @@ class TransactionsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "app.pop_screen", "back", show=True),
         Binding("r", "refresh", "refresh", show=True),
+        Binding("n", "new_tx", "new tx", show=True),
+        Binding("e", "edit_tx", "edit tx", show=True),
+        Binding("x", "void_tx", "void tx", show=True),
     ]
 
     DEFAULT_CSS = """
@@ -85,16 +108,27 @@ class TransactionsScreen(Screen[None]):
     }
     """
 
-    def __init__(self, loader: TransactionsLoader) -> None:
-        """Store the loader; the screen populates on mount."""
+    def __init__(
+        self,
+        loader: TransactionsLoader,
+        *,
+        on_create: CreateTransactionAction = _noop_create,
+        on_edit: EditTransactionAction = _noop_edit,
+        on_void: VoidTransactionAction = _noop_void,
+    ) -> None:
+        """Store the loader and the per-action callbacks (P9.6.c)."""
         super().__init__()
         self._loader = loader
+        self._on_create = on_create
+        self._on_edit = on_edit
+        self._on_void = on_void
         self._data: TransactionsData = TransactionsData(transactions=())
         self._rendered_rows: list[str] = []
         self._empty = False
         self._error: str | None = None
         self._row_index_to_tx: list[TransactionSummary] = []
         self._detail_text: str = ""
+        self._notice: str = ""
 
     def compose(self) -> ComposeResult:
         """Lay out the status strip, table, and posting-detail pane."""
@@ -115,9 +149,111 @@ class TransactionsScreen(Screen[None]):
         """Re-run the loader and repopulate the table in place."""
         self._load()
 
+    def action_new_tx(self) -> None:
+        """``n`` — push the add-transaction modal."""
+        modal = TransactionEditModal(title="New transaction")
+        self.app.push_screen(modal, self._on_new_tx_modal_done)
+
+    def action_edit_tx(self) -> None:
+        """``e`` — push the edit modal pre-filled from the cursor row."""
+        tx = self._cursor_tx()
+        if tx is None:
+            self._set_notice("no transaction focused")
+            return
+        if tx.status != "pending":
+            self._set_notice(
+                f"only PENDING transactions can be edited in-place (this one is {tx.status})"
+            )
+            return
+        # Render the current postings as `account=amount` lines so
+        # the user can tweak in place.
+        postings_text = "\n".join(
+            f"{p.account_label}={p.amount.normalize()}@{p.currency}" for p in tx.postings
+        )
+        modal = TransactionEditModal(
+            title=f"Edit {tx.id[:8]}",
+            initial_date=tx.date,
+            initial_description=tx.description,
+            initial_reference=tx.reference or "",
+            initial_postings=postings_text,
+        )
+        tx_id = tx.id
+        self.app.push_screen(
+            modal,
+            lambda result: self._on_edit_tx_modal_done(tx_id, result),
+        )
+
+    def action_void_tx(self) -> None:
+        """``x`` — push the void-confirm modal for the cursor row."""
+        tx = self._cursor_tx()
+        if tx is None:
+            self._set_notice("no transaction focused")
+            return
+        if tx.status == "pending":
+            # PENDING can be hard-deleted; the void endpoint is for POSTED.
+            # Surface the option as void-with-empty-reason → hard delete?
+            # For simplicity, route PENDING through the same modal but
+            # call delete on submit.
+            modal = VoidConfirmModal(tx_id=tx.id, description=tx.description)
+            tx_id = tx.id
+            self.app.push_screen(
+                modal,
+                lambda result: self._on_void_modal_done(tx_id, result),
+            )
+            return
+        modal = VoidConfirmModal(tx_id=tx.id, description=tx.description)
+        tx_id = tx.id
+        self.app.push_screen(modal, lambda result: self._on_void_modal_done(tx_id, result))
+
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         """Re-render the detail pane to match the newly-highlighted row."""
         self._refresh_detail()
+
+    # -- modal-done handlers -----------------------------------------------
+
+    def _on_new_tx_modal_done(self, result: object) -> None:
+        if result is None:
+            self._set_notice("add cancelled")
+            return
+        from tulip_tui.data.transaction_write import TransactionDraft as _Draft
+
+        assert isinstance(result, _Draft)  # noqa: S101
+        try:
+            response = self._on_create(result)
+        except Exception as exc:
+            self._set_notice(f"[red]create failed:[/red] {exc}")
+            return
+        new_id = response.get("id") if isinstance(response, dict) else None
+        self._set_notice(f"created {str(new_id)[:8] if new_id else 'transaction'}")
+        self._load()
+
+    def _on_edit_tx_modal_done(self, tx_id: str, result: object) -> None:
+        if result is None:
+            self._set_notice("edit cancelled")
+            return
+        from tulip_tui.data.transaction_write import TransactionDraft as _Draft
+
+        assert isinstance(result, _Draft)  # noqa: S101
+        try:
+            self._on_edit(tx_id, result)
+        except Exception as exc:
+            self._set_notice(f"[red]edit failed:[/red] {exc}")
+            return
+        self._set_notice(f"updated {tx_id[:8]}")
+        self._load()
+
+    def _on_void_modal_done(self, tx_id: str, result: object) -> None:
+        if result is None:
+            self._set_notice("void cancelled")
+            return
+        reason = str(result)
+        try:
+            self._on_void(tx_id, reason)
+        except Exception as exc:
+            self._set_notice(f"[red]void failed:[/red] {exc}")
+            return
+        self._set_notice(f"voided {tx_id[:8]}")
+        self._load()
 
     # -- internals -----------------------------------------------------
 
@@ -180,6 +316,23 @@ class TransactionsScreen(Screen[None]):
         detail = self.query_one("#tx-detail", Static)
         detail.update(text)
 
+    def _set_notice(self, text: str) -> None:
+        self._notice = text
+        status = self.query_one("#tx-status", Static)
+        status.update(
+            f"{len(self._row_index_to_tx)} transactions"
+            + (f"    [dim]{text}[/dim]" if text else "")
+        )
+
+    def _cursor_tx(self) -> TransactionSummary | None:
+        if not self._row_index_to_tx:
+            return None
+        table = self.query_one("#tx-table", DataTable)
+        cursor = max(0, table.cursor_row)
+        if cursor >= len(self._row_index_to_tx):
+            return None
+        return self._row_index_to_tx[cursor]
+
     # -- introspection used by tests ----------------------------------
 
     def rendered_rows(self) -> list[str]:
@@ -193,3 +346,7 @@ class TransactionsScreen(Screen[None]):
     def detail_text(self) -> str:
         """Return the current detail-pane text as a plain string."""
         return self._detail_text
+
+    def notice(self) -> str:
+        """Return the last action notice (set by add/edit/void)."""
+        return self._notice
