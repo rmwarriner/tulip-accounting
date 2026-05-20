@@ -1824,6 +1824,41 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### GnuCash CSV account-tree import — ✅ *(2026-05-20)*
+
+Per [#432](https://github.com/rmwarriner/tulip-accounting/issues/432). New `tulip accounts import-gnucash
+PATH` CLI command. The CSV comes from GnuCash's *File → Export →
+Export Account Tree to CSV*. The importer:
+
+1. Parses every row via `tulip_importers.gnucash.parse` and maps
+   the 10 GnuCash type tokens (ASSET, BANK, CASH, STOCK, MUTUAL,
+   LIABILITY, CREDIT, EQUITY, INCOME, EXPENSE) to the five Tulip
+   canonical types + GnuCash-as-subtype.
+2. Sorts by depth (count of colons in `Full Account Name`) so
+   parents POST before children.
+3. For each row resolves the parent via the colon-path prefix,
+   checks idempotency (skip if a same-path account already exists),
+   then `POST /v1/accounts` carrying the full body — including
+   `notes` (#50), `is_placeholder` (#52), parent linkage, and the
+   inferred subtype.
+4. Hidden=T rows land then immediately deactivate.
+5. Non-currency holdings (STOCK/MUTUAL with `Namespace != CURRENCY`,
+   e.g. Fidelity SPAXX positions) land in `--default-currency`
+   with the original Symbol + Namespace stashed in notes for the
+   eventual investment-tracking feature.
+
+`--dry-run` parses + prints a per-type plan + warning count
+without making API calls — required first cut for any real
+migration. JSON mode is supported on both paths.
+
+18 pure-parser tests + 4 CLI integration tests against a spawned
+API (dry-run, full landing, idempotent re-run, JSON dry-run).
+The fixture covers every type + a 3-level hierarchy + placeholder
++ hidden + STOCK with non-currency namespace.
+
+Closes the structural prerequisite for any household migrating
+from GnuCash. Transaction migration remains a separate slice.
+
 #### Account add/edit modal in the TUI — ✅ *(2026-05-20)*
 
 Per [#431](https://github.com/rmwarriner/tulip-accounting/issues/431). Post-P9.6 polish. Closes the last

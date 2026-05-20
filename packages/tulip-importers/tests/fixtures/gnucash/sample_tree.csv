@@ -1,0 +1,14 @@
+Type,Full Account Name,Account Name,Account Code,Description,Account Color,Notes,Symbol,Namespace,Hidden,Tax Info,Placeholder
+ASSET,Assets,Assets,10000,Total assets,,,USD,CURRENCY,F,F,T
+ASSET,Assets:Current,Current,11000,Liquid assets,,,USD,CURRENCY,F,F,T
+BANK,Assets:Current:Checking,Checking,11100,Primary checking account,,*4218 Big Bank,USD,CURRENCY,F,F,F
+BANK,Assets:Current:Savings,Savings,11200,Primary savings,,,USD,CURRENCY,F,F,F
+STOCK,Assets:Current:Brokerage,SPAXX Position,11310,Money market fund,,,SPAXX,Fidelity,F,F,F
+LIABILITY,Liabilities,Liabilities,20000,Total liabilities,,,USD,CURRENCY,F,F,T
+CREDIT,Liabilities:Credit Cards,Visa,21100,*1234 Visa Card,,Cancelled 2024,USD,CURRENCY,T,F,F
+EQUITY,Equity,Equity,30000,Equity,,,USD,CURRENCY,F,F,T
+INCOME,Income,Income,40000,Total income,,,USD,CURRENCY,F,F,T
+INCOME,Income:Salary,Salary,41000,Day job,,,USD,CURRENCY,F,F,F
+EXPENSE,Expenses,Expenses,50000,Total expenses,,,USD,CURRENCY,F,F,T
+EXPENSE,Expenses:Food,Food,51000,Food subtotal,,,USD,CURRENCY,F,F,T
+EXPENSE,Expenses:Food:Groceries,Groceries,51100,,,,USD,CURRENCY,F,F,F

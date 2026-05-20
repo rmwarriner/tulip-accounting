@@ -439,3 +439,104 @@ def test_accounts_show_ambiguous_name_lists_paths(authed_session: str) -> None:
     # Both full paths are printed so the user can pick one.
     assert "checking:fees" in err
     assert "savings:fees" in err
+
+
+# ---- #432: GnuCash CSV account-tree import --------------------------------
+
+
+_GNUCASH_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "tulip-importers"
+    / "tests"
+    / "fixtures"
+    / "gnucash"
+    / "sample_tree.csv"
+)
+
+
+@pytest.mark.integration
+def test_import_gnucash_dry_run_makes_no_changes(authed_session: str) -> None:
+    result = _run_cli(
+        "accounts",
+        "import-gnucash",
+        str(_GNUCASH_FIXTURE),
+        "--dry-run",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "rows:" in result.stdout
+    assert "warnings:" in result.stdout
+    # Dry-run does not touch the API; only the seeded Imbalance:Unknown exists.
+    listing = _run_cli("accounts", "list", api_url=authed_session)
+    assert listing.returncode == 0
+    assert "Checking" not in listing.stdout
+    assert "Groceries" not in listing.stdout
+
+
+@pytest.mark.integration
+def test_import_gnucash_lands_full_tree(authed_session: str) -> None:
+    result = _run_cli(
+        "accounts",
+        "import-gnucash",
+        str(_GNUCASH_FIXTURE),
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "created" in result.stdout
+
+    listing = _run_cli("--json", "accounts", "list", api_url=authed_session)
+    assert listing.returncode == 0
+    import json as _json
+
+    rows = _json.loads(listing.stdout)
+    names = {row["name"] for row in rows}
+    # Every leaf account is in the household's chart.
+    assert "Checking" in names
+    assert "Savings" in names
+    assert "Salary" in names
+    assert "Groceries" in names
+    # Placeholders land too.
+    assert "Assets" in names
+
+
+@pytest.mark.integration
+def test_import_gnucash_is_idempotent(authed_session: str) -> None:
+    first = _run_cli(
+        "accounts",
+        "import-gnucash",
+        str(_GNUCASH_FIXTURE),
+        api_url=authed_session,
+    )
+    assert first.returncode == 0, first.stderr
+
+    second = _run_cli(
+        "accounts",
+        "import-gnucash",
+        str(_GNUCASH_FIXTURE),
+        api_url=authed_session,
+    )
+    assert second.returncode == 0, second.stderr
+    # Second run reports 0 created and N skipped.
+    assert "0 created" in second.stdout or "created: 0" in second.stdout
+    assert "skipped" in second.stdout
+
+
+@pytest.mark.integration
+def test_import_gnucash_dry_run_json(authed_session: str) -> None:
+    result = _run_cli(
+        "--json",
+        "accounts",
+        "import-gnucash",
+        str(_GNUCASH_FIXTURE),
+        "--dry-run",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    import json as _json
+
+    payload = _json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["row_count"] == 13
+    assert payload["warning_count"] == 1
+    assert payload["by_type"]["asset"] >= 1
+    assert payload["by_type"]["expense"] >= 1
