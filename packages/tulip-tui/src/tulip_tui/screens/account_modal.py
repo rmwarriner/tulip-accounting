@@ -90,6 +90,8 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         initial_subtype: str = "",
         initial_visibility: str = "shared",
         initial_parent_id: str | None = None,
+        initial_notes: str = "",
+        initial_placeholder: bool = False,
     ) -> None:
         """Store prefill values; modal renders on mount."""
         super().__init__()
@@ -101,6 +103,8 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         self._initial_subtype = initial_subtype
         self._initial_visibility = initial_visibility
         self._initial_parent_id = initial_parent_id
+        self._initial_notes = initial_notes
+        self._initial_placeholder = initial_placeholder
         self._error: str = ""
 
     def compose(self) -> ComposeResult:
@@ -126,11 +130,22 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
                     value=self._initial_visibility == "private",
                     id="acct-private",
                 )
+            with Horizontal(id="acct-placeholder-row"):
+                yield Static(
+                    "placeholder (organisational; rejects postings)?",
+                    classes="label",
+                )
+                yield Switch(
+                    value=self._initial_placeholder,
+                    id="acct-placeholder",
+                )
             yield Static("parent account id (optional)", classes="label")
             yield Input(
                 value=self._initial_parent_id or "",
                 id="acct-parent-id",
             )
+            yield Static("notes (optional, encrypted at rest)", classes="label")
+            yield Input(value=self._initial_notes, id="acct-notes")
             yield Static("", id="acct-error")
             with Horizontal(id="acct-buttons"):
                 yield Button("Cancel", id="acct-cancel")
@@ -156,8 +171,10 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         code = self.query_one("#acct-code", Input).value.strip() or None
         subtype = self.query_one("#acct-subtype", Input).value.strip() or None
         visibility = "private" if self.query_one("#acct-private", Switch).value else "shared"
+        is_placeholder = self.query_one("#acct-placeholder", Switch).value
         parent_id_raw = self.query_one("#acct-parent-id", Input).value.strip()
         parent_id = parent_id_raw or None
+        notes = self.query_one("#acct-notes", Input).value.strip() or None
 
         if not name:
             self._set_error("name is required")
@@ -177,6 +194,8 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
             subtype=subtype,
             visibility=visibility,
             parent_account_id=parent_id,
+            notes=notes,
+            is_placeholder=is_placeholder,
         )
 
     def _set_error(self, msg: str) -> None:

@@ -24,6 +24,8 @@ class AccountDraft:
     subtype: str | None
     visibility: str  # shared / private
     parent_account_id: str | None
+    notes: str | None = None  # #50: freeform notes (encrypted at rest)
+    is_placeholder: bool = False  # #52: leaf-only postings
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,10 @@ def create_account(client: TulipClient, draft: AccountDraft) -> dict[str, object
         body["subtype"] = draft.subtype
     if draft.parent_account_id:
         body["parent_account_id"] = draft.parent_account_id
+    if draft.notes:
+        body["notes"] = draft.notes
+    if draft.is_placeholder:
+        body["is_placeholder"] = True
     resp = client.post("/v1/accounts", authenticated=True, json=body)
     return cast("dict[str, object]", resp.json())
 

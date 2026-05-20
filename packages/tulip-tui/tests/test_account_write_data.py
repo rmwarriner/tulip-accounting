@@ -75,9 +75,42 @@ def test_create_account_omits_optional_fields() -> None:
     # subtype and parent are omitted when None.
     assert "subtype" not in seen["body"]
     assert "parent_account_id" not in seen["body"]
+    # notes / is_placeholder default to None / False — also omitted.
+    assert "notes" not in seen["body"]
+    assert "is_placeholder" not in seen["body"]
     assert seen["body"]["name"] == "Checking"
     assert seen["body"]["code"] == "1110"
     assert result["id"] == "acc-1"
+
+
+def test_create_account_includes_notes_and_placeholder_when_set() -> None:
+    """#50 + #52: AccountDraft surfaces notes + is_placeholder via POST body."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        seen["body"] = _json.loads(request.content.decode())
+        return httpx.Response(
+            201,
+            json={"id": "acc-3", "name": "X", "type": "asset", "currency": "USD"},
+        )
+
+    draft = AccountDraft(
+        name="Current Assets",
+        type="asset",
+        currency="USD",
+        code=None,
+        subtype=None,
+        visibility="shared",
+        parent_account_id=None,
+        notes="header for the chart",
+        is_placeholder=True,
+    )
+    with _client(httpx.MockTransport(handler)) as client:
+        create_account(client, draft)
+    assert seen["body"]["notes"] == "header for the chart"
+    assert seen["body"]["is_placeholder"] is True
 
 
 def test_create_account_includes_parent_when_set() -> None:
