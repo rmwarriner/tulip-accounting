@@ -7,19 +7,80 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from tulip_storage.encryption import decrypt_field, encrypt_field, field_aad
 from tulip_storage.models import Account, AccountType
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+class AccountMasterKeyRequiredError(RuntimeError):
+    """Raised when a notes write is attempted without a master key configured."""
+
+
 class AccountRepository:
     """CRUD for accounts within a single household."""
 
-    def __init__(self, session: Session, household_id: UUID) -> None:
-        """Bind the repository to a session and a tenant scope."""
+    def __init__(
+        self,
+        session: Session,
+        household_id: UUID,
+        *,
+        master_key: bytes | None = None,
+    ) -> None:
+        """Bind the repository to a session and a tenant scope.
+
+        ``master_key`` is required only when ``notes`` plaintext is
+        passed to ``create`` / ``set_notes`` (or read back via
+        :meth:`decrypt_notes`). The pre-existing CRUD surface stays
+        intact without it.
+        """
         self._session = session
         self._household_id = household_id
+        self._master_key = master_key
+
+    def _require_master_key(self) -> bytes:
+        if self._master_key is None:
+            raise AccountMasterKeyRequiredError(
+                "AccountRepository requires a master_key to encrypt or "
+                "decrypt account notes; construct with master_key=..."
+            )
+        return self._master_key
+
+    def _notes_aad(self, account_id: UUID) -> bytes:
+        return field_aad(
+            table="accounts",
+            column="notes_encrypted",
+            household_id=self._household_id,
+            row_id=account_id,
+        )
+
+    def decrypt_notes(self, account: Account) -> str | None:
+        """Return the plaintext notes for ``account`` or None when unset.
+
+        Decoded as UTF-8. Requires a configured master key.
+        """
+        if account.notes_encrypted is None:
+            return None
+        key = self._require_master_key()
+        return decrypt_field(account.notes_encrypted, key, aad=self._notes_aad(account.id)).decode(
+            "utf-8"
+        )
+
+    def set_notes(self, account_id: UUID, notes: str | None) -> Account:
+        """Encrypt + persist a freeform notes string, or clear with None."""
+        account = self.get(account_id)
+        if account is None:
+            raise LookupError(f"account {account_id} not found in household {self._household_id}")
+        if notes is None or notes == "":
+            account.notes_encrypted = None
+        else:
+            key = self._require_master_key()
+            account.notes_encrypted = encrypt_field(
+                notes.encode("utf-8"), key, aad=self._notes_aad(account_id)
+            )
+        self._session.flush()
+        return account
 
     def create(
         self,
@@ -31,9 +92,14 @@ class AccountRepository:
         subtype: str | None = None,
         parent_account_id: UUID | None = None,
         visibility: str = "shared",
+        notes: str | None = None,
         created_by_user_id: UUID | None = None,
     ) -> Account:
-        """Insert a new Account into this repository's household."""
+        """Insert a new Account into this repository's household.
+
+        When ``notes`` is provided, the repository must have been
+        constructed with a master key — see :meth:`__init__`.
+        """
         a = Account(
             household_id=self._household_id,
             id=uuid4(),
@@ -47,6 +113,9 @@ class AccountRepository:
             parent_account_id=parent_account_id,
             created_by_user_id=created_by_user_id,
         )
+        if notes:
+            key = self._require_master_key()
+            a.notes_encrypted = encrypt_field(notes.encode("utf-8"), key, aad=self._notes_aad(a.id))
         self._session.add(a)
         self._session.flush()
         return a
