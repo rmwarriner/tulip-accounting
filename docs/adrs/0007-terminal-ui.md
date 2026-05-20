@@ -178,18 +178,33 @@ Slices, in order:
   `PATCH /v1/imports/{batch_id}/lines/{line_id}`), `p` promotes a
   single line, `a` opens the apply confirm modal with the three
   apply-flag toggles. **Shipped 2026-05-20.**
-- **P9.6.b — Reconcile actioning** — accept-auto-match, confirm-
-  suggested-match, manual-match picker, mark-cleared, carry-
-  forward; no backend change planned.
-- **P9.6.c — Add / edit / void transaction modal** — new transaction
-  modal reachable from the transactions register with `n`/`e`/`x`;
-  splits handled as in-modal "add row" affordances.
-- **P9.6.d — AI-categorize with explicit confirmation** — `c` on a
-  PENDING transaction; multi-select via `space` then batch `c`. Per
-  the wireframes' AI-confirmation lock, every proposal requires an
-  explicit accept.
+- **P9.6.b — Reconcile actioning** ([#420](https://github.com/rmwarriner/tulip-accounting/issues/420)) — new
+  `ReconciliationDetailScreen` with three stacked tables; `a`
+  auto-match, `x` reject, `m` manual-match picker, `k`
+  mark-cleared (paper recons), `f` carry-forward, `c` complete.
+  No backend change. **Shipped 2026-05-20.**
+- **P9.6.c — Add / edit / void transaction modal** ([#423](https://github.com/rmwarriner/tulip-accounting/issues/423)) —
+  `TransactionEditModal` + `VoidConfirmModal` on the transactions
+  register with `n`/`e`/`x`; postings input uses the same
+  `account=amount[@CUR]` syntax as `tulip add --post`. No backend
+  change. **Shipped 2026-05-20.**
+- **P9.6.d — AI-categorize with explicit confirmation** ([#425](https://github.com/rmwarriner/tulip-accounting/issues/425),
+  deferred) — original spec wanted top-N proposals with confidence,
+  but `AICategorizer.categorize()` returns a single suggestion.
+  Filed as a follow-up that bundles the backend extension
+  (categorizer returns ranked alternates) with the TUI proposal
+  modal. AI categorization already runs automatically on
+  `tulip imports apply`, so users get categorized PENDING
+  transactions today; the wireframes-spec interactive multi-proposal
+  UI lands once the backend extension ships.
 
 Backend surface is unchanged except for one P9.6.a endpoint gap-fill
 (`PATCH /v1/imports/.../lines/{id}`); the architecture-boundary
 test remains green. Mutation flows still ride the same HTTP API the
 CLI uses, so the TUI is not a new attack surface.
+
+App-wide bindings after P9.6.a/b/c: `q` quit · `p` reports · `c`
+reconcile · `i` imports · `e` envelopes · `s` sinking funds · `n`
+pending · plus `enter`-drill-in to per-account / per-batch /
+per-reconciliation detail screens that carry their own action
+bindings.
