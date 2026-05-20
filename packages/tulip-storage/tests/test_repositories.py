@@ -96,6 +96,51 @@ class TestAccountRepository:
         # but get() still finds it
         assert repo.get(a.id) is not None
 
+    def test_notes_round_trip(self, session: Session, household: Household):
+        # 32-byte deterministic test key.
+        master_key = b"\x00" * 32
+        repo = AccountRepository(session, household.id, master_key=master_key)
+        a = repo.create(
+            code="1110",
+            name="Checking",
+            type=AccountType.ASSET,
+            currency="USD",
+            notes="Opened Mar 2018; primary household checking.",
+        )
+        session.commit()
+
+        # Encrypted at rest — no plaintext in the column.
+        assert a.notes_encrypted is not None
+        assert b"primary household checking" not in a.notes_encrypted
+
+        # Read back via the same key decrypts cleanly.
+        assert repo.decrypt_notes(a) == "Opened Mar 2018; primary household checking."
+
+        # Update via set_notes round-trips.
+        repo.set_notes(a.id, "Updated note.")
+        session.commit()
+        assert repo.decrypt_notes(repo.get(a.id)) == "Updated note."
+
+        # Clearing via None nulls the column.
+        repo.set_notes(a.id, None)
+        session.commit()
+        assert repo.get(a.id).notes_encrypted is None
+        assert repo.decrypt_notes(repo.get(a.id)) is None
+
+    def test_notes_requires_master_key(self, session: Session, household: Household):
+        from tulip_storage.repositories.account import AccountMasterKeyRequiredError
+
+        # No master key configured.
+        repo = AccountRepository(session, household.id)
+        with pytest.raises(AccountMasterKeyRequiredError):
+            repo.create(
+                code="1110",
+                name="X",
+                type=AccountType.ASSET,
+                currency="USD",
+                notes="non-empty",
+            )
+
     def test_get_by_code_returns_match(self, session: Session, household: Household):
         repo = AccountRepository(session, household.id)
         a = repo.create(

@@ -21,6 +21,16 @@ class AccountCreate(BaseModel):
     subtype: str | None = Field(default=None, max_length=50)
     parent_account_id: UUID | None = None
     visibility: str = Field(default="shared", pattern=r"^(shared|private)$")
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Freeform notes / comments — opaque to Tulip, stored "
+            "field-encrypted at rest under the household master key "
+            "(#50). Useful for capturing why the account exists, "
+            "external references, account-number tail digits, or "
+            "the source description from a chart-of-accounts import."
+        ),
+    )
     create_parents: bool = Field(
         default=False,
         description=(
@@ -58,6 +68,14 @@ class AccountUpdate(BaseModel):
             "top-level account instead."
         ),
     )
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Freeform notes / comments. Pass an empty string to clear "
+            "an existing note; omit the key entirely to leave it "
+            "unchanged. Encrypted at rest (#50)."
+        ),
+    )
 
 
 class AccountRead(BaseModel):
@@ -72,6 +90,13 @@ class AccountRead(BaseModel):
     visibility: str
     is_active: bool
     parent_account_id: UUID | None
+    notes: str | None = Field(
+        default=None,
+        description=(
+            "Freeform notes / comments (#50). Decrypted server-side "
+            "for the caller. Null when no note is set."
+        ),
+    )
     parents_created: list[AccountRead] | None = Field(
         default=None,
         description=(
