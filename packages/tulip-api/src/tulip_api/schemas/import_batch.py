@@ -24,6 +24,13 @@ class StatementLineRead(BaseModel):
     fitid: str | None
     is_excluded: bool
     reconciliation_match_id: UUID | None
+    promoted_transaction_id: UUID | None = None
+
+
+class StatementLineUpdate(BaseModel):
+    """``PATCH /v1/imports/{batch_id}/lines/{line_id}`` body (P9.6.a)."""
+
+    is_excluded: bool
 
 
 class ImportBatchSummary(BaseModel):

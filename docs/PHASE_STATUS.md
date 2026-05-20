@@ -1814,6 +1814,51 @@ row) → transactions · `escape` pop · `r` refresh. Mutation surfaces
 all remain on the CLI for v1; surfacing them as TUI flows is the
 next phase.
 
+### P9.6 — TUI mutation surfaces, daily-driver wave (in flight)
+
+Per umbrella [#414](https://github.com/rmwarriner/tulip-accounting/issues/414). The read-only TUI shipped through P9.5 made
+every domain navigable but kept every recurring household task —
+log a transaction, accept an import, work a reconciliation, fix a
+category — on the CLI. This wave brings the smallest set of
+mutations that makes the TUI a daily driver, in dependency order.
+ADR-0007 amended under "Status update mechanism" recording the
+scope extension.
+
+#### P9.6.a — Apply imports inside the TUI — ✅ *(2026-05-20)*
+
+Per [#418](https://github.com/rmwarriner/tulip-accounting/issues/418). New `ImportBatchDetailScreen` reachable with
+`enter` on a row in the imports browser. Renders the batch header
+plus a per-line table with status markers (promoted / excluded /
+pending) and three new bindings:
+
+- **`x`** toggles `is_excluded` on the cursor line via the new
+  `PATCH /v1/imports/{batch_id}/lines/{line_id}` endpoint (audit
+  rows `statement_line.excluded` / `statement_line.unexcluded`,
+  idempotent no-op when the flag already matches, 409
+  `import.line.already_promoted` if the line has been promoted).
+- **`p`** promotes the cursor pending line via
+  `POST /v1/imports/{batch_id}/lines/{line_id}/promote`.
+- **`a`** opens an `ApplyConfirmModal` with the three apply-flag
+  toggles (`--as-posted`, `--no-categorize`,
+  `--treat-cleared-as-pending`) and a non-excluded line count.
+  Confirm fires `POST /v1/imports/{batch_id}/apply` with the
+  toggles as query params; on success the detail screen pops back
+  to the imports list with the created count in the notice strip.
+
+Already-promoted lines refuse `x` and `p`; the API enforces both
+and the screen surfaces the `promoted` marker so the user knows.
+
+Cross-cutting changes: `StatementLineRepository.unexclude()` mirror
+of `.exclude()`; the `GET /v1/imports/{batch_id}` response now
+surfaces `promoted_transaction_id` per line so the detail screen
+can derive status without a separate transactions fetch; the
+imports browser's `enter` fires the new drill-in handler. Tests: 1
+new storage round-trip, 8 API endpoint tests (happy / round-trip /
+idempotent / 409 promoted / 404 batch / 404 line / 401 unauth /
+audit-row shape), 9 data-layer tests, 13 pilot-mode screen tests
+covering every binding plus the modal's cancel / confirm /
+no-pending paths.
+
 ---
 
 ## Other shipped fixes
