@@ -40,6 +40,8 @@ docker compose -f deploy/docker/compose.yml up --build --wait
 
 When the command returns, the API is live on `http://127.0.0.1:8000`. The full walkthrough — register, seed accounts, import a statement, reconcile, close the month, back it up — is in [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
+> **Before you log five years of data into it:** read [docs/RECOVERY.md](docs/RECOVERY.md). It covers what to store outside the host so a successor can recover your books if you're unavailable, and the annual dry-run cadence. Bus-factor of one is the biggest practical risk for a household-scope tool.
+
 ### What's not in v1 yet
 
 Honest expectations matter for internal-beta. The following are deliberately deferred:
@@ -203,6 +205,7 @@ This project follows test-driven development. Every feature ships with tests wri
 - [Phase Status](docs/PHASE_STATUS.md) — what's shipped, what's queued
 - [Threat Model](docs/THREAT_MODEL.md) — security checkpoint, kept current with the Phase 8 audits
 - [User Rights](docs/USER_RIGHTS.md) — operator-facing map from GDPR / CCPA data-subject rights to the Tulip commands that honour them
+- [Recovery](docs/RECOVERY.md) — bus-factor / successor recovery procedure: what the Recovery Packet contains, how to restore from a destroyed host, the annual dry-run cadence
 - [Audits](docs/audits/) — the Phase 8 deep security audit (2026-05-12) and deep privacy audit (2026-05-13), finding-by-finding
 - [ADRs](docs/adrs/) — architectural decision records (envelope shadow ledger, scheduler primitive, mutation testing, reconciliation, AI integration / privacy contract)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — TDD discipline, coverage gates, signed commits, manual smoke test format
