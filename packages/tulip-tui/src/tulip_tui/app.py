@@ -21,6 +21,7 @@ from typing import ClassVar
 from textual.app import App
 from textual.binding import Binding, BindingType
 
+from tulip_tui.data.account_write import AccountDraft
 from tulip_tui.data.envelopes import EnvelopesData
 from tulip_tui.data.import_batch_detail import ImportBatchDetail
 from tulip_tui.data.imports import ImportsData
@@ -55,6 +56,8 @@ PendingLoader = Callable[[], PendingData]
 TxCreateAction = Callable[[TransactionDraft], object]
 TxEditAction = Callable[[str, TransactionDraft], object]
 TxVoidAction = Callable[[str, str], object]
+AccountCreateAction = Callable[[AccountDraft], object]
+AccountEditAction = Callable[[str, AccountDraft], object]
 
 ReconciliationDetailLoaderFactory = Callable[[str], Callable[[], ReconciliationDetail]]
 ReconciliationAutoMatchAction = Callable[[str], object]
@@ -177,6 +180,14 @@ def _no_op_tx_void(_tx_id: str, _reason: str) -> object:
     raise RuntimeError("transaction void action not configured")
 
 
+def _no_op_account_create(_draft: AccountDraft) -> object:
+    raise RuntimeError("account create action not configured")
+
+
+def _no_op_account_edit(_account_id: str, _draft: AccountDraft) -> object:
+    raise RuntimeError("account edit action not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -223,6 +234,8 @@ class TulipTuiApp(App[None]):
         tx_create_action: TxCreateAction = _no_op_tx_create,
         tx_edit_action: TxEditAction = _no_op_tx_edit,
         tx_void_action: TxVoidAction = _no_op_tx_void,
+        account_create_action: AccountCreateAction = _no_op_account_create,
+        account_edit_action: AccountEditAction = _no_op_account_edit,
     ) -> None:
         """Store the per-screen loaders / factories used at mount and drill-in."""
         super().__init__()
@@ -248,10 +261,19 @@ class TulipTuiApp(App[None]):
         self._tx_create_action = tx_create_action
         self._tx_edit_action = tx_edit_action
         self._tx_void_action = tx_void_action
+        self._account_create_action = account_create_action
+        self._account_edit_action = account_edit_action
 
     def on_mount(self) -> None:
         """Push the accounts browser as the initial screen."""
-        self.push_screen(AccountsScreen(self._loader, on_open_account=self.open_transactions))
+        self.push_screen(
+            AccountsScreen(
+                self._loader,
+                on_open_account=self.open_transactions,
+                on_create_account=self._account_create_action,
+                on_edit_account=self._account_edit_action,
+            )
+        )
 
     def open_transactions(self, account_id: str | None) -> None:
         """Push the transactions screen filtered to ``account_id`` (or all)."""
