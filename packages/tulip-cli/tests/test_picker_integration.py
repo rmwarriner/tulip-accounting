@@ -408,3 +408,27 @@ def test_reconcile_show_missing_arg_non_tty_exits_2() -> None:
     result = _run_cli_no_tty("reconcile", "show")
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Missing argument RECONCILIATION_ID" in result.stderr
+
+
+# ---- #303: edit / void / delete fall back to the picker -----------------
+
+
+def test_transactions_void_missing_arg_non_tty_exits_2() -> None:
+    """`tulip transactions void` with no TXID, no TTY → usage error, exit 2."""
+    result = _run_cli_no_tty("transactions", "void", "--reason", "x")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Missing argument TXID" in result.stderr
+
+
+def test_transactions_delete_missing_arg_non_tty_exits_2() -> None:
+    """`tulip transactions delete` with no TXID, no TTY → usage error, exit 2."""
+    result = _run_cli_no_tty("transactions", "delete")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Missing argument TXID" in result.stderr
+
+
+def test_transactions_edit_missing_arg_non_tty_exits_2() -> None:
+    """`tulip transactions edit` with no TXID, no TTY → usage error, exit 2."""
+    result = _run_cli_no_tty("transactions", "edit")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Missing argument TXID" in result.stderr
