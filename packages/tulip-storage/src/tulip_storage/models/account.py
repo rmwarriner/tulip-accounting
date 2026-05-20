@@ -71,6 +71,9 @@ class Account(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     visibility: Mapped[str] = mapped_column(String(10), nullable=False, default="shared")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_placeholder: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     external_account_number_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
     notes_encrypted: Mapped[bytes | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(GUID(), nullable=True)

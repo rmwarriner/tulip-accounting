@@ -31,9 +31,15 @@ class AccountRepository:
         subtype: str | None = None,
         parent_account_id: UUID | None = None,
         visibility: str = "shared",
+        is_placeholder: bool = False,
         created_by_user_id: UUID | None = None,
     ) -> Account:
-        """Insert a new Account into this repository's household."""
+        """Insert a new Account into this repository's household.
+
+        ``is_placeholder=True`` marks the account as a non-posting
+        organisational node (#52); the API rejects postings against
+        placeholder accounts.
+        """
         a = Account(
             household_id=self._household_id,
             id=uuid4(),
@@ -44,10 +50,20 @@ class AccountRepository:
             currency=currency,
             visibility=visibility,
             is_active=True,
+            is_placeholder=is_placeholder,
             parent_account_id=parent_account_id,
             created_by_user_id=created_by_user_id,
         )
         self._session.add(a)
+        self._session.flush()
+        return a
+
+    def set_placeholder(self, account_id: UUID, is_placeholder: bool) -> Account:
+        """Toggle the placeholder flag (#52)."""
+        a = self.get(account_id)
+        if a is None:
+            raise LookupError(f"account {account_id} not found in household {self._household_id}")
+        a.is_placeholder = is_placeholder
         self._session.flush()
         return a
 

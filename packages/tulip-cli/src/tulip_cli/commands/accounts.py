@@ -331,6 +331,8 @@ def _render_account(account: dict[str, Any], parent: dict[str, Any] | None = Non
     typer.echo(f"currency:     {account.get('currency', '')}")
     typer.echo(f"visibility:   {account.get('visibility', '')}")
     typer.echo(f"is_active:    {account.get('is_active', '')}")
+    if account.get("is_placeholder"):
+        typer.echo("placeholder:  true (rejects postings)")
     if account.get("parent_account_id"):
         if parent is not None:
             parent_label = f"{parent.get('code') or '—'} ({parent.get('name', '')})"
@@ -443,6 +445,17 @@ def add_account(
             ),
         ),
     ] = False,
+    placeholder: Annotated[
+        bool,
+        typer.Option(
+            "--placeholder",
+            help=(
+                "Mark this account as a non-posting organisational node "
+                "(#52). The API rejects any posting whose target is a "
+                "placeholder; useful for chart-of-accounts headers."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Create a new account in the logged-in user's household.
 
@@ -483,6 +496,8 @@ def add_account(
         body["code"] = code
     if subtype is not None:
         body["subtype"] = subtype
+    if placeholder:
+        body["is_placeholder"] = True
     if create_parents:
         body["create_parents"] = True
 
@@ -557,6 +572,17 @@ def edit_account(
             ),
         ),
     ] = None,
+    placeholder: Annotated[
+        bool | None,
+        typer.Option(
+            "--placeholder/--no-placeholder",
+            help=(
+                "Toggle the placeholder flag (#52). Flipping to "
+                "placeholder requires the account to have no existing "
+                "postings."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Update mutable fields on an existing account.
 
@@ -576,6 +602,8 @@ def edit_account(
         body["subtype"] = subtype
     if visibility is not None:
         body["visibility"] = visibility
+    if placeholder is not None:
+        body["is_placeholder"] = placeholder
 
     try:
         with _client(config, as_json=as_json) as client:

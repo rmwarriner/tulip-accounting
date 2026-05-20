@@ -242,6 +242,18 @@ class CategorizeUnknownAccountError(ValueError):
         self.household_id = household_id
 
 
+class PlaceholderAccountError(ValueError):
+    """The target account for a posting is a placeholder (#52)."""
+
+    def __init__(self, account_id: str) -> None:
+        """Build with the offending account id."""
+        super().__init__(
+            f"cannot post to placeholder account {account_id}; pick a leaf "
+            "or clear the placeholder flag"
+        )
+        self.account_id = account_id
+
+
 @dataclass(frozen=True, slots=True)
 class ApplyResult:
     """Summary of a successful ``apply_batch`` call."""
@@ -328,6 +340,12 @@ async def promote_statement_line(
     bank_account = accounts.get(batch.account_id)
     if bank_account is None:  # pragma: no cover - bank account is FK-enforced
         raise LookupError(f"batch.account_id {batch.account_id} not found")
+    if bank_account.is_placeholder:
+        # #52: a batch's bank account can be flipped to placeholder after
+        # the batch is uploaded; reject the apply rather than write a
+        # posting against a placeholder. The router lifts this to the
+        # account.placeholder_posting Problem Detail.
+        raise PlaceholderAccountError(account_id=str(bank_account.id))
 
     splits = _extract_splits_from_raw_json(line.raw_json, currency=line.currency)
     # Status resolution per #279 (see docstring).

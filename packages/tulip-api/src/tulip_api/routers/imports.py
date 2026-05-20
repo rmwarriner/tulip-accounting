@@ -72,6 +72,7 @@ from tulip_api.services.import_apply import (
     CategorizeUnknownAccountError,
     LineAlreadyPromotedError,
     LineExcludedError,
+    PlaceholderAccountError,
     apply_batch,
     promote_statement_line,
     serialize_parsed_line_raw_json,
@@ -688,6 +689,7 @@ async def upload_multi_account_qif(
     status_code=status.HTTP_200_OK,
     responses={
         401: problem_response("auth.unauthorized"),
+        400: problem_response("account.placeholder_posting"),
         403: problem_response("auth.forbidden"),
         404: problem_response("import_batch.not_found"),
         409: problem_response(
@@ -764,6 +766,10 @@ async def apply_import(
         raise ImportAlreadyAppliedError(batch_id=str(batch_id)) from exc
     except CategorizeUnknownAccountError as exc:
         raise ImportCategorizeUnknownAccountError(account_code=exc.account_code) from exc
+    except PlaceholderAccountError as exc:
+        from tulip_api.errors import AccountPlaceholderPostingError
+
+        raise AccountPlaceholderPostingError(account_id=exc.account_id) from exc
 
     AuditLogWriter(session, claims.household_id).write(
         action="import_apply",

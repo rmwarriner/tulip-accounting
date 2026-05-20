@@ -21,6 +21,15 @@ class AccountCreate(BaseModel):
     subtype: str | None = Field(default=None, max_length=50)
     parent_account_id: UUID | None = None
     visibility: str = Field(default="shared", pattern=r"^(shared|private)$")
+    is_placeholder: bool = Field(
+        default=False,
+        description=(
+            "When true, marks the account as a non-posting organisational "
+            "node (#52). The API rejects any posting whose target account "
+            "is a placeholder; the operator must create + post to a leaf "
+            "instead. Defaults to false (regular postable account)."
+        ),
+    )
     create_parents: bool = Field(
         default=False,
         description=(
@@ -58,6 +67,14 @@ class AccountUpdate(BaseModel):
             "top-level account instead."
         ),
     )
+    is_placeholder: bool | None = Field(
+        default=None,
+        description=(
+            "Toggle the placeholder flag (#52). Omit to leave unchanged. "
+            "Turning a regular account into a placeholder is rejected if "
+            "it has direct postings — clean those up first."
+        ),
+    )
 
 
 class AccountRead(BaseModel):
@@ -71,6 +88,7 @@ class AccountRead(BaseModel):
     currency: str
     visibility: str
     is_active: bool
+    is_placeholder: bool = False
     parent_account_id: UUID | None
     parents_created: list[AccountRead] | None = Field(
         default=None,

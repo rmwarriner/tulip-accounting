@@ -238,3 +238,148 @@ class TestTenantIsolation:
         names = {row["name"] for row in rows}
         assert "A's account" not in names
         assert names <= {"Imbalance: Unknown"}
+
+
+# ---- #52: placeholder flag (leaf-only postings) -----------------------------
+
+
+class TestAccountPlaceholder:
+    """The placeholder flag rejects postings against placeholder accounts."""
+
+    def test_create_with_placeholder_default_false(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "X", "type": "asset", "currency": "USD"},
+        )
+        assert r.status_code == 201
+        assert r.json()["is_placeholder"] is False
+
+    def test_create_with_placeholder_true(self, client: TestClient, auth_h: dict[str, str]):
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Current Assets",
+                "type": "asset",
+                "currency": "USD",
+                "is_placeholder": True,
+            },
+        )
+        assert r.status_code == 201
+        assert r.json()["is_placeholder"] is True
+
+    def test_patch_flips_placeholder(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "X", "type": "asset", "currency": "USD"},
+        ).json()
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"is_placeholder": True},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_placeholder"] is True
+
+    def test_posting_to_placeholder_rejected(self, client: TestClient, auth_h: dict[str, str]):
+        # Create a placeholder asset + a real expense.
+        ph = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Current Assets",
+                "type": "asset",
+                "currency": "USD",
+                "is_placeholder": True,
+            },
+        ).json()
+        food = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Food", "type": "expense", "currency": "USD"},
+        ).json()
+
+        # Posting against the placeholder rejects with the typed problem.
+        r = client.post(
+            "/v1/transactions",
+            headers=auth_h,
+            json={
+                "date": "2026-05-20",
+                "description": "lunch",
+                "postings": [
+                    {
+                        "account_id": ph["id"],
+                        "amount": "-10.00",
+                        "currency": "USD",
+                    },
+                    {
+                        "account_id": food["id"],
+                        "amount": "10.00",
+                        "currency": "USD",
+                    },
+                ],
+            },
+        )
+        assert_problem(r, status=400, code="account.placeholder_posting")
+        assert r.json()["account_id"] == ph["id"]
+
+    def test_patch_to_placeholder_rejected_when_postings_exist(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        # Create two real accounts, post a transaction, then try to
+        # flip one of them to placeholder.
+        cash = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Cash", "type": "asset", "currency": "USD"},
+        ).json()
+        food = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Food", "type": "expense", "currency": "USD"},
+        ).json()
+        client.post(
+            "/v1/transactions",
+            headers=auth_h,
+            json={
+                "date": "2026-05-20",
+                "description": "lunch",
+                "postings": [
+                    {"account_id": cash["id"], "amount": "-10.00", "currency": "USD"},
+                    {"account_id": food["id"], "amount": "10.00", "currency": "USD"},
+                ],
+            },
+        )
+
+        r = client.patch(
+            f"/v1/accounts/{cash['id']}",
+            headers=auth_h,
+            json={"is_placeholder": True},
+        )
+        assert_problem(r, status=409, code="account.placeholder_has_postings")
+        assert r.json()["account_id"] == cash["id"]
+        assert r.json()["posting_count"] >= 1
+
+    def test_unsetting_placeholder_is_unblocked(self, client: TestClient, auth_h: dict[str, str]):
+        # Flipping placeholder → false is unconditional (no postings yet).
+        ph = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "X",
+                "type": "asset",
+                "currency": "USD",
+                "is_placeholder": True,
+            },
+        ).json()
+        r = client.patch(
+            f"/v1/accounts/{ph['id']}",
+            headers=auth_h,
+            json={"is_placeholder": False},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_placeholder"] is False
