@@ -65,6 +65,7 @@ from tulip_api.schemas.import_batch import (
     MultiAccountImportSummary,
     StatementLinePromoteResponse,
     StatementLineRead,
+    StatementLineUpdate,
 )
 from tulip_api.services.import_apply import (
     BatchAlreadyAppliedError,
@@ -876,6 +877,105 @@ async def promote_line(
     )
 
 
+@router.patch(
+    "/{batch_id}/lines/{line_id}",
+    response_model=StatementLineRead,
+    responses={
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        404: problem_response("import_batch.not_found", "import.line.not_found"),
+        409: problem_response("import.line.already_promoted"),
+    },
+)
+def update_statement_line(
+    batch_id: UUID,
+    line_id: UUID,
+    body: StatementLineUpdate,
+    request: Request,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> StatementLineRead:
+    """Toggle ``is_excluded`` on a single parsed statement line (P9.6.a).
+
+    Idempotent — passing the line's current ``is_excluded`` is a no-op
+    (no audit row, returns the line unchanged). Refuses to mutate an
+    already-promoted line: that line has a ledger transaction and
+    excluding it would orphan the back-reference; edit / void the
+    transaction instead.
+    """
+    batch_repo = ImportBatchRepository(session, claims.household_id)
+    batch = batch_repo.get(batch_id)
+    if batch is None:
+        raise ImportBatchNotFoundError()
+
+    line_repo = StatementLineRepository(session, claims.household_id)
+    line = line_repo.get(line_id)
+    if line is None or line.import_batch_id != batch_id:
+        raise StatementLineNotFoundError()
+
+    if line.promoted_transaction_id is not None:
+        raise StatementLineAlreadyPromotedError(
+            line_id=str(line_id),
+            transaction_id=str(line.promoted_transaction_id),
+        )
+
+    if bool(line.is_excluded) == body.is_excluded:
+        # Idempotent no-op — return current state, no audit row.
+        return StatementLineRead(
+            id=line.id,
+            line_number=line.line_number,
+            posted_date=line.posted_date,
+            amount=line.amount,
+            currency=line.currency,
+            description=line.description,
+            counterparty=line.counterparty,
+            reference=line.reference,
+            fitid=line.fitid,
+            is_excluded=line.is_excluded,
+            reconciliation_match_id=line.reconciliation_match_id,
+            promoted_transaction_id=line.promoted_transaction_id,
+        )
+
+    before = bool(line.is_excluded)
+    if body.is_excluded:
+        line = line_repo.exclude(line_id)
+        action = "statement_line.excluded"
+    else:
+        line = line_repo.unexclude(line_id)
+        action = "statement_line.unexcluded"
+
+    AuditLogWriter(session, claims.household_id).write(
+        action=action,
+        actor_kind="user",
+        actor_user_id=claims.user_id,
+        entity_type="statement_line",
+        entity_id=line.id,
+        before={"is_excluded": before},
+        after={"is_excluded": bool(line.is_excluded)},
+        request_id=_request_uuid(request),
+    )
+    session.commit()
+    log.info(
+        "statement_line.is_excluded_updated",
+        line_id=str(line_id),
+        is_excluded=bool(line.is_excluded),
+    )
+    return StatementLineRead(
+        id=line.id,
+        line_number=line.line_number,
+        posted_date=line.posted_date,
+        amount=line.amount,
+        currency=line.currency,
+        description=line.description,
+        counterparty=line.counterparty,
+        reference=line.reference,
+        fitid=line.fitid,
+        is_excluded=line.is_excluded,
+        reconciliation_match_id=line.reconciliation_match_id,
+        promoted_transaction_id=line.promoted_transaction_id,
+    )
+
+
 _LIST_DEFAULT_LIMIT: Final[int] = 25
 _LIST_MAX_LIMIT: Final[int] = 200
 
@@ -1042,6 +1142,7 @@ def get_import_batch(
                 fitid=line.fitid,
                 is_excluded=line.is_excluded,
                 reconciliation_match_id=line.reconciliation_match_id,
+                promoted_transaction_id=line.promoted_transaction_id,
             )
             for line in lines
         ],

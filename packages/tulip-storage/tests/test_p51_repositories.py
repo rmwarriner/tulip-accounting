@@ -463,6 +463,14 @@ class TestImportBatchAndStatementLine:
         session.commit()
         assert len(line_repo.list_unmatched(batch.id)) == 1
 
+        # Un-excluding it puts it back in the unmatched pool.
+        line_repo.unexclude(unmatched[0].id)
+        session.commit()
+        assert len(line_repo.list_unmatched(batch.id)) == 2
+        line = line_repo.get(unmatched[0].id)
+        assert line is not None
+        assert line.is_excluded is False
+
 
 # ---- Reconciliation + Match ---------------------------------------------
 

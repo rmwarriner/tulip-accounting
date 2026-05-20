@@ -19,6 +19,11 @@ from textual.widgets import DataTable, Footer, Header, Static
 from tulip_tui.data.imports import ImportBatchSummary, ImportsData
 
 ImportsLoader = Callable[[], ImportsData]
+OpenBatchHandler = Callable[[str], None]
+
+
+def _noop_open_batch(_batch_id: str) -> None:
+    """Default drill-in handler — used when no detail screen is wired."""
 
 
 def _row_for(batch: ImportBatchSummary) -> tuple[str, str, str, str, str]:
@@ -83,10 +88,16 @@ class ImportsScreen(Screen[None]):
     }
     """
 
-    def __init__(self, loader: ImportsLoader) -> None:
-        """Store the loader; the screen populates on mount."""
+    def __init__(
+        self,
+        loader: ImportsLoader,
+        *,
+        on_open_batch: OpenBatchHandler = _noop_open_batch,
+    ) -> None:
+        """Store the loader and the drill-in callback used by ``enter``."""
         super().__init__()
         self._loader = loader
+        self._on_open_batch = on_open_batch
         self._rendered_rows: list[str] = []
         self._index: list[ImportBatchSummary] = []
         self._detail: str = ""
@@ -113,6 +124,16 @@ class ImportsScreen(Screen[None]):
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         """Re-render the detail pane to match the newly-highlighted row."""
         self._refresh_detail()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """``enter`` drills into the per-batch detail screen (P9.6.a)."""
+        index = event.cursor_row
+        if index < 0 or index >= len(self._index):
+            return
+        batch = self._index[index]
+        if not batch.id:
+            return
+        self._on_open_batch(batch.id)
 
     # -- internals -----------------------------------------------------
 

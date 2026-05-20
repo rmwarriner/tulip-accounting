@@ -157,3 +157,39 @@ Update this ADR when:
 - A web/desktop GUI is ever scoped — that is a *new* ADR that
   supersedes the "rejected for now" stance here, not an edit to this
   one.
+
+### P9.6 — read-only scope extended to mutation surfaces (2026-05-20)
+
+Umbrella [#414](https://github.com/rmwarriner/tulip-accounting/issues/414).
+After the P9.5 read continuation closed every read-only browser
+([#399](https://github.com/rmwarriner/tulip-accounting/issues/399)),
+the remaining structural friction is that every recurring household
+task (log a transaction, accept an import, work a reconciliation,
+fix a category) still drops out of the TUI to the CLI. P9.6
+introduces a tightly-scoped four-slice wave that surfaces those
+mutations inside the TUI in dependency order. The CLI stays
+first-class; the TUI is no longer the only-read surface.
+
+Slices, in order:
+
+- **P9.6.a — Apply imports inside the TUI** ([#418](https://github.com/rmwarriner/tulip-accounting/issues/418)) — new
+  `ImportBatchDetailScreen` reached by `enter` on the imports list;
+  `x` toggles exclude/un-exclude (new
+  `PATCH /v1/imports/{batch_id}/lines/{line_id}`), `p` promotes a
+  single line, `a` opens the apply confirm modal with the three
+  apply-flag toggles. **Shipped 2026-05-20.**
+- **P9.6.b — Reconcile actioning** — accept-auto-match, confirm-
+  suggested-match, manual-match picker, mark-cleared, carry-
+  forward; no backend change planned.
+- **P9.6.c — Add / edit / void transaction modal** — new transaction
+  modal reachable from the transactions register with `n`/`e`/`x`;
+  splits handled as in-modal "add row" affordances.
+- **P9.6.d — AI-categorize with explicit confirmation** — `c` on a
+  PENDING transaction; multi-select via `space` then batch `c`. Per
+  the wireframes' AI-confirmation lock, every proposal requires an
+  explicit accept.
+
+Backend surface is unchanged except for one P9.6.a endpoint gap-fill
+(`PATCH /v1/imports/.../lines/{id}`); the architecture-boundary
+test remains green. Mutation flows still ride the same HTTP API the
+CLI uses, so the TUI is not a new attack surface.

@@ -319,3 +319,135 @@ class TestApplyExceptionDoesNotLeakLock:
             json={"name": "Post-failure", "type": "expense", "currency": "USD", "code": "5200"},
         )
         assert r3.status_code == 201, r3.text
+
+
+# ---- PATCH /lines/{id} — exclude/un-exclude (P9.6.a) -----------------------
+
+
+class TestPatchStatementLine:
+    """``PATCH /v1/imports/{batch_id}/lines/{line_id}`` toggles ``is_excluded``."""
+
+    def test_exclude_flips_flag_and_persists(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        line_id = _first_line_id(client, auth_h, parsed_batch)
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["is_excluded"] is True
+
+        follow = client.get(f"/v1/imports/{parsed_batch}", headers=auth_h)
+        assert follow.status_code == 200
+        line = next(line for line in follow.json()["lines"] if line["id"] == line_id)
+        assert line["is_excluded"] is True
+
+    def test_unexclude_round_trip(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        line_id = _first_line_id(client, auth_h, parsed_batch)
+        client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": False},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_excluded"] is False
+
+    def test_idempotent_noop(self, client: TestClient, auth_h: dict[str, str], parsed_batch: str):
+        line_id = _first_line_id(client, auth_h, parsed_batch)
+        # Default is_excluded=False; passing False is a no-op.
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": False},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_excluded"] is False
+
+    def test_promoted_line_rejected_with_409(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        line_id = _first_line_id(client, auth_h, parsed_batch)
+        # Promote first.
+        promote = client.post(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}/promote",
+            headers=auth_h,
+        )
+        assert promote.status_code == 201
+        # Now PATCH must refuse.
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        assert_problem(r, status=409, code="import.line.already_promoted")
+
+    def test_unknown_batch_returns_404(self, client: TestClient, auth_h: dict[str, str]):
+        from uuid import uuid4
+
+        r = client.patch(
+            f"/v1/imports/{uuid4()}/lines/{uuid4()}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        assert_problem(r, status=404, code="import_batch.not_found")
+
+    def test_unknown_line_returns_404(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str
+    ):
+        from uuid import uuid4
+
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{uuid4()}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        assert_problem(r, status=404, code="import.line.not_found")
+
+    def test_unauthenticated_returns_401(self, client: TestClient, parsed_batch: str):
+        from uuid import uuid4
+
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{uuid4()}",
+            json={"is_excluded": True},
+        )
+        assert r.status_code == 401
+
+    def test_exclude_writes_audit_row(
+        self, client: TestClient, auth_h: dict[str, str], parsed_batch: str, app
+    ):
+        from sqlalchemy import select
+
+        from tulip_api.deps import get_session
+        from tulip_storage.models import AuditLog
+
+        line_id = _first_line_id(client, auth_h, parsed_batch)
+        r = client.patch(
+            f"/v1/imports/{parsed_batch}/lines/{line_id}",
+            headers=auth_h,
+            json={"is_excluded": True},
+        )
+        assert r.status_code == 200
+
+        session_iter = app.dependency_overrides[get_session]()
+        session = next(session_iter)
+        try:
+            rows = list(
+                session.execute(
+                    select(AuditLog).where(AuditLog.action == "statement_line.excluded")
+                ).scalars()
+            )
+        finally:
+            try:
+                next(session_iter)
+            except StopIteration:
+                pass
+        assert any(str(row.entity_id) == line_id for row in rows)

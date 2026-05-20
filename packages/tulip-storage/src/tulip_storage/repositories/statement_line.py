@@ -106,6 +106,17 @@ class StatementLineRepository:
         self._session.flush()
         return line
 
+    def unexclude(self, line_id: UUID) -> StatementLine:
+        """Reverse ``exclude`` — line re-enters the unmatched / appliable pool."""
+        line = self.get(line_id)
+        if line is None:
+            raise LookupError(
+                f"statement_line {line_id} not found in household {self._household_id}"
+            )
+        line.is_excluded = False
+        self._session.flush()
+        return line
+
     def mark_promoted(self, line_id: UUID, transaction_id: UUID) -> StatementLine:
         """Link a statement line to the ledger Transaction it was promoted into.
 

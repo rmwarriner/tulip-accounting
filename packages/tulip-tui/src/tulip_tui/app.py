@@ -22,6 +22,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 
 from tulip_tui.data.envelopes import EnvelopesData
+from tulip_tui.data.import_batch_detail import ImportBatchDetail
 from tulip_tui.data.imports import ImportsData
 from tulip_tui.data.pending import PendingData
 from tulip_tui.data.reconciliations import ReconciliationsData
@@ -29,6 +30,7 @@ from tulip_tui.data.reports import ReportPayload, ReportSpec
 from tulip_tui.data.sinking_funds import SinkingFundsData
 from tulip_tui.screens.accounts import AccountsLoader, AccountsScreen
 from tulip_tui.screens.envelopes import EnvelopesScreen
+from tulip_tui.screens.import_batch_detail import ImportBatchDetailScreen
 from tulip_tui.screens.imports import ImportsScreen
 from tulip_tui.screens.pending import PendingScreen
 from tulip_tui.screens.reconciliations import ReconciliationsScreen
@@ -40,6 +42,10 @@ TransactionsLoaderFactory = Callable[[str | None], TransactionsLoader]
 ReportLoader = Callable[[ReportSpec], ReportPayload]
 ReconciliationsLoader = Callable[[], ReconciliationsData]
 ImportsLoader = Callable[[], ImportsData]
+ImportBatchDetailLoaderFactory = Callable[[str], Callable[[], ImportBatchDetail]]
+LineExcludeAction = Callable[[str, str, bool], None]
+LinePromoteAction = Callable[[str, str], None]
+BatchApplyAction = Callable[[str, bool, bool, bool], object]
 EnvelopesLoader = Callable[[], EnvelopesData]
 SinkingFundsLoader = Callable[[], SinkingFundsData]
 PendingLoader = Callable[[], PendingData]
@@ -68,6 +74,30 @@ def _no_op_reconciliations_loader() -> ReconciliationsData:
 
 def _no_op_imports_loader() -> ImportsData:
     raise RuntimeError("imports loader not configured")
+
+
+def _no_op_import_batch_detail_factory(_batch_id: str) -> Callable[[], ImportBatchDetail]:
+    def _raise() -> ImportBatchDetail:
+        raise RuntimeError("import batch detail loader not configured")
+
+    return _raise
+
+
+def _no_op_line_exclude(_batch_id: str, _line_id: str, _is_excluded: bool) -> None:
+    raise RuntimeError("line exclude action not configured")
+
+
+def _no_op_line_promote(_batch_id: str, _line_id: str) -> None:
+    raise RuntimeError("line promote action not configured")
+
+
+def _no_op_batch_apply(
+    _batch_id: str,
+    _as_posted: bool,
+    _no_categorize: bool,
+    _treat_cleared_as_pending: bool,
+) -> object:
+    raise RuntimeError("batch apply action not configured")
 
 
 def _no_op_envelopes_loader() -> EnvelopesData:
@@ -105,6 +135,12 @@ class TulipTuiApp(App[None]):
         reports_loader: ReportLoader = _no_op_reports_loader,
         reconciliations_loader: ReconciliationsLoader = _no_op_reconciliations_loader,
         imports_loader: ImportsLoader = _no_op_imports_loader,
+        import_batch_detail_factory: ImportBatchDetailLoaderFactory = (
+            _no_op_import_batch_detail_factory
+        ),
+        line_exclude_action: LineExcludeAction = _no_op_line_exclude,
+        line_promote_action: LinePromoteAction = _no_op_line_promote,
+        batch_apply_action: BatchApplyAction = _no_op_batch_apply,
         envelopes_loader: EnvelopesLoader = _no_op_envelopes_loader,
         sinking_funds_loader: SinkingFundsLoader = _no_op_sinking_funds_loader,
         pending_loader: PendingLoader = _no_op_pending_loader,
@@ -116,6 +152,10 @@ class TulipTuiApp(App[None]):
         self._reports_loader = reports_loader
         self._reconciliations_loader = reconciliations_loader
         self._imports_loader = imports_loader
+        self._import_batch_detail_factory = import_batch_detail_factory
+        self._line_exclude_action = line_exclude_action
+        self._line_promote_action = line_promote_action
+        self._batch_apply_action = batch_apply_action
         self._envelopes_loader = envelopes_loader
         self._sinking_funds_loader = sinking_funds_loader
         self._pending_loader = pending_loader
@@ -139,7 +179,28 @@ class TulipTuiApp(App[None]):
 
     def action_open_imports(self) -> None:
         """Push the import batches browser onto the screen stack."""
-        self.push_screen(ImportsScreen(loader=self._imports_loader))
+        self.push_screen(
+            ImportsScreen(
+                loader=self._imports_loader,
+                on_open_batch=self.open_import_batch_detail,
+            )
+        )
+
+    def open_import_batch_detail(self, batch_id: str) -> None:
+        """Push the per-batch detail / apply screen (P9.6.a)."""
+        loader = self._import_batch_detail_factory(batch_id)
+        self.push_screen(
+            ImportBatchDetailScreen(
+                loader=loader,
+                on_toggle_exclude=lambda line_id, is_excluded: self._line_exclude_action(
+                    batch_id, line_id, is_excluded
+                ),
+                on_promote=lambda line_id: self._line_promote_action(batch_id, line_id),
+                on_apply=lambda as_posted, no_categorize, treat_cleared: self._batch_apply_action(
+                    batch_id, as_posted, no_categorize, treat_cleared
+                ),
+            )
+        )
 
     def action_open_envelopes(self) -> None:
         """Push the envelopes browser onto the screen stack."""
