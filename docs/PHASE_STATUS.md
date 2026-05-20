@@ -1824,6 +1824,48 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### Account placeholder flag (`is_placeholder`) — ✅ *(2026-05-20)*
+
+Per [#52](https://github.com/rmwarriner/tulip-accounting/issues/52). Adds a flag to mark non-posting
+organisational nodes in the chart of accounts (e.g.
+`Assets:Current Assets`). The API rejects any posting whose
+target account has `is_placeholder=true` with a typed
+`account.placeholder_posting` Problem Detail (400). Same check
+applies to `POST /v1/transactions`, `/replace`, the
+`PATCH` body, and the `POST /v1/imports/{id}/apply` bulk path.
+
+Flipping an existing account to placeholder refuses when it
+has postings (`account.placeholder_has_postings`, 409, carries
+`posting_count`); unsetting is unconditional.
+
+CLI: `tulip accounts add --placeholder`,
+`tulip accounts edit --placeholder/--no-placeholder`,
+`tulip accounts show` surfaces the flag. New migration adds the
+column (defaults to false; no behaviour change for existing
+chart). Precondition for the GnuCash import (#432) to land its
+`Placeholder` column cleanly.
+
+#### Account freeform notes field — ✅ *(2026-05-20)*
+
+Per [#50](https://github.com/rmwarriner/tulip-accounting/issues/50). The `accounts.notes_encrypted` column
+already existed in storage (field-encrypted under the master
+key) but no CRUD path read or wrote it. This slice plumbs it
+through:
+
+- `POST` / `PATCH /v1/accounts` accept `notes`. `PATCH` with
+  empty string clears; omission leaves unchanged.
+- `GET /v1/accounts/{id}` decrypts and returns `notes`. The
+  list endpoint deliberately omits decryption (notes=null) to
+  keep the bulk read cheap.
+- Audit log carries only a boolean `notes_set` flag, never the
+  contents.
+- CLI: `tulip accounts add --notes "..."`,
+  `tulip accounts edit ACCOUNT --notes "..."`,
+  `tulip accounts show` renders notes with multi-line indent.
+
+Precondition for the GnuCash import (#432) to land the
+`Description` column cleanly.
+
 #### P9.6.c — Add/edit/void transaction modal in the TUI — ✅ *(2026-05-20)*
 
 Per [#423](https://github.com/rmwarriner/tulip-accounting/issues/423). Three new bindings on the transactions
