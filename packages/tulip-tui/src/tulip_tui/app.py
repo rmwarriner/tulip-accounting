@@ -29,6 +29,7 @@ from tulip_tui.data.reconciliation_detail import ReconciliationDetail
 from tulip_tui.data.reconciliations import ReconciliationsData
 from tulip_tui.data.reports import ReportPayload, ReportSpec
 from tulip_tui.data.sinking_funds import SinkingFundsData
+from tulip_tui.data.transaction_write import TransactionDraft
 from tulip_tui.screens.accounts import AccountsLoader, AccountsScreen
 from tulip_tui.screens.envelopes import EnvelopesScreen
 from tulip_tui.screens.import_batch_detail import ImportBatchDetailScreen
@@ -51,6 +52,9 @@ BatchApplyAction = Callable[[str, bool, bool, bool], object]
 EnvelopesLoader = Callable[[], EnvelopesData]
 SinkingFundsLoader = Callable[[], SinkingFundsData]
 PendingLoader = Callable[[], PendingData]
+TxCreateAction = Callable[[TransactionDraft], object]
+TxEditAction = Callable[[str, TransactionDraft], object]
+TxVoidAction = Callable[[str, str], object]
 
 ReconciliationDetailLoaderFactory = Callable[[str], Callable[[], ReconciliationDetail]]
 ReconciliationAutoMatchAction = Callable[[str], object]
@@ -161,6 +165,18 @@ def _no_op_recon_complete(_reconciliation_id: str) -> object:
     raise RuntimeError("complete action not configured")
 
 
+def _no_op_tx_create(_draft: TransactionDraft) -> object:
+    raise RuntimeError("transaction create action not configured")
+
+
+def _no_op_tx_edit(_tx_id: str, _draft: TransactionDraft) -> object:
+    raise RuntimeError("transaction edit action not configured")
+
+
+def _no_op_tx_void(_tx_id: str, _reason: str) -> object:
+    raise RuntimeError("transaction void action not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -204,6 +220,9 @@ class TulipTuiApp(App[None]):
             _no_op_recon_carry_forward
         ),
         reconciliation_complete: ReconciliationCompleteAction = _no_op_recon_complete,
+        tx_create_action: TxCreateAction = _no_op_tx_create,
+        tx_edit_action: TxEditAction = _no_op_tx_edit,
+        tx_void_action: TxVoidAction = _no_op_tx_void,
     ) -> None:
         """Store the per-screen loaders / factories used at mount and drill-in."""
         super().__init__()
@@ -226,6 +245,9 @@ class TulipTuiApp(App[None]):
         self._reconciliation_paper_match = reconciliation_paper_match
         self._reconciliation_carry_forward = reconciliation_carry_forward
         self._reconciliation_complete = reconciliation_complete
+        self._tx_create_action = tx_create_action
+        self._tx_edit_action = tx_edit_action
+        self._tx_void_action = tx_void_action
 
     def on_mount(self) -> None:
         """Push the accounts browser as the initial screen."""
@@ -234,7 +256,14 @@ class TulipTuiApp(App[None]):
     def open_transactions(self, account_id: str | None) -> None:
         """Push the transactions screen filtered to ``account_id`` (or all)."""
         loader = self._transactions_factory(account_id)
-        self.push_screen(TransactionsScreen(loader=loader))
+        self.push_screen(
+            TransactionsScreen(
+                loader=loader,
+                on_create=self._tx_create_action,
+                on_edit=self._tx_edit_action,
+                on_void=self._tx_void_action,
+            )
+        )
 
     def action_open_reports(self) -> None:
         """Push the reports browser onto the screen stack."""
