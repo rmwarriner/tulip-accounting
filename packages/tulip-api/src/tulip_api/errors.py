@@ -540,6 +540,49 @@ class AccountUnknownError(TulipProblem):
         )
 
 
+class AccountPlaceholderPostingError(TulipProblem):
+    """A transaction posting targeted a placeholder account (#52)."""
+
+    def __init__(self, account_id: str) -> None:
+        """Build the account.placeholder_posting problem.
+
+        ``account_id`` identifies the offending posting's target so the
+        caller knows which leg to fix.
+        """
+        super().__init__(
+            code="account.placeholder_posting",
+            title="Cannot post to a placeholder account",
+            status=400,
+            detail=(
+                f"Account {account_id} is a placeholder (organisational "
+                "node, not a posting target). Pick a leaf account under "
+                "this branch, or clear the placeholder flag first."
+            ),
+            extensions={"account_id": account_id},
+        )
+
+
+class AccountPlaceholderHasPostingsError(TulipProblem):
+    """Attempted to set is_placeholder=True on an account that has postings (#52)."""
+
+    def __init__(self, account_id: str, posting_count: int) -> None:
+        """Build the account.placeholder_has_postings problem."""
+        super().__init__(
+            code="account.placeholder_has_postings",
+            title="Account has postings — can't make it a placeholder",
+            status=409,
+            detail=(
+                f"Account {account_id} has {posting_count} posting(s). "
+                "Placeholder accounts can't receive postings; void or "
+                "re-target those postings before flipping the flag."
+            ),
+            extensions={
+                "account_id": account_id,
+                "posting_count": posting_count,
+            },
+        )
+
+
 class AccountPathInvalidError(TulipProblem):
     """``code`` passed with ``create_parents=true`` failed path validation (#46)."""
 

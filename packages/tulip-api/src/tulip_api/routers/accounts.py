@@ -22,6 +22,7 @@ from tulip_api.errors import (
     AccountParentTypeMismatchError,
     AccountParentVisibilityViolationError,
     AccountPathInvalidError,
+    AccountPlaceholderHasPostingsError,
     ForbiddenError,
     problem_response,
 )
@@ -53,6 +54,7 @@ def _to_read(a: Account, *, notes: str | None = None) -> AccountRead:
         currency=a.currency,
         visibility=a.visibility,
         is_active=a.is_active,
+        is_placeholder=a.is_placeholder,
         parent_account_id=a.parent_account_id,
         notes=notes,
     )
@@ -280,6 +282,7 @@ def create_account(
         parent_account_id=body.parent_account_id,
         visibility=body.visibility,
         notes=body.notes,
+        is_placeholder=body.is_placeholder,
         created_by_user_id=claims.user_id,
     )
     after_snapshot: dict[str, object] = {
@@ -592,6 +595,29 @@ def update_account(
         # the pre-flush before snapshot.
         repo.set_notes(a.id, body.notes if body.notes else None)
         notes_changed = True
+    if body.is_placeholder is not None:
+        if body.is_placeholder and not a.is_placeholder:
+            # Flipping to placeholder is only safe if the account has no
+            # postings — otherwise placeholder + existing postings would
+            # be a contradiction. Count postings within this household.
+            from sqlalchemy import func
+            from sqlalchemy import select as _select
+
+            from tulip_storage.models import Posting
+
+            posting_count = session.execute(
+                _select(func.count())
+                .select_from(Posting)
+                .where(
+                    Posting.household_id == claims.household_id,
+                    Posting.account_id == a.id,
+                )
+            ).scalar_one()
+            if posting_count > 0:
+                raise AccountPlaceholderHasPostingsError(
+                    account_id=str(a.id), posting_count=int(posting_count)
+                )
+        a.is_placeholder = body.is_placeholder
     session.flush()
 
     after_snapshot: dict[str, object] = {

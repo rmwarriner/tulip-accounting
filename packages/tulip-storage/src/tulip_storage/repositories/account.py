@@ -93,12 +93,16 @@ class AccountRepository:
         parent_account_id: UUID | None = None,
         visibility: str = "shared",
         notes: str | None = None,
+        is_placeholder: bool = False,
         created_by_user_id: UUID | None = None,
     ) -> Account:
         """Insert a new Account into this repository's household.
 
         When ``notes`` is provided, the repository must have been
         constructed with a master key — see :meth:`__init__`.
+        ``is_placeholder=True`` marks the account as a non-posting
+        organisational node (#52); the API rejects postings against
+        placeholder accounts.
         """
         a = Account(
             household_id=self._household_id,
@@ -110,6 +114,7 @@ class AccountRepository:
             currency=currency,
             visibility=visibility,
             is_active=True,
+            is_placeholder=is_placeholder,
             parent_account_id=parent_account_id,
             created_by_user_id=created_by_user_id,
         )
@@ -117,6 +122,15 @@ class AccountRepository:
             key = self._require_master_key()
             a.notes_encrypted = encrypt_field(notes.encode("utf-8"), key, aad=self._notes_aad(a.id))
         self._session.add(a)
+        self._session.flush()
+        return a
+
+    def set_placeholder(self, account_id: UUID, is_placeholder: bool) -> Account:
+        """Toggle the placeholder flag (#52)."""
+        a = self.get(account_id)
+        if a is None:
+            raise LookupError(f"account {account_id} not found in household {self._household_id}")
+        a.is_placeholder = is_placeholder
         self._session.flush()
         return a
 

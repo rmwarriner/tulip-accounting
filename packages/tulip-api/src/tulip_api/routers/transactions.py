@@ -113,6 +113,7 @@ log = structlog.get_logger("tulip_api.transactions")
     responses={
         400: problem_response(
             "account.unknown",
+            "account.placeholder_posting",
             "transaction.invalid",
             "transaction.unbalanced",
             "period.closed",
@@ -148,6 +149,10 @@ def create_transaction(
         a = accounts_repo.get(p.account_id)
         if a is None:
             raise AccountUnknownError(account_id=str(p.account_id))
+        if a.is_placeholder:
+            from tulip_api.errors import AccountPlaceholderPostingError
+
+            raise AccountPlaceholderPostingError(account_id=str(p.account_id))
         accounts_by_id[p.account_id] = a
 
     # ---- Pool pre-flight checks ------------------------------------
@@ -502,6 +507,10 @@ def replace_transaction(
         a = accounts_repo.get(p.account_id)
         if a is None:
             raise AccountUnknownError(account_id=str(p.account_id))
+        if a.is_placeholder:
+            from tulip_api.errors import AccountPlaceholderPostingError
+
+            raise AccountPlaceholderPostingError(account_id=str(p.account_id))
         accounts_by_id[p.account_id] = a
 
     pool_repo = AllocationPoolRepository(session, claims.household_id)
@@ -713,7 +722,7 @@ def _resolve_notes_patch(body: TransactionUpdate) -> str | None | object:
     "/{tx_id}",
     response_model=TransactionRead,
     responses={
-        400: problem_response("account.unknown", "tag.invalid"),
+        400: problem_response("account.unknown", "account.placeholder_posting", "tag.invalid"),
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("transaction.not_found"),
@@ -745,8 +754,13 @@ def patch_transaction(
         # Validate account refs before delegating to the repo.
         accounts_repo = AccountRepository(session, claims.household_id)
         for p in body.postings:
-            if accounts_repo.get(p.account_id) is None:
+            a = accounts_repo.get(p.account_id)
+            if a is None:
                 raise AccountUnknownError(account_id=str(p.account_id))
+            if a.is_placeholder:
+                from tulip_api.errors import AccountPlaceholderPostingError
+
+                raise AccountPlaceholderPostingError(account_id=str(p.account_id))
         new_postings: tuple[DomainPosting, ...] = tuple(
             DomainPosting(
                 id=uuid4(),

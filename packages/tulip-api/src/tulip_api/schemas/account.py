@@ -31,6 +31,15 @@ class AccountCreate(BaseModel):
             "the source description from a chart-of-accounts import."
         ),
     )
+    is_placeholder: bool = Field(
+        default=False,
+        description=(
+            "When true, marks the account as a non-posting organisational "
+            "node (#52). The API rejects any posting whose target account "
+            "is a placeholder; the operator must create + post to a leaf "
+            "instead. Defaults to false (regular postable account)."
+        ),
+    )
     create_parents: bool = Field(
         default=False,
         description=(
@@ -76,6 +85,14 @@ class AccountUpdate(BaseModel):
             "unchanged. Encrypted at rest (#50)."
         ),
     )
+    is_placeholder: bool | None = Field(
+        default=None,
+        description=(
+            "Toggle the placeholder flag (#52). Omit to leave unchanged. "
+            "Turning a regular account into a placeholder is rejected if "
+            "it has direct postings — clean those up first."
+        ),
+    )
 
 
 class AccountRead(BaseModel):
@@ -89,6 +106,7 @@ class AccountRead(BaseModel):
     currency: str
     visibility: str
     is_active: bool
+    is_placeholder: bool = False
     parent_account_id: UUID | None
     notes: str | None = Field(
         default=None,
