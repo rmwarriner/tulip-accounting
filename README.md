@@ -207,6 +207,7 @@ This project follows test-driven development. Every feature ships with tests wri
 - [User Rights](docs/USER_RIGHTS.md) — operator-facing map from GDPR / CCPA data-subject rights to the Tulip commands that honour them
 - [Recovery](docs/RECOVERY.md) — bus-factor / successor recovery procedure: what the Recovery Packet contains, how to restore from a destroyed host, the annual dry-run cadence
 - [Deployment](docs/DEPLOYMENT.md) — production operator's manual: host requirements, reverse-proxy patterns, backup automation, upgrade path, key rotation, routine ops cadence
+- [Security Ops](docs/SECURITY_OPS.md) — operator-facing security ops + incident response: secure-by-default checklist, auth monitoring, PII posture, host-compromise + AI-provider-compromise procedures, routine cadence (distinct from `SECURITY.md` which is vulnerability reporting)
 - [Audits](docs/audits/) — the Phase 8 deep security audit (2026-05-12) and deep privacy audit (2026-05-13), finding-by-finding
 - [ADRs](docs/adrs/) — architectural decision records (envelope shadow ledger, scheduler primitive, mutation testing, reconciliation, AI integration / privacy contract)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — TDD discipline, coverage gates, signed commits, manual smoke test format
