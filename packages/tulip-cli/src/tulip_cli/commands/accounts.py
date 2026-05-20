@@ -29,14 +29,14 @@ from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import EXIT_USER, CliError
-from tulip_cli.http import TulipClient
-from tulip_importers.gnucash import (
+from tulip_cli.gnucash import (
     GnuCashParseError,
     sort_by_depth,
 )
-from tulip_importers.gnucash import (
+from tulip_cli.gnucash import (
     parse as gnucash_parse,
 )
+from tulip_cli.http import TulipClient
 
 accounts_app = typer.Typer(
     name="accounts",
@@ -884,8 +884,17 @@ def import_gnucash(
                     body["code"] = account.code
                 if account.subtype:
                     body["subtype"] = account.subtype
-                if account.notes:
-                    body["notes"] = account.notes
+                # GnuCash Hidden=T gets stashed in notes rather than
+                # immediately deactivating — deactivated accounts disappear
+                # from GET /v1/accounts, which would break idempotent
+                # re-run (the lookup couldn't find them). The operator
+                # can deactivate manually with `tulip accounts deactivate`.
+                notes = account.notes
+                if not account.is_active:
+                    hidden_note = "marked Hidden in GnuCash export"
+                    notes = f"{notes}\n{hidden_note}" if notes else hidden_note
+                if notes:
+                    body["notes"] = notes
                 if account.is_placeholder:
                     body["is_placeholder"] = True
                 if parent_id:
@@ -898,10 +907,6 @@ def import_gnucash(
                 row = resp.json()
                 by_path[account.full_path] = str(row["id"])
                 created += 1
-                # If the GnuCash row was Hidden=T, deactivate now. Doing
-                # it post-create keeps the create body simple.
-                if not account.is_active:
-                    client.delete(f"/v1/accounts/{row['id']}", authenticated=True)
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None

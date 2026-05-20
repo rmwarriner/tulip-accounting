@@ -444,14 +444,7 @@ def test_accounts_show_ambiguous_name_lists_paths(authed_session: str) -> None:
 # ---- #432: GnuCash CSV account-tree import --------------------------------
 
 
-_GNUCASH_FIXTURE = (
-    Path(__file__).resolve().parents[2]
-    / "tulip-importers"
-    / "tests"
-    / "fixtures"
-    / "gnucash"
-    / "sample_tree.csv"
-)
+_GNUCASH_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gnucash" / "sample_tree.csv"
 
 
 @pytest.mark.integration
@@ -536,7 +529,7 @@ def test_import_gnucash_dry_run_json(authed_session: str) -> None:
 
     payload = _json.loads(result.stdout)
     assert payload["dry_run"] is True
-    assert payload["row_count"] == 13
+    assert payload["row_count"] == 14
     assert payload["warning_count"] == 1
     assert payload["by_type"]["asset"] >= 1
     assert payload["by_type"]["expense"] >= 1

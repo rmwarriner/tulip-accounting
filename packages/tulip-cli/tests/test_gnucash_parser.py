@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tulip_importers.gnucash import (
+from tulip_cli.gnucash import (
     GnuCashParseError,
     parse,
     sort_by_depth,
@@ -22,8 +22,8 @@ def _sample_text() -> str:
 
 def test_parse_full_fixture() -> None:
     accounts = parse(_sample_text())
-    # Fixture has 13 rows after the header.
-    assert len(accounts) == 13
+    # Fixture has 14 rows after the header.
+    assert len(accounts) == 14
 
 
 def test_type_mapping_covers_every_gnucash_type() -> None:

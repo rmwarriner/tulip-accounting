@@ -10,7 +10,7 @@ The full migration path (chart-only; transactions are a separate
 issue) is documented in #432.
 """
 
-from tulip_importers.gnucash.parser import (
+from tulip_cli.gnucash.parser import (
     GnuCashParseError,
     ParsedAccount,
     parse,
