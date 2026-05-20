@@ -52,6 +52,34 @@ TULIP_ATTACHMENT_ROOT="$ATT_VOL" \
 (`tulip-docker_` is compose's per-project volume prefix; replace if you renamed
 the project.)
 
+## Troubleshooting
+
+### Container starts unhealthy with `sqlite3.OperationalError: unable to open database file`
+
+The DB path is a host bind mount (`./data/db`) so the project-scoped
+sqlite MCP server can read live state. Two failure modes:
+
+1. **First boot on macOS** — Docker Desktop's virtio-fs silently no-ops
+   `chown` on bind mounts, so the entrypoint's `chown -R tulip` doesn't
+   actually take effect. The entrypoint compensates with a follow-up
+   `chmod 0777` on the bind-mount dir; if you see this error anyway,
+   verify the host-side `data/db` is writable (`ls -la deploy/docker/data/db`).
+
+2. **Phantom file from a pre-#397 named-volume run** — if you originally
+   ran an older revision that used a named `tulip-db` volume, Docker
+   Desktop's bind-mount cache can carry a stale ghost entry for
+   `tulip.db` even after the volume is removed. Symptom: from inside the
+   container, `os.path.exists("/var/lib/tulip/db/tulip.db")` returns
+   True but `open()` fails with `FileNotFoundError`. Recover by
+   recreating the host directory:
+
+   ```bash
+   docker compose -f deploy/docker/compose.yml down
+   rm -rf deploy/docker/data/db
+   mkdir -p deploy/docker/data/db
+   docker compose -f deploy/docker/compose.yml up --build --wait
+   ```
+
 ## What's deliberately not here
 
 - TLS termination — internal-beta is localhost-bound. Put it behind Caddy /
