@@ -40,6 +40,7 @@ class AccountSummary:
     type: str
     currency: str
     balance: Decimal | None
+    is_placeholder: bool = False  # #52
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,7 @@ def load_accounts(client: TulipClient) -> AccountsData:
                 type=str(raw.get("type", "")),
                 currency=str(raw.get("currency", "")),
                 balance=balances_by_id.get(account_id),
+                is_placeholder=bool(raw.get("is_placeholder", False)),
             )
         )
 

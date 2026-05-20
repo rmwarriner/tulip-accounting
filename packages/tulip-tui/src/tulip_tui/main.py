@@ -251,6 +251,7 @@ def _account_edit_action(account_id: str, draft: AccountDraft) -> object:
     patch: dict[str, object] = {
         "name": draft.name,
         "visibility": draft.visibility,
+        "is_placeholder": draft.is_placeholder,
     }
     if draft.code is not None:
         patch["code"] = draft.code
@@ -258,6 +259,8 @@ def _account_edit_action(account_id: str, draft: AccountDraft) -> object:
         patch["subtype"] = draft.subtype
     if draft.parent_account_id is not None:
         patch["parent_account_id"] = draft.parent_account_id
+    if draft.notes is not None:
+        patch["notes"] = draft.notes
     with TulipClient(config, token_store=default_token_store()) as client:
         return update_account(client, account_id, patch)
 

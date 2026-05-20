@@ -133,6 +133,42 @@ async def test_modal_builds_draft_on_valid_input() -> None:
 
 
 @pytest.mark.asyncio
+async def test_modal_carries_notes_and_placeholder_in_draft() -> None:
+    """#50 + #52: notes and is_placeholder flow through the modal."""
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(
+            initial_name="Current Assets",
+            initial_type="asset",
+            initial_currency="USD",
+            initial_notes="Pre-filled note",
+            initial_placeholder=True,
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        draft = modal.snapshot()
+    assert draft is not None
+    assert draft.notes == "Pre-filled note"
+    assert draft.is_placeholder is True
+
+
+@pytest.mark.asyncio
+async def test_modal_blank_notes_become_none() -> None:
+    """Empty notes input → ``None`` in the draft (omitted from PATCH)."""
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(initial_name="X")
+        await app.push_screen(modal)
+        await pilot.pause()
+        draft = modal.snapshot()
+    assert draft is not None
+    assert draft.notes is None
+    assert draft.is_placeholder is False
+
+
+@pytest.mark.asyncio
 async def test_modal_currency_is_uppercased() -> None:
     app = TulipTuiApp(loader=_accounts_loader_empty)
     async with app.run_test() as pilot:
