@@ -23,14 +23,26 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from tulip_tui.data.account_write import AccountDraft
 from tulip_tui.data.accounts import AccountsData, AccountSummary, CurrencyTotal
+from tulip_tui.screens.account_modal import AccountEditModal
 
 AccountsLoader = Callable[[], AccountsData]
 OpenAccountHandler = Callable[[str | None], None]
+CreateAccountAction = Callable[[AccountDraft], object]
+EditAccountAction = Callable[[str, AccountDraft], object]
 
 
 def _noop_open_account(_account_id: str | None) -> None:
     """Default drill-in handler — used when no transactions screen is wired."""
+
+
+def _noop_create_account(_draft: AccountDraft) -> object:
+    raise RuntimeError("create account action not configured")
+
+
+def _noop_edit_account(_account_id: str, _draft: AccountDraft) -> object:
+    raise RuntimeError("edit account action not configured")
 
 
 def _fmt_balance(balance: Decimal | None) -> str:
@@ -60,6 +72,8 @@ class AccountsScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("r", "refresh", "refresh", show=True),
+        Binding("n", "new_account", "new account", show=True),
+        Binding("e", "edit_account", "edit account", show=True),
     ]
 
     DEFAULT_CSS = """
@@ -86,15 +100,21 @@ class AccountsScreen(Screen[None]):
         loader: AccountsLoader,
         *,
         on_open_account: OpenAccountHandler = _noop_open_account,
+        on_create_account: CreateAccountAction = _noop_create_account,
+        on_edit_account: EditAccountAction = _noop_edit_account,
     ) -> None:
-        """Store the loader and the drill-in callback used by ``enter``."""
+        """Store the loader, drill-in callback, and write callbacks."""
         super().__init__()
         self._loader = loader
         self._on_open_account = on_open_account
+        self._on_create_account = on_create_account
+        self._on_edit_account = on_edit_account
         self._rendered_rows: list[str] = []
         self._row_index_to_account_id: list[str | None] = []
+        self._row_index_to_account: list[AccountSummary | None] = []
         self.last_error: str | None = None
         self._empty: bool = False
+        self._notice: str = ""
 
     def compose(self) -> ComposeResult:
         """Lay out the header, status strip, data table, and footer."""
@@ -112,6 +132,91 @@ class AccountsScreen(Screen[None]):
 
     def action_refresh(self) -> None:
         """Re-run the loader and rebuild the table in place."""
+        self._load()
+
+    def action_new_account(self) -> None:
+        """``n`` — push the add-account modal (#431)."""
+        # Pre-fill currency from the first existing account so users
+        # don't retype it every time in single-currency households.
+        seed_currency = "USD"
+        for acct in self._row_index_to_account:
+            if acct is not None:
+                seed_currency = acct.currency
+                break
+        modal = AccountEditModal(
+            title="New account",
+            initial_currency=seed_currency,
+        )
+        self.app.push_screen(modal, self._on_new_modal_done)
+
+    def action_edit_account(self) -> None:
+        """``e`` — push the edit-account modal pre-filled from the cursor row."""
+        account = self._cursor_account()
+        if account is None:
+            self._set_notice("focus an account row before pressing `e`")
+            return
+        modal = AccountEditModal(
+            title=f"Edit {account.code or account.name}",
+            initial_name=account.name,
+            initial_type=account.type,
+            initial_currency=account.currency,
+            initial_code=account.code or "",
+        )
+        account_id = account.id
+        self.app.push_screen(modal, lambda result: self._on_edit_modal_done(account_id, result))
+
+    def _cursor_account(self) -> AccountSummary | None:
+        table = self.query_one("#accounts", DataTable)
+        cursor = max(0, table.cursor_row)
+        if cursor >= len(self._row_index_to_account):
+            return None
+        return self._row_index_to_account[cursor]
+
+    def _on_new_modal_done(self, result: object) -> None:
+        if result is None:
+            self._set_notice("add cancelled")
+            return
+        from tulip_tui.data.account_write import AccountDraft as _Draft
+
+        assert isinstance(result, _Draft)  # noqa: S101
+        try:
+            response = self._on_create_account(result)
+        except Exception as exc:
+            self._set_notice(f"[red]create failed:[/red] {exc}")
+            return
+        created_name = result.name
+        if isinstance(response, dict):
+            created_name = str(response.get("name", created_name))
+        self._set_notice(f"created {created_name}")
+        self._load()
+
+    def _on_edit_modal_done(self, account_id: str, result: object) -> None:
+        if result is None:
+            self._set_notice("edit cancelled")
+            return
+        from tulip_tui.data.account_write import AccountDraft as _Draft
+
+        assert isinstance(result, _Draft)  # noqa: S101
+        # PATCH /v1/accounts only accepts a subset of fields — name,
+        # code, subtype, visibility, parent_account_id. Type + currency
+        # are immutable post-create (the existing API rejects them on
+        # PATCH; surfacing that here would just round-trip an error).
+        patch: dict[str, object] = {
+            "name": result.name,
+            "visibility": result.visibility,
+        }
+        if result.code is not None:
+            patch["code"] = result.code
+        if result.subtype is not None:
+            patch["subtype"] = result.subtype
+        if result.parent_account_id is not None:
+            patch["parent_account_id"] = result.parent_account_id
+        try:
+            self._on_edit_account(account_id, result)
+        except Exception as exc:
+            self._set_notice(f"[red]edit failed:[/red] {exc}")
+            return
+        self._set_notice(f"updated {result.name}")
         self._load()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -156,9 +261,10 @@ class AccountsScreen(Screen[None]):
         table.clear()
         self._rendered_rows = []
         self._row_index_to_account_id = []
+        self._row_index_to_account = []
 
         status = self.query_one("#status", Static)
-        status.update(f"as of {data.as_of} · {len(data.accounts)} accounts")
+        status.update(self._status_text(data))
 
         if not data.accounts:
             self._empty = True
@@ -167,6 +273,7 @@ class AccountsScreen(Screen[None]):
             table.add_row("—", "No accounts yet.", "—", "—", "—")
             self._rendered_rows.append("No accounts yet.")
             self._row_index_to_account_id.append(None)
+            self._row_index_to_account.append(None)
             return
 
         self._empty = False
@@ -175,12 +282,14 @@ class AccountsScreen(Screen[None]):
             table.add_row(header_text, "", "", "", "")
             self._rendered_rows.append(header_text)
             self._row_index_to_account_id.append(None)
+            self._row_index_to_account.append(None)
             for account in group.accounts:
                 self._add_account_row(table, account)
             subtotal_text = _subtotal_row_text(group.totals)
             table.add_row("", subtotal_text, "", "", "")
             self._rendered_rows.append(subtotal_text)
             self._row_index_to_account_id.append(None)
+            self._row_index_to_account.append(None)
 
     def _add_account_row(self, table: DataTable[str], account: AccountSummary) -> None:
         code = account.code or "—"
@@ -192,6 +301,19 @@ class AccountsScreen(Screen[None]):
             " ".join([code, account.name, account.type, account.currency, balance])
         )
         self._row_index_to_account_id.append(account.id)
+        self._row_index_to_account.append(account)
+
+    def _status_text(self, data: AccountsData) -> str:
+        base = f"as of {data.as_of} · {len(data.accounts)} accounts"
+        if self._notice:
+            return f"{base}    [dim]{self._notice}[/dim]"
+        return base
+
+    def _set_notice(self, text: str) -> None:
+        self._notice = text
+        # Re-render the status strip immediately so the notice surfaces.
+        status = self.query_one("#status", Static)
+        status.update(f"[dim]{text}[/dim]")
 
     def _render_error(self, exc: BaseException) -> None:
         table = self.query_one("#accounts", DataTable)
@@ -211,3 +333,7 @@ class AccountsScreen(Screen[None]):
     def has_no_accounts(self) -> bool:
         """True when the most-recent load returned zero accounts."""
         return self._empty
+
+    def notice(self) -> str:
+        """Return the last action notice (set by add/edit)."""
+        return self._notice

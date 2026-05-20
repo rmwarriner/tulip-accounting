@@ -152,11 +152,17 @@ async def test_pending_screen_renders_error_inline() -> None:
 
 @pytest.mark.asyncio
 async def test_app_binding_n_pushes_pending_screen() -> None:
+    # AccountsScreen claims `n` for "new account" (#431), so the
+    # app-level `n` only fires from screens that don't shadow it.
+    # Open ReportsScreen first (via `p`), then the app-level `n`
+    # falls through to open_pending.
     app = TulipTuiApp(
         loader=_accounts_loader,
         pending_loader=lambda: _sample_pending(),
     )
     async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")  # leave AccountsScreen via the reports binding
         await pilot.pause()
         await pilot.press("n")
         await pilot.pause()

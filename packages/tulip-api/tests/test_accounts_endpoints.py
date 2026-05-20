@@ -240,6 +240,135 @@ class TestTenantIsolation:
         assert names <= {"Imbalance: Unknown"}
 
 
+# ---- #50: freeform notes field --------------------------------------------
+
+
+class TestAccountNotes:
+    """``notes`` is field-encrypted at rest; round-trips via POST/GET/PATCH."""
+
+    def test_create_with_notes_round_trip(self, client: TestClient, auth_h: dict[str, str]):
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Checking",
+                "type": "asset",
+                "currency": "USD",
+                "code": "1110",
+                "notes": "Opened Mar 2018; primary household checking.",
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["notes"] == "Opened Mar 2018; primary household checking."
+
+        # GET round-trip surfaces the decrypted notes.
+        r2 = client.get(f"/v1/accounts/{body['id']}", headers=auth_h)
+        assert r2.status_code == 200
+        assert r2.json()["notes"] == "Opened Mar 2018; primary household checking."
+
+    def test_create_without_notes_is_null(self, client: TestClient, auth_h: dict[str, str]):
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "X", "type": "asset", "currency": "USD"},
+        )
+        assert r.status_code == 201
+        # Notes default null when omitted.
+        assert r.json()["notes"] is None
+        r2 = client.get(f"/v1/accounts/{r.json()['id']}", headers=auth_h)
+        assert r2.json()["notes"] is None
+
+    def test_patch_sets_notes(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "X", "type": "asset", "currency": "USD"},
+        ).json()
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"notes": "Added later"},
+        )
+        assert r.status_code == 200
+        assert r.json()["notes"] == "Added later"
+
+    def test_patch_clears_notes_with_empty_string(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "X",
+                "type": "asset",
+                "currency": "USD",
+                "notes": "to clear",
+            },
+        ).json()
+        assert created["notes"] == "to clear"
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"notes": ""},
+        )
+        assert r.status_code == 200
+        assert r.json()["notes"] is None
+
+    def test_list_endpoint_omits_notes(self, client: TestClient, auth_h: dict[str, str]):
+        """The list endpoint returns notes=null to avoid N decrypts.
+        Per-account GET is where the decrypted notes surface."""
+        client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "X",
+                "type": "asset",
+                "currency": "USD",
+                "notes": "ignore on list",
+            },
+        )
+        rows = client.get("/v1/accounts", headers=auth_h).json()
+        for row in rows:
+            assert row["notes"] is None
+
+    def test_audit_log_does_not_carry_notes_content(
+        self, client: TestClient, auth_h: dict[str, str], app
+    ):
+        from sqlalchemy import select
+
+        from tulip_api.deps import get_session
+        from tulip_storage.models import AuditLog
+
+        client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "X",
+                "type": "asset",
+                "currency": "USD",
+                "notes": "SECRET-MARKER-12345",
+            },
+        )
+        session_iter = app.dependency_overrides[get_session]()
+        session = next(session_iter)
+        try:
+            rows = list(
+                session.execute(select(AuditLog).where(AuditLog.action == "create")).scalars()
+            )
+        finally:
+            try:
+                next(session_iter)
+            except StopIteration:
+                pass
+        for row in rows:
+            after = row.after_snapshot or {}
+            for v in after.values():
+                if isinstance(v, str):
+                    assert "SECRET-MARKER-12345" not in v
+            # The bool flag is what the audit row carries.
+            if "notes_set" in after:
+                assert after["notes_set"] is True
+
+
 # ---- #52: placeholder flag (leaf-only postings) -----------------------------
 
 

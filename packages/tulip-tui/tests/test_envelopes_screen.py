@@ -130,11 +130,16 @@ async def test_envelopes_screen_renders_error_inline() -> None:
 
 @pytest.mark.asyncio
 async def test_app_binding_e_pushes_envelopes_screen() -> None:
+    # AccountsScreen claims `e` for "edit account" (#431), so the
+    # app-level `e` only fires from screens that don't shadow it.
+    # Open ReportsScreen first (via `p`), then `e` falls through.
     app = TulipTuiApp(
         loader=_accounts_loader,
         envelopes_loader=lambda: _sample_envelopes(),
     )
     async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")  # leave AccountsScreen via the reports binding
         await pilot.pause()
         await pilot.press("e")
         await pilot.pause()

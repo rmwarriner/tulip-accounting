@@ -11,6 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, Query, Request, status
 
 from tulip_api.auth.deps import get_current_claims, require_role
+from tulip_api.config import get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
     AccountNotFoundError,
@@ -43,7 +44,7 @@ router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 log = structlog.get_logger("tulip_api.accounts")
 
 
-def _to_read(a: Account) -> AccountRead:
+def _to_read(a: Account, *, notes: str | None = None) -> AccountRead:
     return AccountRead(
         id=a.id,
         code=a.code,
@@ -55,6 +56,7 @@ def _to_read(a: Account) -> AccountRead:
         is_active=a.is_active,
         is_placeholder=a.is_placeholder,
         parent_account_id=a.parent_account_id,
+        notes=notes,
     )
 
 
@@ -236,7 +238,8 @@ def create_account(
     takes the body's ``name`` / ``subtype`` / ``visibility``; parents
     take their segment as the name and inherit currency from the body.
     """
-    repo = AccountRepository(session, claims.household_id)
+    settings = get_settings()
+    repo = AccountRepository(session, claims.household_id, master_key=settings.master_key)
     audit = AuditLogWriter(session, claims.household_id)
     request_id = _request_uuid(request)
 
@@ -278,21 +281,32 @@ def create_account(
         subtype=body.subtype,
         parent_account_id=body.parent_account_id,
         visibility=body.visibility,
+        notes=body.notes,
         is_placeholder=body.is_placeholder,
         created_by_user_id=claims.user_id,
     )
+    after_snapshot: dict[str, object] = {
+        "name": a.name,
+        "type": a.type.value,
+        "currency": a.currency,
+    }
+    if body.notes:
+        # Don't write the notes contents into the audit log (#50 — the
+        # column is encrypted at rest precisely because the operator
+        # may put PII in there). Boolean signal is enough for the audit.
+        after_snapshot["notes_set"] = True
     audit.write(
         action="create",
         actor_kind="user",
         actor_user_id=claims.user_id,
         entity_type="account",
         entity_id=a.id,
-        after={"name": a.name, "type": a.type.value, "currency": a.currency},
+        after=after_snapshot,
         request_id=request_id,
     )
     session.commit()
     log.info("account.created", account_id=str(a.id))
-    return _to_read(a)
+    return _to_read(a, notes=body.notes)
 
 
 def _create_with_parents(
@@ -495,10 +509,12 @@ def get_account(
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AccountRead:
     """Fetch an account by id (404 if not in this household or not visible)."""
-    a = AccountRepository(session, claims.household_id).get(account_id)
+    settings = get_settings()
+    repo = AccountRepository(session, claims.household_id, master_key=settings.master_key)
+    a = repo.get(account_id)
     if a is None or not _filter_for_role(a, claims):
         raise AccountNotFoundError()
-    return _to_read(a)
+    return _to_read(a, notes=repo.decrypt_notes(a))
 
 
 @router.patch(
@@ -526,7 +542,8 @@ def update_account(
     session: Session = Depends(get_session),  # noqa: B008
 ) -> AccountRead:
     """Update mutable fields. Member cannot edit private accounts they didn't create."""
-    repo = AccountRepository(session, claims.household_id)
+    settings = get_settings()
+    repo = AccountRepository(session, claims.household_id, master_key=settings.master_key)
     a = repo.get(account_id)
     if a is None or not _filter_for_role(a, claims):
         raise AccountNotFoundError()
@@ -570,6 +587,14 @@ def update_account(
         a.visibility = body.visibility
     if body.parent_account_id is not None:
         a.parent_account_id = body.parent_account_id
+    notes_changed = False
+    if body.notes is not None:
+        # `notes=""` clears; `notes="..."` updates. Omitting the key
+        # entirely (Pydantic gives None default) leaves it unchanged —
+        # so we distinguish "not in body" from "explicitly empty" via
+        # the pre-flush before snapshot.
+        repo.set_notes(a.id, body.notes if body.notes else None)
+        notes_changed = True
     if body.is_placeholder is not None:
         if body.is_placeholder and not a.is_placeholder:
             # Flipping to placeholder is only safe if the account has no
@@ -595,6 +620,14 @@ def update_account(
         a.is_placeholder = body.is_placeholder
     session.flush()
 
+    after_snapshot: dict[str, object] = {
+        "name": a.name,
+        "code": a.code,
+        "visibility": a.visibility,
+        "parent_account_id": (str(a.parent_account_id) if a.parent_account_id else None),
+    }
+    if notes_changed:
+        after_snapshot["notes_set"] = a.notes_encrypted is not None
     AuditLogWriter(session, claims.household_id).write(
         action="update",
         actor_kind="user",
@@ -602,16 +635,11 @@ def update_account(
         entity_type="account",
         entity_id=a.id,
         before=before,
-        after={
-            "name": a.name,
-            "code": a.code,
-            "visibility": a.visibility,
-            "parent_account_id": str(a.parent_account_id) if a.parent_account_id else None,
-        },
+        after=after_snapshot,
         request_id=_request_uuid(request),
     )
     session.commit()
-    return _to_read(a)
+    return _to_read(a, notes=repo.decrypt_notes(a))
 
 
 @router.get(

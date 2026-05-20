@@ -339,6 +339,13 @@ def _render_account(account: dict[str, Any], parent: dict[str, Any] | None = Non
             typer.echo(f"parent:       {parent_label} [{account['parent_account_id']}]")
         else:
             typer.echo(f"parent:       {account['parent_account_id']}")
+    notes = account.get("notes")
+    if notes:
+        # Multi-line indent so long notes still read cleanly.
+        first, *rest = notes.splitlines() or [""]
+        typer.echo(f"notes:        {first}")
+        for line in rest:
+            typer.echo(f"              {line}")
 
 
 @accounts_app.command("list")
@@ -445,6 +452,16 @@ def add_account(
             ),
         ),
     ] = False,
+    notes: Annotated[
+        str | None,
+        typer.Option(
+            "--notes",
+            help=(
+                "Optional freeform comment / context (#50). Stored "
+                "field-encrypted under the household master key."
+            ),
+        ),
+    ] = None,
     placeholder: Annotated[
         bool,
         typer.Option(
@@ -496,6 +513,8 @@ def add_account(
         body["code"] = code
     if subtype is not None:
         body["subtype"] = subtype
+    if notes is not None:
+        body["notes"] = notes
     if placeholder:
         body["is_placeholder"] = True
     if create_parents:
@@ -572,6 +591,16 @@ def edit_account(
             ),
         ),
     ] = None,
+    notes: Annotated[
+        str | None,
+        typer.Option(
+            "--notes",
+            help=(
+                "Set the freeform notes / comments field (#50). Pass "
+                "an empty string to clear an existing note."
+            ),
+        ),
+    ] = None,
     placeholder: Annotated[
         bool | None,
         typer.Option(
@@ -602,6 +631,8 @@ def edit_account(
         body["subtype"] = subtype
     if visibility is not None:
         body["visibility"] = visibility
+    if notes is not None:
+        body["notes"] = notes
     if placeholder is not None:
         body["is_placeholder"] = placeholder
 
