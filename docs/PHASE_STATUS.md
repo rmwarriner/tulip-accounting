@@ -1824,6 +1824,36 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### P9.6.c — Add/edit/void transaction modal in the TUI — ✅ *(2026-05-20)*
+
+Per [#423](https://github.com/rmwarriner/tulip-accounting/issues/423). Three new bindings on the transactions
+register, each opening a modal:
+
+- **`n`** opens `TransactionEditModal` with empty defaults
+  (today's date as the date prefill). Posting input uses the same
+  `account=amount[@CUR]` syntax as `tulip add --post` so users
+  carry one mental model across both surfaces. The modal validates
+  locally (date shape, posting syntax, ≥2 postings) and surfaces
+  errors inline rather than closing on bad input. On confirm,
+  fires `POST /v1/transactions`.
+- **`e`** opens the same modal pre-filled from the focused
+  PENDING transaction (POSTED / RECONCILED are refused with a
+  notice — the CLI's `transactions edit` handles void+recreate).
+  Fires `PATCH /v1/transactions/{id}` on confirm.
+- **`x`** opens `VoidConfirmModal` with a required reason field
+  and fires `POST /v1/transactions/{id}/void` on confirm.
+
+Data layer ships `TransactionDraft` / `ParsedPosting` value
+objects + `parse_posting_line` / `parse_postings_block` (comments
+and blank lines skipped; line numbers in error messages) + thin
+wrappers around the four mutation endpoints.
+
+No backend changes — every endpoint shipped in P2.6 + P5.0.
+Tests: 13 data-layer tests (parser shape + line numbering + the
+four API wrappers), 15 pilot-mode screen tests (modal defaults,
+every validation path, both modals' cancel/confirm flows, all
+three new bindings including the refuse-on-POSTED notice).
+
 #### P9.6.b — Reconcile actioning in the TUI — ✅ *(2026-05-20)*
 
 Per [#420](https://github.com/rmwarriner/tulip-accounting/issues/420). New `ReconciliationDetailScreen` reachable with
