@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -28,6 +29,13 @@ from tulip_cli._console import make_console
 from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import Config
 from tulip_cli.errors import EXIT_USER, CliError
+from tulip_cli.gnucash import (
+    GnuCashParseError,
+    sort_by_depth,
+)
+from tulip_cli.gnucash import (
+    parse as gnucash_parse,
+)
 from tulip_cli.http import TulipClient
 
 accounts_app = typer.Typer(
@@ -750,3 +758,239 @@ def show_account(
         sys.stdout.write(json.dumps(account) + "\n")
         return
     _render_account(account, parent=parent)
+
+
+# ---- #432: GnuCash CSV account-tree import ---------------------------------
+
+
+@accounts_app.command("import-gnucash")
+def import_gnucash(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a GnuCash 'Export Account Tree to CSV' file.",
+            metavar="PATH",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help=(
+                "Parse the file + print a plan, but make no API calls. "
+                "First-cut for any real migration so the operator can "
+                "see the type mapping + warnings before mutating data."
+            ),
+        ),
+    ] = False,
+    default_currency: Annotated[
+        str,
+        typer.Option(
+            "--default-currency",
+            help=(
+                "Currency for non-CURRENCY-namespace rows (STOCK / MUTUAL "
+                "with a ticker symbol). The original Symbol / Namespace is "
+                "stashed in the account's notes field so the operator can "
+                "find these later when investment tracking lands."
+            ),
+        ),
+    ] = "USD",
+) -> None:
+    """Import a GnuCash account-tree CSV into the household's chart.
+
+    The CSV comes from GnuCash's *File → Export → Export Account
+    Tree to CSV* command. The importer:
+
+    1. Parses every row + maps the GnuCash Type to a Tulip type + subtype.
+    2. Sorts by depth so parents are POSTed before children.
+    3. For each row, resolves the parent via the colon-path prefix,
+       checks for an existing account with the same code+name (skip
+       if found — re-runs are idempotent), then POSTs to /v1/accounts.
+    4. Prints a per-row outcome summary at the end.
+
+    Lands ``Notes`` (or ``Description`` when Notes is blank) into Tulip's
+    notes field. Lands ``Placeholder=T`` and ``Hidden=T`` into the
+    placeholder + is_active flags. Non-currency holdings get a warning
+    and land in ``--default-currency``.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(f"could not read {path}: {exc}") from exc
+
+    try:
+        parsed = gnucash_parse(text, default_currency=default_currency)
+    except GnuCashParseError as exc:
+        raise typer.BadParameter(f"GnuCash CSV parse failed: {exc}") from exc
+
+    sorted_accounts = sort_by_depth(parsed)
+
+    type_counts: dict[str, int] = {}
+    for a in sorted_accounts:
+        type_counts[a.type] = type_counts.get(a.type, 0) + 1
+    warning_count = sum(1 for a in sorted_accounts if a.warning is not None)
+
+    if dry_run:
+        if as_json:
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "dry_run": True,
+                        "row_count": len(sorted_accounts),
+                        "by_type": type_counts,
+                        "warning_count": warning_count,
+                        "warnings": [
+                            {
+                                "name": a.name,
+                                "full_path": a.full_path,
+                                "warning": a.warning,
+                                "symbol": a.raw_symbol,
+                                "namespace": a.raw_namespace,
+                            }
+                            for a in sorted_accounts
+                            if a.warning is not None
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            return
+        typer.echo(f"GnuCash CSV at {path}")
+        typer.echo(f"  rows:     {len(sorted_accounts)}")
+        for tulip_type, count in sorted(type_counts.items()):
+            typer.echo(f"    {tulip_type}: {count}")
+        if warning_count:
+            typer.echo(f"  warnings: {warning_count}")
+            for a in sorted_accounts:
+                if a.warning is None:
+                    continue
+                typer.echo(
+                    f"    [{a.warning}] {a.full_path} "
+                    f"(Symbol={a.raw_symbol!r}, Namespace={a.raw_namespace!r}) "
+                    f"→ landing in {default_currency}"
+                )
+        typer.echo("Run again without --dry-run to apply.")
+        return
+
+    # Live run. Walk the sorted list, POSTing each row.
+    created = 0
+    skipped = 0
+    failed_paths: list[str] = []
+    # full_path → account id, populated as we create rows so the next
+    # child can resolve its parent without a round-trip.
+    by_path: dict[str, str] = {}
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            # Seed the lookup with any existing accounts (idempotent re-run).
+            existing = client.get("/v1/accounts", authenticated=True).json()
+            for row in existing:
+                full_path = _build_full_path_for_existing(row, existing)
+                if full_path:
+                    by_path[full_path] = str(row["id"])
+
+            for account in sorted_accounts:
+                if account.full_path in by_path:
+                    skipped += 1
+                    continue
+                parent_path = ":".join(account.full_path.split(":")[:-1])
+                parent_id = by_path.get(parent_path) if parent_path else None
+                body: dict[str, Any] = {
+                    "name": account.name,
+                    "type": account.type,
+                    "currency": account.currency,
+                    "visibility": "shared",
+                }
+                if account.code:
+                    body["code"] = account.code
+                if account.subtype:
+                    body["subtype"] = account.subtype
+                # GnuCash Hidden=T gets stashed in notes rather than
+                # immediately deactivating — deactivated accounts disappear
+                # from GET /v1/accounts, which would break idempotent
+                # re-run (the lookup couldn't find them). The operator
+                # can deactivate manually with `tulip accounts deactivate`.
+                notes = account.notes
+                if not account.is_active:
+                    hidden_note = "marked Hidden in GnuCash export"
+                    notes = f"{notes}\n{hidden_note}" if notes else hidden_note
+                if notes:
+                    body["notes"] = notes
+                if account.is_placeholder:
+                    body["is_placeholder"] = True
+                if parent_id:
+                    body["parent_account_id"] = parent_id
+                try:
+                    resp = client.post("/v1/accounts", json=body, authenticated=True)
+                except CliError as err:
+                    failed_paths.append(f"{account.full_path}: {err}")
+                    continue
+                row = resp.json()
+                by_path[account.full_path] = str(row["id"])
+                created += 1
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    if as_json:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "created": created,
+                    "skipped": skipped,
+                    "failed": failed_paths,
+                    "warning_count": warning_count,
+                }
+            )
+            + "\n"
+        )
+        return
+    typer.echo(
+        f"GnuCash import complete: {created} created · {skipped} skipped · "
+        f"{len(failed_paths)} failed"
+    )
+    if warning_count:
+        typer.echo(
+            f"  {warning_count} non-currency holding(s) landed in "
+            f"{default_currency}; original symbol stashed in notes"
+        )
+    for failure in failed_paths:
+        typer.echo(f"  FAIL {failure}", err=True)
+
+
+def _build_full_path_for_existing(
+    row: dict[str, Any], all_accounts: list[dict[str, Any]]
+) -> str | None:
+    """Reconstruct the GnuCash-style full_path for an existing Tulip account.
+
+    Walks ``parent_account_id`` up to the root, prepending each name.
+    Used by ``import-gnucash`` to seed its full_path → id lookup so
+    re-runs are idempotent. Returns ``None`` if the chain references
+    a parent that isn't in the listing (shouldn't happen, but bail
+    rather than infinite-loop).
+    """
+    by_id = {str(a["id"]): a for a in all_accounts}
+    names: list[str] = []
+    seen: set[str] = set()
+    cur: dict[str, Any] | None = row
+    while cur is not None:
+        cur_id = str(cur["id"])
+        if cur_id in seen:
+            return None
+        seen.add(cur_id)
+        names.append(str(cur.get("name", "")))
+        parent_id = cur.get("parent_account_id")
+        if parent_id is None:
+            break
+        cur = by_id.get(str(parent_id))
+        if cur is None:
+            return None
+    names.reverse()
+    return ":".join(names) if names else None
