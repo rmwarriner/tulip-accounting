@@ -14,6 +14,11 @@ from tulip_cli.auth.tokens import default_token_store
 from tulip_cli.config import load_config
 from tulip_cli.http import TulipClient
 from tulip_tui.app import TulipTuiApp
+from tulip_tui.data.account_write import (
+    AccountDraft,
+    create_account,
+    update_account,
+)
 from tulip_tui.data.accounts import AccountsData, load_accounts
 from tulip_tui.data.envelopes import EnvelopesData, load_envelopes
 from tulip_tui.data.import_batch_detail import (
@@ -234,6 +239,29 @@ def _tx_void_action(tx_id: str, reason: str) -> object:
         return void_transaction(client, tx_id, reason=reason)
 
 
+def _account_create_action(draft: AccountDraft) -> object:
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return create_account(client, draft)
+
+
+def _account_edit_action(account_id: str, draft: AccountDraft) -> object:
+    """PATCH a subset of the editable fields."""
+    config = load_config()
+    patch: dict[str, object] = {
+        "name": draft.name,
+        "visibility": draft.visibility,
+    }
+    if draft.code is not None:
+        patch["code"] = draft.code
+    if draft.subtype is not None:
+        patch["subtype"] = draft.subtype
+    if draft.parent_account_id is not None:
+        patch["parent_account_id"] = draft.parent_account_id
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return update_account(client, account_id, patch)
+
+
 def run() -> None:
     """Launch the Tulip TUI against the configured API."""
     TulipTuiApp(
@@ -259,4 +287,6 @@ def run() -> None:
         tx_create_action=_tx_create_action,
         tx_edit_action=_tx_edit_action,
         tx_void_action=_tx_void_action,
+        account_create_action=_account_create_action,
+        account_edit_action=_account_edit_action,
     ).run()

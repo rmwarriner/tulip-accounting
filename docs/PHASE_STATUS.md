@@ -1824,6 +1824,36 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### Account add/edit modal in the TUI — ✅ *(2026-05-20)*
+
+Per [#431](https://github.com/rmwarriner/tulip-accounting/issues/431). Post-P9.6 polish. Closes the last
+"common task you can't do from the TUI" gap by mirroring the
+P9.6.c pattern for accounts. The AccountsScreen now exposes:
+
+- **`n`** opens `AccountEditModal` with empty defaults; currency
+  pre-fills from the first existing account so single-currency
+  households don't retype it. Local validation: name required,
+  type ∈ {asset, liability, equity, income, expense}, currency
+  3-letter ISO (uppercased on the way out).
+- **`e`** opens the same modal pre-filled from the focused
+  account; `name` / `code` / `subtype` / `visibility` /
+  `parent_account_id` round-trip via `PATCH /v1/accounts/{id}`.
+  Type + currency are immutable post-create (API enforces) so
+  the field is editable but the API rejects the change.
+
+The `n` / `e` bindings shadow the app-wide `n` (pending) and
+`e` (envelopes) bindings while on AccountsScreen — same pattern
+P9.6.c established on the transactions register. From other
+screens the app-wide bindings still fire normally.
+
+No backend changes — endpoints shipped in P2.5 and the
+parent-account hierarchy work landed under #42. Tests: 6
+data-layer (POST/PATCH wrappers + parent-picker filter + 4xx
+propagation) + 14 pilot-mode screen tests (modal defaults,
+every validation path, both bindings' confirm/cancel/error
+flows, the seeded-currency behaviour, the cursor-focus
+requirement on `e`).
+
 #### P9.6.c — Add/edit/void transaction modal in the TUI — ✅ *(2026-05-20)*
 
 Per [#423](https://github.com/rmwarriner/tulip-accounting/issues/423). Three new bindings on the transactions
