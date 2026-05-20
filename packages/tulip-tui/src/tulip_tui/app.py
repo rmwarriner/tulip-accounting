@@ -25,6 +25,7 @@ from tulip_tui.data.envelopes import EnvelopesData
 from tulip_tui.data.import_batch_detail import ImportBatchDetail
 from tulip_tui.data.imports import ImportsData
 from tulip_tui.data.pending import PendingData
+from tulip_tui.data.reconciliation_detail import ReconciliationDetail
 from tulip_tui.data.reconciliations import ReconciliationsData
 from tulip_tui.data.reports import ReportPayload, ReportSpec
 from tulip_tui.data.sinking_funds import SinkingFundsData
@@ -33,6 +34,7 @@ from tulip_tui.screens.envelopes import EnvelopesScreen
 from tulip_tui.screens.import_batch_detail import ImportBatchDetailScreen
 from tulip_tui.screens.imports import ImportsScreen
 from tulip_tui.screens.pending import PendingScreen
+from tulip_tui.screens.reconciliation_detail import ReconciliationDetailScreen
 from tulip_tui.screens.reconciliations import ReconciliationsScreen
 from tulip_tui.screens.reports import ReportsScreen
 from tulip_tui.screens.sinking_funds import SinkingFundsScreen
@@ -49,6 +51,14 @@ BatchApplyAction = Callable[[str, bool, bool, bool], object]
 EnvelopesLoader = Callable[[], EnvelopesData]
 SinkingFundsLoader = Callable[[], SinkingFundsData]
 PendingLoader = Callable[[], PendingData]
+
+ReconciliationDetailLoaderFactory = Callable[[str], Callable[[], ReconciliationDetail]]
+ReconciliationAutoMatchAction = Callable[[str], object]
+ReconciliationRejectAction = Callable[[str, str], None]
+ReconciliationManualMatchAction = Callable[[str, str, str, str, str], object]
+ReconciliationPaperMatchAction = Callable[[str, str], object]
+ReconciliationCarryForwardAction = Callable[[str, str], object]
+ReconciliationCompleteAction = Callable[[str], object]
 
 
 def _no_op_transactions_factory(_account_id: str | None) -> TransactionsLoader:
@@ -112,6 +122,45 @@ def _no_op_pending_loader() -> PendingData:
     raise RuntimeError("pending loader not configured")
 
 
+def _no_op_recon_detail_factory(
+    _reconciliation_id: str,
+) -> Callable[[], ReconciliationDetail]:
+    def _raise() -> ReconciliationDetail:
+        raise RuntimeError("reconciliation detail loader not configured")
+
+    return _raise
+
+
+def _no_op_recon_auto_match(_reconciliation_id: str) -> object:
+    raise RuntimeError("auto-match action not configured")
+
+
+def _no_op_recon_reject(_reconciliation_id: str, _match_id: str) -> None:
+    raise RuntimeError("reject action not configured")
+
+
+def _no_op_recon_manual_match(
+    _reconciliation_id: str,
+    _line_id: str,
+    _tx_id: str,
+    _amount: str,
+    _currency: str,
+) -> object:
+    raise RuntimeError("manual match action not configured")
+
+
+def _no_op_recon_paper_match(_reconciliation_id: str, _tx_id: str) -> object:
+    raise RuntimeError("paper match action not configured")
+
+
+def _no_op_recon_carry_forward(_reconciliation_id: str, _tx_id: str) -> object:
+    raise RuntimeError("carry-forward action not configured")
+
+
+def _no_op_recon_complete(_reconciliation_id: str) -> object:
+    raise RuntimeError("complete action not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -144,6 +193,17 @@ class TulipTuiApp(App[None]):
         envelopes_loader: EnvelopesLoader = _no_op_envelopes_loader,
         sinking_funds_loader: SinkingFundsLoader = _no_op_sinking_funds_loader,
         pending_loader: PendingLoader = _no_op_pending_loader,
+        reconciliation_detail_factory: ReconciliationDetailLoaderFactory = (
+            _no_op_recon_detail_factory
+        ),
+        reconciliation_auto_match: ReconciliationAutoMatchAction = _no_op_recon_auto_match,
+        reconciliation_reject: ReconciliationRejectAction = _no_op_recon_reject,
+        reconciliation_manual_match: ReconciliationManualMatchAction = (_no_op_recon_manual_match),
+        reconciliation_paper_match: ReconciliationPaperMatchAction = _no_op_recon_paper_match,
+        reconciliation_carry_forward: ReconciliationCarryForwardAction = (
+            _no_op_recon_carry_forward
+        ),
+        reconciliation_complete: ReconciliationCompleteAction = _no_op_recon_complete,
     ) -> None:
         """Store the per-screen loaders / factories used at mount and drill-in."""
         super().__init__()
@@ -159,6 +219,13 @@ class TulipTuiApp(App[None]):
         self._envelopes_loader = envelopes_loader
         self._sinking_funds_loader = sinking_funds_loader
         self._pending_loader = pending_loader
+        self._reconciliation_detail_factory = reconciliation_detail_factory
+        self._reconciliation_auto_match = reconciliation_auto_match
+        self._reconciliation_reject = reconciliation_reject
+        self._reconciliation_manual_match = reconciliation_manual_match
+        self._reconciliation_paper_match = reconciliation_paper_match
+        self._reconciliation_carry_forward = reconciliation_carry_forward
+        self._reconciliation_complete = reconciliation_complete
 
     def on_mount(self) -> None:
         """Push the accounts browser as the initial screen."""
@@ -175,7 +242,30 @@ class TulipTuiApp(App[None]):
 
     def action_open_reconciliations(self) -> None:
         """Push the reconciliations browser onto the screen stack."""
-        self.push_screen(ReconciliationsScreen(loader=self._reconciliations_loader))
+        self.push_screen(
+            ReconciliationsScreen(
+                loader=self._reconciliations_loader,
+                on_open_reconciliation=self.open_reconciliation_detail,
+            )
+        )
+
+    def open_reconciliation_detail(self, reconciliation_id: str) -> None:
+        """Push the per-reconciliation actioning screen (P9.6.b)."""
+        loader = self._reconciliation_detail_factory(reconciliation_id)
+        rid = reconciliation_id
+        self.push_screen(
+            ReconciliationDetailScreen(
+                loader=loader,
+                on_auto_match=lambda: self._reconciliation_auto_match(rid),
+                on_reject=lambda match_id: self._reconciliation_reject(rid, match_id),
+                on_manual_match=lambda line_id, tx_id, amt, cur: self._reconciliation_manual_match(
+                    rid, line_id, tx_id, amt, cur
+                ),
+                on_paper_match=lambda tx_id: self._reconciliation_paper_match(rid, tx_id),
+                on_carry_forward=lambda tx_id: self._reconciliation_carry_forward(rid, tx_id),
+                on_complete=lambda: self._reconciliation_complete(rid),
+            )
+        )
 
     def action_open_imports(self) -> None:
         """Push the import batches browser onto the screen stack."""
