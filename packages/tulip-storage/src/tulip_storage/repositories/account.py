@@ -184,6 +184,92 @@ class AccountRepository:
             return rows[0]
         return None
 
+    def find_by_name_path(self, path: str) -> Account | None:
+        """Resolve a colon-delimited account name path (#450).
+
+        Mirrors the CLI's hierarchical-path resolver so the import-apply
+        flow can match QIF / GnuCash category strings like
+        ``Wants:Personal:Gifts`` against accounts whose stored name
+        chain is ``Expenses:Wants:Personal:Gifts`` (root → leaf).
+
+        Behaviour:
+        - Splits ``path`` on ``:`` into tokens; lowercase for case-
+          insensitive comparison.
+        - Optional first token can be a Tulip type token
+          (``assets`` / ``asset`` / ``liabilities`` / ... / ``expenses``)
+          to constrain the search.
+        - For every active account in the household, the account's
+          name chain (root → leaf) is reconstructed by walking
+          ``parent_account_id``. The path tokens must equal the chain's
+          trailing suffix.
+        - Returns the unique match, or ``None`` for no-match /
+          ambiguous (multiple-match) inputs. The caller falls through
+          to ``Imbalance:Unknown`` on ``None``.
+        """
+        if not path or path.strip() == "":
+            return None
+        # Strip a tag suffix if any (``<path>/<tags>``) — defensive even
+        # before #447 lands the parser-side fix. The first ``/`` ends
+        # the category portion.
+        category_text = path.split("/", 1)[0].strip()
+        if ":" in category_text:
+            tokens = [t.strip().lower() for t in category_text.split(":") if t.strip()]
+        else:
+            tokens = [category_text.lower()] if category_text else []
+        if not tokens:
+            return None
+
+        # Optional type constraint via root segment.
+        type_constraint: str | None = None
+        type_aliases = {
+            "asset": "asset",
+            "assets": "asset",
+            "liability": "liability",
+            "liabilities": "liability",
+            "equity": "equity",
+            "equities": "equity",
+            "income": "income",
+            "incomes": "income",
+            "expense": "expense",
+            "expenses": "expense",
+        }
+        if len(tokens) > 1 and tokens[0] in type_aliases:
+            type_constraint = type_aliases[tokens[0]]
+            tokens = tokens[1:]
+        if not tokens:
+            return None
+
+        # Build the chart in-memory once. For a typical household
+        # (50-200 accounts) this is cheap and well-bounded.
+        all_active = self.list_active()
+        by_id: dict[UUID, Account] = {a.id: a for a in all_active}
+
+        def name_chain(a: Account) -> list[str]:
+            names: list[str] = []
+            seen: set[UUID] = set()
+            cur: Account | None = a
+            while cur is not None:
+                if cur.id in seen:
+                    break
+                seen.add(cur.id)
+                names.append(cur.name.lower())
+                cur = (
+                    by_id.get(cur.parent_account_id) if cur.parent_account_id is not None else None
+                )
+            names.reverse()
+            return names
+
+        matches: list[Account] = []
+        for account in all_active:
+            if type_constraint is not None and account.type.value != type_constraint:
+                continue
+            chain = name_chain(account)
+            if len(chain) >= len(tokens) and chain[-len(tokens) :] == tokens:
+                matches.append(account)
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     def list_active(self) -> list[Account]:
         """Return all active accounts in this household, ordered by code/name."""
         return list(

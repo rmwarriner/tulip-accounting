@@ -376,7 +376,15 @@ async def promote_statement_line(
             )
         ]
         for split in splits:
+            # #450: prefer the path-aware resolver so GnuCash-rooted
+            # charts (Expenses:Wants:Personal:Gifts) accept Banktivity-
+            # style category strings (Wants:Personal:Gifts) without
+            # falling through to Imbalance:Unknown. Code lookup stays
+            # as the fast path for charts that put colon-paths in the
+            # ``code`` column.
             split_account = accounts.get_by_code(split.category)
+            if split_account is None:
+                split_account = accounts.find_by_name_path(split.category)
             if split_account is None:
                 split_account = _get_or_create_imbalance_account(
                     session=session,
@@ -425,7 +433,13 @@ async def promote_statement_line(
             ),
             session=session,
         )
+        # #450: try code first, then hierarchical name-path. The
+        # categorizer often returns colon-paths from the chart's name
+        # column when the chart has no ``code`` populated (the
+        # GnuCash-imported shape).
         resolved = accounts.get_by_code(suggestion.account_code)
+        if resolved is None:
+            resolved = accounts.find_by_name_path(suggestion.account_code)
         if resolved is None:
             raise CategorizeUnknownAccountError(suggestion.account_code, household_id)
         other_account = resolved
