@@ -531,6 +531,73 @@ class TestPromoteSplitLine:
             assert bank.amount == Decimal("2814.50")
 
     @pytest.mark.asyncio
+    async def test_split_resolves_by_name_path_when_code_misses(self, session_maker, setup):
+        """#450: GnuCash-rooted chart accepts Banktivity-style colon-paths.
+
+        The chart has ``Expenses:Wants:Personal:Gifts`` (no ``code``
+        populated for any node). QIF emits ``Wants:Personal:Gifts``.
+        ``get_by_code`` misses → ``find_by_name_path`` resolves the
+        suffix → posting lands on the gift account, not
+        Imbalance:Unknown.
+        """
+        # Build the chart hierarchy without populating ``code``.
+        with session_maker() as s:
+            repo = AccountRepository(s, setup["household_id"])
+            expenses = repo.create(name="Expenses", type=AccountType.EXPENSE, currency="USD")
+            wants = repo.create(
+                name="Wants",
+                type=AccountType.EXPENSE,
+                currency="USD",
+                parent_account_id=expenses.id,
+            )
+            personal = repo.create(
+                name="Personal",
+                type=AccountType.EXPENSE,
+                currency="USD",
+                parent_account_id=wants.id,
+            )
+            gifts = repo.create(
+                name="Gifts",
+                type=AccountType.EXPENSE,
+                currency="USD",
+                parent_account_id=personal.id,
+            )
+            gifts_id = gifts.id
+            s.commit()
+
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-50.00",
+            splits=[
+                {
+                    "amount": "-50.00",
+                    "currency": "USD",
+                    "category": "Wants:Personal:Gifts",
+                    "memo": None,
+                },
+            ],
+        )
+
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            postings = list(s.query(Posting).filter_by(transaction_id=tx.id).all())
+            # 2 postings: bank-side + the split (resolved to Gifts).
+            assert len(postings) == 2
+            other = next(p for p in postings if p.account_id != setup["cash_id"])
+            assert other.account_id == gifts_id
+
+    @pytest.mark.asyncio
     async def test_unknown_split_category_falls_back_to_imbalance(self, session_maker, setup):
         """A split whose category doesn't exist routes to Imbalance:Unknown."""
         line_id = self._seed_split_line(
