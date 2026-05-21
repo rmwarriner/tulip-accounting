@@ -588,6 +588,73 @@ class QifAccountChunk:
     qif_text: str
 
 
+@dataclass(frozen=True, slots=True)
+class QifAccountDeclaration:
+    """One ``!Account`` block, as seen at the top of a QIF file (#443).
+
+    Captures the bookkeeping the auto-create-accounts CLI flow needs:
+    the user-visible account name (``N`` line) and the QIF type token
+    (``T`` line — ``Bank`` / ``CCard`` / ``Invst`` / etc.). Used by
+    the CLI to materialise the chart of accounts before the import
+    runs.
+    """
+
+    name: str
+    qif_type: str
+
+
+def list_account_declarations(file_bytes: bytes) -> list[QifAccountDeclaration]:
+    """Return the ``!Account`` blocks declared at the top of a QIF.
+
+    Each entry pairs the account name (``N``) with the type token
+    (``T``). De-duplicated by name (first-seen wins) so a file that
+    re-declares an account under multiple ``!Type:`` sections still
+    yields one declaration per account.
+
+    Returns an empty list when the file contains no ``!Account``
+    blocks (single-account QIF with the bare ``!Type:`` header).
+    """
+    try:
+        text = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+
+    out: list[QifAccountDeclaration] = []
+    seen: set[str] = set()
+
+    in_account_block = False
+    pending_name: str | None = None
+    pending_type: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line.strip():
+            continue
+        if line.startswith("!"):
+            in_account_block = line.strip().lower() == "!account"
+            pending_name = None
+            pending_type = None
+            continue
+        if not in_account_block:
+            continue
+        if line[0] == "N":
+            pending_name = line[1:].strip() or None
+        elif line[0] == "T":
+            pending_type = line[1:].strip() or None
+        elif line == _RECORD_TERMINATOR:
+            if pending_name and pending_name not in seen:
+                out.append(
+                    QifAccountDeclaration(
+                        name=pending_name,
+                        qif_type=pending_type or "",
+                    )
+                )
+                seen.add(pending_name)
+            pending_name = None
+            pending_type = None
+    return out
+
+
 def split_accounts(file_bytes: bytes) -> list[QifAccountChunk]:
     """Split a multi-account QIF into one parseable chunk per account.
 
