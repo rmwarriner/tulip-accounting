@@ -241,3 +241,75 @@ class TestValidation:
         r = client.get("/v1/transactions", params={"tag": "has space"}, headers=auth_h)
         assert r.status_code == 400
         assert_problem(r, code="tag.invalid", status=400)
+
+
+# ---- ADR-0009 PR C: effective-tags endpoint --------------------------------
+
+
+class TestEffectiveTagsEndpoint:
+    """``GET /v1/transactions/{id}/effective-tags`` returns direct + inherited."""
+
+    def _seed_tx_with_tags(
+        self,
+        client: TestClient,
+        auth_h: dict[str, str],
+        *,
+        tx_tags: list[str],
+        account_tags: list[str],
+    ) -> str:
+        """Create accounts + a tagged transaction; return the tx id."""
+        cash = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"name": "Cash", "type": "asset", "currency": "USD"},
+        ).json()
+        food = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Food",
+                "type": "expense",
+                "currency": "USD",
+                "tags": account_tags,
+            },
+        ).json()
+        tx = client.post(
+            "/v1/transactions",
+            headers=auth_h,
+            json={
+                "date": "2026-05-01",
+                "description": "Lunch",
+                "tags": tx_tags,
+                "postings": [
+                    {"account_id": food["id"], "amount": "10.00", "currency": "USD"},
+                    {"account_id": cash["id"], "amount": "-10.00", "currency": "USD"},
+                ],
+            },
+        )
+        assert tx.status_code == 201, tx.text
+        return tx.json()["id"]
+
+    def test_returns_direct_and_inherited_sets(self, client: TestClient, auth_h: dict[str, str]):
+        tx_id = self._seed_tx_with_tags(
+            client,
+            auth_h,
+            tx_tags=["birthday"],
+            account_tags=["essential"],
+        )
+        r = client.get(f"/v1/transactions/{tx_id}/effective-tags", headers=auth_h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["direct"] == ["birthday"]
+        assert set(body["effective"]) == {"birthday", "essential"}
+        # by_provenance carries every edge, distinguishable.
+        provenances = {(p["name"], p["provenance"]) for p in body["by_provenance"]}
+        assert ("birthday", "transaction") in provenances
+        assert ("essential", "account") in provenances
+
+    def test_returns_empty_for_unknown_transaction(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        from uuid import uuid4
+
+        r = client.get(f"/v1/transactions/{uuid4()}/effective-tags", headers=auth_h)
+        assert r.status_code == 404
