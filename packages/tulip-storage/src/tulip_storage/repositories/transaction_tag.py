@@ -1,4 +1,15 @@
-"""Repository for the v1 ``transaction_tags`` table (#39)."""
+"""Transaction-tag repository (ADR-0009).
+
+Bridges the public string-passing API and the normalised id-keyed
+``transaction_tags`` join table. Callers pass tag *names*; this
+module resolves them to / from the ``tags`` table behind the
+scenes.
+
+Public surface (``set_tags``, ``list_tags``, ``list_tags_for_
+transactions``, ``find_transaction_ids_by_tag``) is unchanged from
+the #39 shape so the rest of the codebase doesn't need to learn
+about tag ids.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +19,8 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
-from tulip_storage.models import TransactionTag
+from tulip_storage.models import Tag, TransactionTag
+from tulip_storage.repositories.tag import TagRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -40,19 +52,20 @@ def normalise_tag(value: str) -> str:
 
 
 class TransactionTagRepository:
-    """Per-household repository for the v1 transaction_tags surface (#39)."""
+    """Per-household repository over the ``transaction_tags`` edge table."""
 
     def __init__(self, session: Session, household_id: UUID) -> None:
         """Bind the repo to a session + household tenant scope."""
         self._session = session
         self._household_id = household_id
+        self._tags = TagRepository(session, household_id)
 
     def set_tags(self, transaction_id: UUID, tags: list[str]) -> list[str]:
         """Replace the transaction's tags with the given set (atomic per-call).
 
-        Each tag is normalised + deduplicated; the stored set is the
-        deduplicated union of the input. Returns the stored list in
-        sorted order for deterministic round-trip.
+        Each name is normalised + deduplicated, then resolved to a
+        :class:`Tag` row (created on demand). Returns the stored list
+        in sorted order for deterministic round-trip.
         """
         normalised = sorted({normalise_tag(t) for t in tags})
         self._session.execute(
@@ -61,26 +74,32 @@ class TransactionTagRepository:
                 TransactionTag.transaction_id == transaction_id,
             )
         )
-        for tag in normalised:
+        for name in normalised:
+            tag = self._tags.get_or_create_by_name(name)
             self._session.add(
                 TransactionTag(
                     household_id=self._household_id,
                     transaction_id=transaction_id,
-                    tag=tag,
+                    tag_id=tag.id,
                 )
             )
         return normalised
 
     def list_tags(self, transaction_id: UUID) -> list[str]:
-        """Return the transaction's tags in sorted order (alphabetical)."""
+        """Return the transaction's tag *names* in sorted order."""
         rows = (
             self._session.execute(
-                select(TransactionTag.tag)
+                select(Tag.name)
+                .join(
+                    TransactionTag,
+                    (TransactionTag.household_id == Tag.household_id)
+                    & (TransactionTag.tag_id == Tag.id),
+                )
                 .where(
                     TransactionTag.household_id == self._household_id,
                     TransactionTag.transaction_id == transaction_id,
                 )
-                .order_by(TransactionTag.tag)
+                .order_by(Tag.name)
             )
             .scalars()
             .all()
@@ -88,40 +107,44 @@ class TransactionTagRepository:
         return list(rows)
 
     def list_tags_for_transactions(self, transaction_ids: list[UUID]) -> dict[UUID, list[str]]:
-        """Batch lookup: return ``{tx_id: [tag, …]}`` for a list of transactions.
-
-        Used by the list-endpoint render so we don't fire one query per
-        row. Tags are sorted within each transaction.
-        """
+        """Batch lookup: return ``{tx_id: [tag, …]}`` for a list of transactions."""
         if not transaction_ids:
             return {}
         rows = self._session.execute(
-            select(TransactionTag.transaction_id, TransactionTag.tag)
+            select(TransactionTag.transaction_id, Tag.name)
+            .join(
+                Tag,
+                (Tag.household_id == TransactionTag.household_id)
+                & (Tag.id == TransactionTag.tag_id),
+            )
             .where(
                 TransactionTag.household_id == self._household_id,
                 TransactionTag.transaction_id.in_(transaction_ids),
             )
-            .order_by(TransactionTag.transaction_id, TransactionTag.tag)
+            .order_by(TransactionTag.transaction_id, Tag.name)
         ).all()
         by_tx: dict[UUID, list[str]] = {tx_id: [] for tx_id in transaction_ids}
-        for tx_id, tag in rows:
-            by_tx[tx_id].append(tag)
+        for tx_id, name in rows:
+            by_tx[tx_id].append(name)
         return by_tx
 
     def find_transaction_ids_by_tag(self, tag: str) -> list[UUID]:
         """Return the household's transaction ids that carry ``tag``.
 
         Used by ``GET /v1/transactions?tag=foo``. The tag is normalised
-        before lookup so the URL filter is case-insensitive. Hits the
-        ``ix_transaction_tags_household_tag`` index.
+        and resolved to its id, then joined against ``transaction_tags``.
+        Unknown tags return an empty list.
         """
         normalised = normalise_tag(tag)
+        existing = self._tags.get_by_name(normalised)
+        if existing is None:
+            return []
         rows = (
             self._session.execute(
                 select(TransactionTag.transaction_id)
                 .where(
                     TransactionTag.household_id == self._household_id,
-                    TransactionTag.tag == normalised,
+                    TransactionTag.tag_id == existing.id,
                 )
                 .order_by(TransactionTag.transaction_id)
             )
