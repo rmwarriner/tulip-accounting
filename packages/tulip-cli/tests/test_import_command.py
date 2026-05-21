@@ -953,3 +953,93 @@ def test_import_ofx_apply_json_envelope_has_both_halves(authed_session: str) -> 
     assert "applied" in body
     assert body["imported"]["statement_line_count"] == 2
     assert body["applied"]["created_count"] == 2
+
+
+# ---- #443: --auto-create-accounts -----------------------------------------
+
+
+@pytest.mark.integration
+def test_import_qif_auto_create_lands_full_chart(authed_session: str) -> None:
+    """--auto-create-accounts materialises every !Account block + imports.
+
+    Fresh household has no accounts pre-seeded; the multi-account
+    QIF declares Checking / Savings / Credit Card. The auto-create
+    path should land all three plus the import.
+    """
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--auto-create-accounts",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    # Three created accounts surface in the auto-create line.
+    assert "Auto-created 3 account(s)" in combined
+    assert "Checking" in combined
+    assert "Savings" in combined
+    assert "Credit Card" in combined
+    # And the standard per-account summary still renders.
+    assert "[Checking]" in result.stdout
+
+
+@pytest.mark.integration
+def test_import_qif_auto_create_reuses_existing_accounts(authed_session: str) -> None:
+    """Existing accounts (by name, case-insensitive) are reused, not duplicated."""
+    _seed_account(authed_session, name="Checking", code="1110")
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--auto-create-accounts",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    # 2 created (Savings, Credit Card) + 1 reused (Checking).
+    assert "Auto-created 2 account(s)" in result.stdout
+    assert "Reused 1 existing account(s)" in result.stdout
+    assert "Checking" in result.stdout
+
+
+@pytest.mark.integration
+def test_import_qif_auto_create_rejects_with_other_flags(authed_session: str) -> None:
+    """--auto-create-accounts is mutually exclusive with --account/--account-map."""
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--auto-create-accounts",
+        "--account",
+        "1110",
+        api_url=authed_session,
+    )
+    assert result.returncode != 0
+    assert "exactly one of" in (result.stdout + result.stderr).lower()
+
+
+@pytest.mark.integration
+def test_import_qif_auto_create_default_currency_applied(
+    authed_session: str,
+) -> None:
+    """--default-currency feeds the auto-create POST body."""
+    fixture = _OFX_FIXTURES.parent / "qif" / "multi_account.qif"
+    result = _run_cli(
+        "import",
+        "qif",
+        str(fixture),
+        "--auto-create-accounts",
+        "--default-currency",
+        "EUR",
+        api_url=authed_session,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "EUR" in result.stdout
+    # Verify by listing accounts.
+    listing = _run_cli("--json", "accounts", "list", api_url=authed_session)
+    rows = json.loads(listing.stdout)
+    fresh = [r for r in rows if r["name"] in ("Checking", "Savings", "Credit Card")]
+    assert all(r["currency"] == "EUR" for r in fresh)

@@ -361,3 +361,60 @@ class TestClearedField:
         assert lines[3].raw["C"] == "R"
         # Snack: C=* (legacy cleared marker).
         assert lines[4].raw["C"] == "*"
+
+
+# ---- #443: list_account_declarations -----------------------------------
+
+
+class TestListAccountDeclarations:
+    def test_returns_empty_for_no_account_blocks(self):
+        from tulip_importers.qif import list_account_declarations
+
+        qif = b"!Type:Bank\nD2026-05-01\nT100\n^\n"
+        assert list_account_declarations(qif) == []
+
+    def test_extracts_name_and_type(self):
+        from tulip_importers.qif import (
+            QifAccountDeclaration,
+            list_account_declarations,
+        )
+
+        qif = (
+            b"!Account\nNChecking\nTBank\n^\n"
+            b"!Account\nNVisa\nTCCard\n^\n"
+            b"!Type:Bank\nD2026-05-01\nT100\n^\n"
+        )
+        assert list_account_declarations(qif) == [
+            QifAccountDeclaration(name="Checking", qif_type="Bank"),
+            QifAccountDeclaration(name="Visa", qif_type="CCard"),
+        ]
+
+    def test_deduplicates_by_name(self):
+        from tulip_importers.qif import list_account_declarations
+
+        qif = (
+            b"!Account\nNChecking\nTBank\n^\n"
+            b"!Type:Bank\nD2026-05-01\nT100\n^\n"
+            b"!Account\nNChecking\nTBank\n^\n"
+            b"!Type:Bank\nD2026-06-01\nT200\n^\n"
+        )
+        declarations = list_account_declarations(qif)
+        assert len(declarations) == 1
+        assert declarations[0].name == "Checking"
+
+    def test_handles_missing_type_line(self):
+        """T line is optional in some exports; record with empty qif_type."""
+        from tulip_importers.qif import list_account_declarations
+
+        qif = b"!Account\nNOpening Balances\n^\n"
+        decls = list_account_declarations(qif)
+        assert len(decls) == 1
+        assert decls[0].name == "Opening Balances"
+        assert decls[0].qif_type == ""
+
+    def test_preserves_first_seen_order(self):
+        from tulip_importers.qif import list_account_declarations
+
+        qif = b"!Account\nNZ\nTBank\n^\n!Account\nNA\nTCCard\n^\n!Account\nNM\nTInvst\n^\n"
+        names = [d.name for d in list_account_declarations(qif)]
+        assert names == ["Z", "A", "M"]

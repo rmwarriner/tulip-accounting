@@ -2,7 +2,9 @@
 
 from tulip_importers.qif.parser import (
     QifAccountChunk,
+    QifAccountDeclaration,
     QifParseError,
+    list_account_declarations,
     parse,
     split_accounts,
     transfer_target,
@@ -10,7 +12,9 @@ from tulip_importers.qif.parser import (
 
 __all__ = [
     "QifAccountChunk",
+    "QifAccountDeclaration",
     "QifParseError",
+    "list_account_declarations",
     "parse",
     "split_accounts",
     "transfer_target",

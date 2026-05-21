@@ -696,6 +696,142 @@ def apply_import(
     )
 
 
+# QIF !Account ``T`` token → (Tulip type, suggested subtype). Unknown
+# tokens fall back to ``("asset", None)`` with a warning surfaced in
+# the auto-create plan.
+_QIF_TYPE_MAP: dict[str, tuple[str, str | None]] = {
+    "Bank": ("asset", "bank"),
+    "Cash": ("asset", "cash"),
+    "Invst": ("asset", "investment"),
+    "Port": ("asset", "investment"),
+    "401k/403B": ("asset", "retirement"),
+    "Oth A": ("asset", None),
+    "CCard": ("liability", "credit_card"),
+    "Oth L": ("liability", None),
+}
+
+
+def _tulip_type_for_qif(qif_type: str) -> tuple[str, str | None, bool]:
+    """Return ``(tulip_type, subtype, was_unknown)`` for a QIF type token (#443).
+
+    Unknown tokens collapse to ``asset`` with no subtype but the
+    boolean flag lets the caller surface a warning so the operator
+    can verify before applying.
+    """
+    if qif_type in _QIF_TYPE_MAP:
+        t, s = _QIF_TYPE_MAP[qif_type]
+        return t, s, False
+    return "asset", None, True
+
+
+def _import_qif_with_auto_create(
+    *,
+    config: Config,
+    as_json: bool,
+    file_path: Path,
+    raw_bytes: bytes,
+    default_currency: str,
+) -> None:
+    """Scan the QIF locally, materialise missing accounts, then import (#443).
+
+    Walks the file's ``!Account`` declarations, maps each QIF type
+    token to a Tulip type + subtype, and POSTs any name that
+    doesn't already exist in this household's chart. Existing
+    accounts (matched by name, case-insensitive) are reused. The
+    resulting ``{qif_name: account_id}`` map then drives the
+    standard multi-account import path.
+    """
+    from tulip_cli._qif_accounts import list_account_declarations
+
+    declarations = list_account_declarations(raw_bytes)
+    if not declarations:
+        raise typer.BadParameter(
+            f"--auto-create-accounts found no !Account blocks in {file_path}; "
+            "the file is a single-account QIF with no header — pass --account "
+            "instead, or add an !Account block on top."
+        )
+
+    created: list[str] = []
+    reused: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            existing = client.get("/v1/accounts", authenticated=True).json()
+            by_name: dict[str, dict[str, Any]] = {}
+            for row in existing:
+                name = str(row.get("name", "")).strip()
+                if name:
+                    # Case-insensitive lookup; first-seen wins on dupes
+                    # (the API forbids reuse, but be defensive).
+                    by_name.setdefault(name.casefold(), row)
+
+            resolved: dict[str, str] = {}
+            for decl in declarations:
+                key = decl.name.casefold()
+                if key in by_name:
+                    resolved[decl.name] = str(by_name[key]["id"])
+                    reused.append(decl.name)
+                    continue
+                tulip_type, subtype, unknown = _tulip_type_for_qif(decl.qif_type)
+                if unknown:
+                    warnings.append(
+                        f"unknown QIF type {decl.qif_type!r} for {decl.name!r}; defaulting to asset"
+                    )
+                body: dict[str, Any] = {
+                    "name": decl.name,
+                    "type": tulip_type,
+                    "currency": default_currency,
+                    "visibility": "shared",
+                }
+                if subtype:
+                    body["subtype"] = subtype
+                response = client.post("/v1/accounts", json=body, authenticated=True)
+                row = response.json()
+                resolved[decl.name] = str(row["id"])
+                # Add to the lookup so a re-declared name on a later
+                # iteration matches the just-created row.
+                by_name[key] = row
+                created.append(decl.name)
+
+            # Now run the standard multi-account import with the
+            # resolved map.
+            import_response = client.post_multipart(
+                "/v1/imports/multi-account",
+                files={"file": (file_path.name, raw_bytes, "application/qif")},
+                data={"account_map": json.dumps(resolved)},
+                authenticated=True,
+            )
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+    body = dict(import_response.json())
+    if as_json:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "auto_created": created,
+                    "reused": reused,
+                    "warnings": warnings,
+                    "imported": body,
+                }
+            )
+            + "\n"
+        )
+        return
+
+    if created:
+        typer.echo(
+            f"Auto-created {len(created)} account(s) in {default_currency}: " + ", ".join(created)
+        )
+    if reused:
+        typer.echo(f"Reused {len(reused)} existing account(s): " + ", ".join(reused))
+    for warning in warnings:
+        typer.echo(f"  warning: {warning}", err=True)
+    _render_multi_account_summary(body, {v: k for k, v in resolved.items()})
+
+
 def _load_account_map(path: Path) -> dict[str, str]:
     """Load + validate a JSON account-map file: ``{qif name: account id/code}``.
 
@@ -815,6 +951,34 @@ def import_qif(
             readable=True,
         ),
     ] = None,
+    auto_create_accounts: Annotated[
+        bool,
+        typer.Option(
+            "--auto-create-accounts",
+            help=(
+                "Auto-create any QIF !Account block that doesn't already exist "
+                "in this household's chart (#443). Useful for landing a fresh "
+                "QIF export into an empty tulip without hand-building an "
+                "--account-map. Existing accounts (matched by name, case-"
+                "insensitive) are reused. QIF type tokens map to Tulip type + "
+                "subtype: Bank → asset/bank, CCard → liability/credit_card, "
+                "Invst → asset/investment, etc. Currency defaults to USD; "
+                "override with --default-currency. Mutually exclusive with "
+                "--account and --account-map."
+            ),
+        ),
+    ] = False,
+    default_currency: Annotated[
+        str,
+        typer.Option(
+            "--default-currency",
+            help=(
+                "Currency for auto-created accounts (#443). QIF doesn't "
+                "carry currency, so each !Account block we create lands in "
+                "this ISO code. Only meaningful with --auto-create-accounts."
+            ),
+        ),
+    ] = "USD",
     apply: Annotated[
         bool,
         typer.Option(
@@ -850,13 +1014,21 @@ def import_qif(
     each account. Running ``--account`` against a multi-account file
     prints a copy-pasteable starter map.
     """
-    if account is not None and account_map is not None:
-        raise typer.BadParameter("pass --account OR --account-map, not both")
-    if account is None and account_map is None:
+    # Validate the three account-strategy flags are mutually exclusive
+    # and at least one was passed. --auto-create-accounts is the #443
+    # auto-mapping path.
+    chosen = sum(
+        1
+        for chosen_flag in (account is not None, account_map is not None, auto_create_accounts)
+        if chosen_flag
+    )
+    if chosen == 0:
+        raise typer.BadParameter("pass --account, --account-map, or --auto-create-accounts")
+    if chosen > 1:
         raise typer.BadParameter(
-            "pass --account (single-account QIF) or --account-map (multi-account QIF)"
+            "pass exactly one of --account / --account-map / --auto-create-accounts"
         )
-    if apply and account_map is not None:
+    if apply and (account_map is not None or auto_create_accounts):
         raise typer.BadParameter(
             "--apply is single-account-QIF only; use `tulip imports apply <BATCH_ID>` "
             "per batch returned from a multi-account import"
@@ -865,6 +1037,16 @@ def import_qif(
     config: Config = ctx.obj["config"]
     as_json: bool = ctx.obj["json"]
     raw_bytes = file_path.read_bytes()
+
+    if auto_create_accounts:
+        _import_qif_with_auto_create(
+            config=config,
+            as_json=as_json,
+            file_path=file_path,
+            raw_bytes=raw_bytes,
+            default_currency=default_currency,
+        )
+        return
 
     if account is not None:
         # Single-account path. Intercept the multi-account rejection so we

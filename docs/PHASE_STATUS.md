@@ -1824,6 +1824,41 @@ mutations that makes the TUI a daily driver, in dependency order.
 ADR-0007 amended under "Status update mechanism" recording the
 scope extension.
 
+#### QIF importer — `--auto-create-accounts` — ✅ *(2026-05-21)*
+
+Per [#443](https://github.com/rmwarriner/tulip-accounting/issues/443). New `tulip imports qif
+--auto-create-accounts FILE` flag. For households landing a
+multi-year history straight into a fresh tulip (the post-
+GnuCash-import shape, #432), the old `--account-map` JSON
+workflow was busywork — the QIF file already declares every
+account it touches in its `!Account` blocks.
+
+The new flag scans the QIF locally (`tulip_cli._qif_accounts`,
+a small CLI-local mirror of the server-side scanner since
+ARCHITECTURE.md §9 forbids importing `tulip_importers` from
+`tulip-cli`), then for each declared account:
+
+- If a matching account exists (by name, case-insensitive) →
+  reuse it.
+- Else POST `/v1/accounts` with the QIF type token mapped to a
+  Tulip type + subtype (`Bank` → asset/bank, `CCard` →
+  liability/credit_card, `Invst` → asset/investment, `401k/403B`
+  → asset/retirement, `Oth A` → asset, `Oth L` → liability,
+  `Cash` → asset/cash). Unknown tokens collapse to `asset`
+  with a warning. Currency defaults to USD; `--default-currency
+  EUR` etc. overrides.
+
+The auto-built map then drives the standard multi-account
+import path. Single-account QIFs without an `!Account` block
+are rejected with guidance to use `--account` instead.
+
+Mutually exclusive with `--account` / `--account-map`. Unblocks
+the single-step QIF migration: one CLI call lands the chart +
+every batch.
+
+4 CLI integration tests + 5 pure-parser tests on both the CLI
+and importer copies of the scanner.
+
 #### GnuCash CSV account-tree import — ✅ *(2026-05-20)*
 
 Per [#432](https://github.com/rmwarriner/tulip-accounting/issues/432). New `tulip accounts import-gnucash
