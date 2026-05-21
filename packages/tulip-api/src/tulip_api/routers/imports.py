@@ -74,11 +74,13 @@ from tulip_api.services.import_apply import (
     LineAlreadyPromotedError,
     LineExcludedError,
     PlaceholderAccountError,
+    _get_or_create_imbalance_account,
     apply_batch,
     promote_statement_line,
     serialize_parsed_line_raw_json,
 )
 from tulip_api.services.qif_multi_account import pair_transfers
+from tulip_core.money import Money
 from tulip_core.reconciliation.categorizer import get_categorizer
 from tulip_core.transactions import Posting as DomainPosting
 from tulip_core.transactions import Transaction as DomainTransaction
@@ -537,7 +539,7 @@ async def upload_multi_account_qif(
             ) from exc
 
     # Match reciprocal cross-account transfer legs.
-    pairs, warnings = pair_transfers(parsed_by_account, name_to_uuid)
+    pairs, unpaired_legs, warnings = pair_transfers(parsed_by_account, name_to_uuid)
 
     # Attachment + per-account dedup. The attachment covers the whole file;
     # re-importing it is a duplicate for every account it touches.
@@ -655,11 +657,49 @@ async def upload_multi_account_qif(
         line_repo.mark_promoted(from_sl.id, tx.id)
         line_repo.mark_promoted(to_sl.id, tx.id)
 
+    # Unpaired transfer legs — plug with Imbalance:Unknown so the
+    # household lands balanced from the start (#448). Operator re-
+    # targets during reconciliation. Same shape as paired transfers
+    # (one balanced PENDING transaction per leg), the only difference
+    # being the counter-posting account.
+    for leg in unpaired_legs:
+        imbalance = _get_or_create_imbalance_account(
+            session=session,
+            household_id=claims.household_id,
+            currency=leg.line.amount.currency,
+            actor_user_id=claims.user_id,
+        )
+        line = leg.line
+        domain_tx = DomainTransaction(
+            id=uuid4(),
+            household_id=claims.household_id,
+            date=line.posted_date,
+            description=line.description,
+            postings=(
+                DomainPosting(
+                    id=uuid4(),
+                    account_id=name_to_uuid[leg.account],
+                    amount=line.amount,
+                ),
+                DomainPosting(
+                    id=uuid4(),
+                    account_id=imbalance.id,
+                    amount=Money(-line.amount.amount, line.amount.currency),
+                ),
+            ),
+            status=DomainTxStatus.PENDING,
+            created_by_user_id=claims.user_id,
+        )
+        tx = tx_repo.save_balanced(domain_tx, imported_from_id=batches[leg.account].id)
+        sl = line_index[(leg.account, line.line_number)]
+        line_repo.mark_promoted(sl.id, tx.id)
+
     session.commit()
     log.info(
         "import.multi_account.created",
         batch_count=len(chunks),
         transfer_count=len(pairs),
+        unpaired_count=len(unpaired_legs),
         warning_count=len(warnings),
     )
 

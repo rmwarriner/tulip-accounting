@@ -44,7 +44,7 @@ def test_reciprocal_legs_pair() -> None:
         "Checking": [_line(1, "-200.00", target="Savings")],
         "Savings": [_line(1, "200.00", target="Checking")],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert warnings == []
     assert len(pairs) == 1
     pair = pairs[0]
@@ -61,7 +61,7 @@ def test_orientation_is_independent_of_account_order() -> None:
         "Savings": [_line(1, "200.00", target="Checking")],
         "Checking": [_line(1, "-200.00", target="Savings")],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert warnings == []
     assert [(p.from_account, p.to_account) for p in pairs] == [("Checking", "Savings")]
 
@@ -71,7 +71,7 @@ def test_leg_with_no_reciprocal_warns_and_is_not_paired() -> None:
         "Checking": [_line(1, "-200.00", target="Savings")],
         "Savings": [_line(1, "50.00", target=None)],  # plain deposit, not a transfer
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert pairs == []
     assert len(warnings) == 1
     assert "no matching reciprocal" in warnings[0]
@@ -80,10 +80,35 @@ def test_leg_with_no_reciprocal_warns_and_is_not_paired() -> None:
 
 def test_transfer_to_unmapped_account_warns() -> None:
     parsed = {"Checking": [_line(1, "-200.00", target="Brokerage")]}
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert pairs == []
     assert len(warnings) == 1
     assert "unmapped account 'Brokerage'" in warnings[0]
+
+
+def test_unpaired_leg_surfaces_in_unpaired_list_for_imbalance_plug() -> None:
+    """#448: unpaired transfer legs are returned so the upload handler
+    can plug them with Imbalance:Unknown."""
+    parsed = {
+        "Checking": [_line(1, "-200.00", target="Savings")],
+        "Savings": [_line(1, "50.00", target=None)],  # not a reciprocal
+    }
+    pairs, unpaired, _warnings = pair_transfers(parsed, _MAP)
+    assert pairs == []
+    assert len(unpaired) == 1
+    assert unpaired[0].account == "Checking"
+    assert unpaired[0].target == "Savings"
+    assert unpaired[0].line.line_number == 1
+
+
+def test_unmapped_target_also_surfaces_as_unpaired() -> None:
+    """A leg whose target isn't in account_map also lands in the
+    unpaired list — same Imbalance:Unknown plug pattern."""
+    parsed = {"Checking": [_line(1, "-200.00", target="Brokerage")]}
+    _pairs, unpaired, _warnings = pair_transfers(parsed, _MAP)
+    assert len(unpaired) == 1
+    assert unpaired[0].account == "Checking"
+    assert unpaired[0].target == "Brokerage"
 
 
 def test_non_transfer_lines_are_ignored() -> None:
@@ -103,7 +128,7 @@ def test_non_transfer_lines_are_ignored() -> None:
         ],
         "Savings": [_line(1, "50.00", target=None)],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert pairs == []
     assert warnings == []
 
@@ -115,7 +140,7 @@ def test_cross_currency_legs_do_not_pair() -> None:
         "Checking": [_line(1, "-200.00", target="Savings", currency="USD")],
         "Savings": [_line(1, "200.00", target="Checking", currency="EUR")],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert pairs == []
     assert len(warnings) == 2
 
@@ -125,7 +150,7 @@ def test_date_mismatch_does_not_pair() -> None:
         "Checking": [_line(1, "-200.00", target="Savings", on=date(2026, 1, 10))],
         "Savings": [_line(1, "200.00", target="Checking", on=date(2026, 1, 12))],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert pairs == []
     assert len(warnings) == 2
 
@@ -141,6 +166,6 @@ def test_two_transfers_same_amount_pair_greedily() -> None:
             _line(2, "200.00", target="Checking"),
         ],
     }
-    pairs, warnings = pair_transfers(parsed, _MAP)
+    pairs, _unpaired, warnings = pair_transfers(parsed, _MAP)
     assert warnings == []
     assert len(pairs) == 2
