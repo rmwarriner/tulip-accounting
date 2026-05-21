@@ -42,10 +42,27 @@ class TransferPair:
     to_line: ParsedStatementLine
 
 
+@dataclass(frozen=True, slots=True)
+class UnpairedTransferLeg:
+    """A QIF transfer leg with no matching reciprocal in the same upload (#448).
+
+    Banktivity sometimes exports only one side of a transfer (e.g.
+    the 401(k) employer-side records reference ``L[Checking]`` but
+    Checking's QIF doesn't have a reciprocal). The upload handler
+    lands these as balanced PENDING transactions with an
+    ``Imbalance:Unknown`` plug on the counter-posting side; the
+    operator re-pairs during reconciliation.
+    """
+
+    account: str
+    target: str
+    line: ParsedStatementLine
+
+
 def pair_transfers(
     parsed_by_account: dict[str, list[ParsedStatementLine]],
     account_map: dict[str, UUID],
-) -> tuple[list[TransferPair], list[str]]:
+) -> tuple[list[TransferPair], list[UnpairedTransferLeg], list[str]]:
     """Match reciprocal QIF transfer legs across the imported accounts.
 
     Two legs pair when they are reciprocal: ``A → B`` for ``-X`` on date
@@ -54,14 +71,21 @@ def pair_transfers(
     greedy — the first eligible reciprocal wins — which is correct for
     QIF exports, where a transfer's two legs are exact mirrors.
 
-    Returns ``(pairs, warnings)``. Each warning names a leg that could
-    not be paired (unmapped target, or no reciprocal); the caller lands
-    those as ordinary one-sided statement lines.
+    Returns ``(pairs, unpaired_legs, warnings)``:
+
+    - ``pairs`` — matched reciprocals; caller turns each into one
+      balanced PENDING tx at upload time.
+    - ``unpaired_legs`` — transfer legs whose counterpart wasn't in
+      the upload (#448). Caller plugs each with ``Imbalance:Unknown``
+      so the household lands balanced from the start.
+    - ``warnings`` — operator-facing messages describing each
+      unpaired leg (or unmapped target).
     """
     # Collect every transfer leg as (account, target, line). Non-transfer
     # records and legs pointing at an unmapped account are skipped here —
     # the latter with a warning, since the user probably meant to map it.
     legs: list[tuple[str, str, ParsedStatementLine]] = []
+    unpaired: list[UnpairedTransferLeg] = []
     warnings: list[str] = []
     for account, lines in parsed_by_account.items():
         for line in lines:
@@ -69,9 +93,15 @@ def pair_transfers(
             if target is None:
                 continue  # ordinary record — becomes a normal statement line
             if target not in account_map:
+                # The target account isn't in this upload. We still want
+                # the leg to land as a balanced tx, so plug with
+                # Imbalance:Unknown via the unpaired path (#448).
+                unpaired.append(UnpairedTransferLeg(account, target, line))
                 warnings.append(
-                    f"{account!r} line {line.line_number}: transfer to unmapped "
-                    f"account {target!r} — landed as a one-sided line."
+                    f"{account!r} line {line.line_number}: transfer to "
+                    f"unmapped account {target!r} — landed with "
+                    "Imbalance:Unknown plug; re-target during "
+                    "reconciliation."
                 )
                 continue
             legs.append((account, target, line))
@@ -95,9 +125,12 @@ def pair_transfers(
                 partner_idx = j
                 break
         if partner_idx is None:
+            unpaired.append(UnpairedTransferLeg(acct_a, target_b, line_a))
             warnings.append(
-                f"{acct_a!r} line {line_a.line_number}: transfer to {target_b!r} "
-                f"has no matching reciprocal leg — landed as a one-sided line."
+                f"{acct_a!r} line {line_a.line_number}: transfer to "
+                f"{target_b!r} has no matching reciprocal leg — landed "
+                "with Imbalance:Unknown plug; re-target during "
+                "reconciliation."
             )
             continue
         consumed.add(i)
@@ -108,4 +141,4 @@ def pair_transfers(
             pairs.append(TransferPair(acct_a, target_b, line_a, line_b))
         else:
             pairs.append(TransferPair(target_b, acct_a, line_b, line_a))
-    return pairs, warnings
+    return pairs, unpaired, warnings

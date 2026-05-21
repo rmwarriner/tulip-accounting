@@ -488,14 +488,21 @@ class TestUploadMultiAccountQif:
             )
             assert len(promoted) == 2
 
-    def test_unpaired_transfer_leg_falls_back_with_warning(
+    def test_unpaired_transfer_leg_plugs_with_imbalance(
         self,
         client: TestClient,
         auth_h: dict[str, str],
+        session_maker,
     ):
-        # multi_account.qif's Savings leg targets Checking but Checking has
-        # no reciprocal — it lands as a plain line + a warning.
+        """#448: an unpaired transfer leg lands as a balanced PENDING
+        transaction with an Imbalance:Unknown counter-posting. Operator
+        re-targets later via reconciliation."""
         import json
+        from decimal import Decimal
+
+        from sqlalchemy import select
+
+        from tulip_storage.models import Account, Posting, StatementLine, Transaction
 
         checking = self._acct(client, auth_h, "Checking", "1110")
         savings = self._acct(client, auth_h, "Savings", "1200")
@@ -516,7 +523,29 @@ class TestUploadMultiAccountQif:
         body = r.json()
         assert body["transfer_count"] == 0
         assert len(body["warnings"]) == 1
-        assert "no matching reciprocal" in body["warnings"][0]
+        # Warning text reflects the new behaviour.
+        assert "Imbalance:Unknown plug" in body["warnings"][0]
+
+        with session_maker() as s:
+            # Exactly one tx — the unpaired transfer's Imbalance plug.
+            txns = list(s.execute(select(Transaction)).scalars())
+            assert len(txns) == 1
+            postings = list(
+                s.execute(select(Posting).where(Posting.transaction_id == txns[0].id)).scalars()
+            )
+            assert len(postings) == 2
+            # Postings net to zero.
+            assert sum(p.amount for p in postings) == Decimal("0")
+            # One of the postings lands on the auto-created Imbalance acct.
+            imbalance = s.execute(select(Account).where(Account.code == "9999.USD")).scalar_one()
+            assert any(p.account_id == imbalance.id for p in postings)
+            # The source statement line is marked promoted to it.
+            promoted = list(
+                s.execute(
+                    select(StatementLine).where(StatementLine.promoted_transaction_id == txns[0].id)
+                ).scalars()
+            )
+            assert len(promoted) == 1
 
     def test_unmapped_account_is_rejected(
         self,
