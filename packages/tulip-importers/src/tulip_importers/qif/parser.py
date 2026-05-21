@@ -120,6 +120,20 @@ class QifParseError(Exception):
     """The provided bytes could not be parsed as QIF."""
 
 
+def _split_category_and_tags(value: str) -> tuple[str, tuple[str, ...]]:
+    """Split a Banktivity-style ``<category>/<tag>:<tag>...`` field (#447).
+
+    The category is everything up to the first ``/``; tags are the
+    colon-delimited list after it. Empty tags are dropped. Returns
+    the bare value (no slash) as ``(value, ())``.
+    """
+    if "/" not in value:
+        return value, ()
+    category, _, tag_string = value.partition("/")
+    tags = tuple(t for t in (s.strip() for s in tag_string.split(":")) if t)
+    return category, tags
+
+
 @dataclass(slots=True)
 class _Split:
     """One ``S`` / ``$`` / ``E`` triple inside a split QIF record."""
@@ -130,6 +144,7 @@ class _Split:
     category: str
     amount_str: str | None = None
     memo: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -148,6 +163,10 @@ class _RecordBuilder:
     #: Banktivity emits the split memo before the split category; the
     #: next ``S`` claims this and clears it. None when no pending memo.
     pending_split_memo: str | None = None
+    #: Tags extracted from the ``L`` line's ``<category>/<tag>:<tag>``
+    #: suffix (#447). Non-split records get them; split records
+    #: typically carry tags per-S line instead.
+    line_tags: tuple[str, ...] = ()
 
     def has_any_field(self) -> bool:
         return bool(
@@ -260,6 +279,7 @@ def _finalize_split_record(
                 amount=Money(split_amount, currency),
                 category=split.category,
                 memo=split.memo,
+                tags=split.tags,
             )
         )
 
@@ -272,6 +292,16 @@ def _finalize_split_record(
         )
 
     description = _compose_description(rec.payee, rec.memo)
+    # #447: the line-level tags union of every split's tags + any L-line
+    # tags. We dedup but preserve first-seen order for deterministic test
+    # output.
+    seen: set[str] = set()
+    line_tags: list[str] = []
+    for source in (rec.line_tags, *(s.tags for s in parsed_splits)):
+        for t in source:
+            if t not in seen:
+                seen.add(t)
+                line_tags.append(t)
     return [
         ParsedStatementLine(
             line_number=start_line_number,
@@ -282,6 +312,7 @@ def _finalize_split_record(
             reference=rec.reference,
             raw=base_raw,
             splits=tuple(parsed_splits),
+            tags=tuple(line_tags),
         )
     ]
 
@@ -329,6 +360,7 @@ def _finalize_record(
             counterparty=(rec.payee or None) if rec.payee else None,
             reference=rec.reference,
             raw=raw,
+            tags=rec.line_tags,
         )
     ]
 
@@ -475,10 +507,16 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
             # *before* the ``S<category>`` for that split; if a memo is
             # pending we claim it here. Standalone ``S`` lines (no memo)
             # also work — the split just lands with memo=None.
+            #
+            # #447: ``S`` values can also carry Banktivity-style tags
+            # as ``<category>/<tag>:<tag>``. Strip them off before
+            # storing the category; the tags ride along on the split.
+            split_category, split_tags = _split_category_and_tags(value)
             split = _Split(
                 opened_at=source_line_number,
-                category=value,
+                category=split_category,
                 memo=rec.pending_split_memo,
+                tags=split_tags,
             )
             rec.pending_split_memo = None
             rec.splits.append(split)
@@ -530,10 +568,19 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
         elif code == "N":
             rec.reference = value.strip() or None
             rec.raw[code] = value
+        elif code == "L":
+            # #447: ``L`` can carry a tag suffix
+            # (``<category>/<tag>:<tag>...``) for non-split records.
+            # Strip the suffix before storing — transfer_target reads
+            # raw["L"] looking for ``[Account]`` brackets and would
+            # mis-parse a trailing tag list. Tags ride on the record.
+            l_category, l_tags = _split_category_and_tags(value)
+            rec.raw[code] = l_category
+            if l_tags:
+                rec.line_tags = tuple(rec.line_tags) + l_tags
         else:
-            # Other codes (C cleared status, A address, L category, etc.)
-            # are stashed in `raw` but don't drive ParsedStatementLine
-            # fields directly.
+            # Other codes (C cleared status, A address, etc.) are stashed
+            # in `raw` but don't drive ParsedStatementLine fields directly.
             rec.raw[code] = value
 
     # Trailing record without `^` (rare but legal in some emitters):

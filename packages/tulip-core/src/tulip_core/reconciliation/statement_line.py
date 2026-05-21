@@ -81,6 +81,7 @@ class ParsedSplit:
     amount: Money
     category: str
     memo: str | None = None
+    tags: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
         """Reject empty category strings."""
@@ -116,6 +117,7 @@ class ParsedStatementLine:
     reference: str | None = field(default=None)
     fitid: str | None = field(default=None)
     splits: tuple[ParsedSplit, ...] = field(default=())
+    tags: tuple[str, ...] = field(default=())
 
     def __post_init__(self) -> None:
         """Validate invariants and freeze the ``raw`` dict against later mutation."""

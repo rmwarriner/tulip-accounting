@@ -86,15 +86,16 @@ _IMBALANCE_CODE_PREFIX = "9999"  # 9999.<CURRENCY>, e.g. 9999.USD
 # reserved double-underscore prefix avoids collision with any
 # format-native field name on the ``raw`` side.
 _RAW_JSON_SPLITS_KEY = "__splits__"
+_RAW_JSON_TAGS_KEY = "__tags__"
 
 
 def serialize_parsed_line_raw_json(parsed: ParsedStatementLine) -> str:
-    """Serialize a parsed line's ``raw`` + ``splits`` for ``statement_lines.raw_json`` (#297).
+    """Serialize a parsed line for ``statement_lines.raw_json`` (#297 + #447).
 
-    Single chokepoint so the QIF, OFX, CSV upload paths all use the
-    same envelope. Lines with no splits get a minimal ``{"raw": {...}}``
-    blob (proper JSON, not the legacy ``str(dict)`` repr — old format
-    was never parsed back, see #297).
+    Single chokepoint so every importer uses the same envelope. Lines
+    with no splits / no tags get the minimal ``{"raw": {...}}`` blob.
+    The ``__tags__`` key stores the per-split tags inline on each
+    split entry; the line-level union lives at the envelope top.
     """
     payload: dict[str, object] = {"raw": dict(parsed.raw)}
     if parsed.splits:
@@ -104,10 +105,27 @@ def serialize_parsed_line_raw_json(parsed: ParsedStatementLine) -> str:
                 "currency": s.amount.currency,
                 "category": s.category,
                 "memo": s.memo,
+                "tags": list(s.tags),
             }
             for s in parsed.splits
         ]
+    if parsed.tags:
+        payload[_RAW_JSON_TAGS_KEY] = list(parsed.tags)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _extract_line_tags_from_raw_json(raw_json: str) -> tuple[str, ...]:
+    """Read the line-level tag tuple from a persisted ``raw_json`` blob (#447)."""
+    try:
+        payload = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    raw_tags = payload.get(_RAW_JSON_TAGS_KEY)
+    if not isinstance(raw_tags, list):
+        return ()
+    return tuple(t for t in raw_tags if isinstance(t, str) and t)
 
 
 def _extract_qif_cleared_status_from_raw_json(raw_json: str) -> DomainTxStatus | None:
@@ -184,7 +202,11 @@ def _extract_splits_from_raw_json(raw_json: str, *, currency: str) -> tuple[Pars
             amount = Money(Decimal(str(amount_str)), split_currency)
         except (ValueError, TypeError):
             return ()
-        out.append(ParsedSplit(amount=amount, category=category, memo=memo))
+        raw_tags = entry.get("tags") or []
+        tags: tuple[str, ...] = ()
+        if isinstance(raw_tags, list):
+            tags = tuple(t for t in raw_tags if isinstance(t, str) and t)
+        out.append(ParsedSplit(amount=amount, category=category, memo=memo, tags=tags))
     return tuple(out)
 
 
@@ -412,6 +434,13 @@ async def promote_statement_line(
         tx = TransactionRepository(session, household_id).save_balanced(
             domain_tx, imported_from_id=batch.id
         )
+        _apply_qif_tags_from_raw_json(
+            session=session,
+            household_id=household_id,
+            transaction_id=tx.id,
+            line_raw_json=line.raw_json,
+            splits=splits,
+        )
         StatementLineRepository(session, household_id).mark_promoted(line.id, tx.id)
         return tx
 
@@ -461,8 +490,56 @@ async def promote_statement_line(
     tx = TransactionRepository(session, household_id).save_balanced(
         domain_tx, imported_from_id=batch.id
     )
+    _apply_qif_tags_from_raw_json(
+        session=session,
+        household_id=household_id,
+        transaction_id=tx.id,
+        line_raw_json=line.raw_json,
+        splits=(),
+    )
     StatementLineRepository(session, household_id).mark_promoted(line.id, tx.id)
     return tx
+
+
+def _apply_qif_tags_from_raw_json(
+    *,
+    session: Session,
+    household_id: UUID,
+    transaction_id: UUID,
+    line_raw_json: str,
+    splits: tuple[ParsedSplit, ...],
+) -> None:
+    """Apply QIF tags to the newly-created transaction (#447).
+
+    The line-level tags (L-line suffix + per-split union) land on
+    ``transaction_tags`` via :class:`TransactionTagRepository`. Each
+    split's individual tags ALSO land on the corresponding posting
+    via :class:`PostingTagRepository` once the schema is in place
+    (PR #451) — but per-posting wiring during apply happens in a
+    follow-up because identifying which posting matches which split
+    requires walking the saved postings. For now the line-level
+    union covers the common case and unblocks the user's Banktivity
+    import.
+    """
+    from tulip_storage.repositories import TransactionTagRepository
+    from tulip_storage.repositories.transaction_tag import TagInvalidError
+
+    line_tags = list(_extract_line_tags_from_raw_json(line_raw_json))
+    seen: set[str] = set(line_tags)
+    for split in splits:
+        for tag in split.tags:
+            if tag not in seen:
+                seen.add(tag)
+                line_tags.append(tag)
+    if not line_tags:
+        return
+    try:
+        TransactionTagRepository(session, household_id).set_tags(transaction_id, line_tags)
+    except TagInvalidError:
+        # Tag character-set is restrictive (#39); QIF tags that don't fit
+        # (e.g. with spaces) are silently dropped rather than failing
+        # the whole import. Operator can re-tag manually if needed.
+        return
 
 
 async def apply_batch(
