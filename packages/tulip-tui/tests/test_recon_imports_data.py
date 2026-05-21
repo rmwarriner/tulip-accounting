@@ -105,6 +105,38 @@ def test_load_reconciliations_handles_empty() -> None:
     assert data.reconciliations == ()
 
 
+def test_load_reconciliations_uses_items_envelope() -> None:
+    """GET /v1/reconciliations returns ``{"items": [...]}`` per
+    ``ReconciliationListResponse``; same envelope bug as the imports
+    loader had (#442). Regression-guard alongside the imports test.
+    """
+    payload = {
+        "items": [
+            {
+                "id": "rec-1",
+                "account_id": "acc-1",
+                "statement_period_start": "2026-05-01",
+                "statement_period_end": "2026-05-31",
+                "statement_starting_balance": "0.00",
+                "statement_ending_balance": "100.00",
+                "currency": "USD",
+                "status": "open",
+                "source_import_batch_id": None,
+                "created_at": "2026-05-21T00:00:00Z",
+                "completed_at": None,
+            }
+        ],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with _build_client(httpx.MockTransport(handler)) as client:
+        data = load_reconciliations(client)
+    assert len(data.reconciliations) == 1
+    assert data.reconciliations[0].id == "rec-1"
+
+
 def test_load_reconciliations_raises_on_error() -> None:
     from tulip_cli.errors import CliError
 
