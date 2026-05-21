@@ -12,6 +12,7 @@ architecture test in tulip-core enforces this.
 """
 
 from tulip_storage.models.account import Account, AccountType
+from tulip_storage.models.account_tag import AccountTag
 from tulip_storage.models.ai_invocation import AICapability, AIInvocation, AIOutcome
 from tulip_storage.models.allocation_pool import AllocationPool, PoolType
 from tulip_storage.models.attachment import Attachment
@@ -40,6 +41,7 @@ from tulip_storage.models.pending_proposal import (
 )
 from tulip_storage.models.period import Period, PeriodStatus
 from tulip_storage.models.posting import Posting
+from tulip_storage.models.posting_tag import PostingTag
 from tulip_storage.models.reconciliation import Reconciliation, ReconciliationStatus
 from tulip_storage.models.reconciliation_match import (
     MatchConfidence,
@@ -70,6 +72,7 @@ __all__ = [
     "AIInvocation",
     "AIOutcome",
     "Account",
+    "AccountTag",
     "AccountType",
     "AllocationPool",
     "Attachment",
@@ -95,6 +98,7 @@ __all__ = [
     "PeriodStatus",
     "PoolType",
     "Posting",
+    "PostingTag",
     "ProposalCreatorKind",
     "ProposalStatus",
     "Reconciliation",

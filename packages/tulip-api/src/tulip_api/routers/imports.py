@@ -33,6 +33,7 @@ from tulip_api.auth.deps import get_current_claims, require_role
 from tulip_api.config import get_settings
 from tulip_api.deps import get_session
 from tulip_api.errors import (
+    FRAMEWORK_BODY_RESPONSES,
     AccountUnknownError,
     CsvProfileNotFoundError,
     ForbiddenError,
@@ -887,6 +888,7 @@ async def promote_line(
     "/{batch_id}/lines/{line_id}",
     response_model=StatementLineRead,
     responses={
+        **FRAMEWORK_BODY_RESPONSES,
         401: problem_response("auth.unauthorized"),
         403: problem_response("auth.forbidden"),
         404: problem_response("import_batch.not_found", "import.line.not_found"),
