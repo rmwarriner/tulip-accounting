@@ -37,9 +37,20 @@ class ImportsData:
 
 
 def load_import_batches(client: TulipClient) -> ImportsData:
-    """Fetch and parse ``/v1/imports``."""
+    """Fetch and parse ``/v1/imports``.
+
+    The API returns ``{"items": [...], "next_cursor": ...}`` (see
+    ``ImportBatchListResponse``); the list endpoint deliberately
+    omits ``error_count`` / ``applied_at`` / ``reverted_at`` to
+    keep the response cheap. We default those to 0 / None so the
+    summary value object stays uniform with the detail loader.
+    """
     raw = client.get("/v1/imports", authenticated=True).json()
-    items = tuple(_to_summary(row) for row in raw)
+    if isinstance(raw, dict):
+        rows = raw.get("items") or []
+    else:
+        rows = raw  # legacy bare-list shape; kept for fixture compat
+    items = tuple(_to_summary(row) for row in rows)
     return ImportsData(batches=items)
 
 

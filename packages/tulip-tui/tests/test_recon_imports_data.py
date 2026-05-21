@@ -128,34 +128,31 @@ def test_load_reconciliations_raises_on_error() -> None:
 # ---- import batches -------------------------------------------------
 
 
-_IMPORTS_PAYLOAD = [
-    {
-        "id": "batch-1",
-        "account_id": "acc-1",
-        "source_format": "ofx",
-        "source_filename": "april.qfx",
-        "status": "applied",
-        "imported_count": 42,
-        "skipped_count": 0,
-        "error_count": 0,
-        "created_at": "2026-05-01T12:00:00Z",
-        "applied_at": "2026-05-01T12:05:00Z",
-        "reverted_at": None,
-    },
-    {
-        "id": "batch-2",
-        "account_id": "acc-2",
-        "source_format": "csv",
-        "source_filename": "visa.csv",
-        "status": "parsed",
-        "imported_count": 0,
-        "skipped_count": 0,
-        "error_count": 0,
-        "created_at": "2026-05-10T09:00:00Z",
-        "applied_at": None,
-        "reverted_at": None,
-    },
-]
+_IMPORTS_PAYLOAD = {
+    "items": [
+        {
+            "id": "batch-1",
+            "account_id": "acc-1",
+            "source_format": "ofx",
+            "source_filename": "april.qfx",
+            "status": "applied",
+            "imported_count": 42,
+            "skipped_count": 0,
+            "created_at": "2026-05-01T12:00:00Z",
+        },
+        {
+            "id": "batch-2",
+            "account_id": "acc-2",
+            "source_format": "csv",
+            "source_filename": "visa.csv",
+            "status": "parsed",
+            "imported_count": 0,
+            "skipped_count": 0,
+            "created_at": "2026-05-10T09:00:00Z",
+        },
+    ],
+    "next_cursor": None,
+}
 
 
 def test_load_import_batches_returns_summary_list() -> None:
@@ -178,9 +175,46 @@ def test_load_import_batches_returns_summary_list() -> None:
 
 
 def test_load_import_batches_handles_empty() -> None:
-    with _build_client(httpx.MockTransport(lambda _r: httpx.Response(200, json=[]))) as client:
+    with _build_client(
+        httpx.MockTransport(lambda _r: httpx.Response(200, json={"items": [], "next_cursor": None}))
+    ) as client:
         data = load_import_batches(client)
     assert data.batches == ()
+
+
+def test_load_import_batches_uses_items_envelope() -> None:
+    """Regression: GET /v1/imports returns ``{"items": [...]}`` per
+    ``ImportBatchListResponse`` — the loader must reach into the
+    envelope, not iterate the response dict's keys (which produced
+    the ``'str' object has no attribute 'get'`` error in the wild).
+    """
+    payload = {
+        "items": [
+            {
+                "id": "b",
+                "account_id": "a",
+                "source_format": "ofx",
+                "source_filename": "x.qfx",
+                "status": "parsed",
+                "imported_count": 1,
+                "skipped_count": 0,
+                "created_at": "2026-05-21T00:00:00Z",
+            }
+        ],
+        "next_cursor": None,
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with _build_client(httpx.MockTransport(handler)) as client:
+        data = load_import_batches(client)
+    assert len(data.batches) == 1
+    assert data.batches[0].id == "b"
+    # Fields the list endpoint deliberately omits — default safely.
+    assert data.batches[0].error_count == 0
+    assert data.batches[0].applied_at is None
+    assert data.batches[0].reverted_at is None
 
 
 def test_load_import_batches_raises_on_error() -> None:
