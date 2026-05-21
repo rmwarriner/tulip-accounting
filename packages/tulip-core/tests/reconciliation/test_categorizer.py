@@ -146,6 +146,20 @@ class TestRegistry:
             ) -> CategorizationResult:
                 return CategorizationResult(account_code="Custom:Account", confidence=0.5)
 
+            async def propose(
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                n: int = 5,
+                session: Any = None,
+            ):
+                from tulip_core.reconciliation.categorizer import (
+                    CategorizationCandidate,
+                )
+
+                return (CategorizationCandidate("Custom:Account", 0.5),)
+
         custom = CustomCategorizer()
         register_categorizer(custom)
         assert get_categorizer() is custom
@@ -158,6 +172,8 @@ class TestRegistry:
             register_categorizer(NotACategorizer())  # type: ignore[arg-type]
 
     def test_re_registration_warns(self):
+        from tulip_core.reconciliation.categorizer import CategorizationCandidate
+
         class CustomA:
             async def categorize(
                 self,
@@ -168,6 +184,16 @@ class TestRegistry:
             ) -> CategorizationResult:
                 return CategorizationResult("A", 1.0)
 
+            async def propose(
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                n: int = 5,
+                session: Any = None,
+            ):
+                return (CategorizationCandidate("A", 1.0),)
+
         class CustomB:
             async def categorize(
                 self,
@@ -177,6 +203,16 @@ class TestRegistry:
                 session: Any = None,
             ) -> CategorizationResult:
                 return CategorizationResult("B", 1.0)
+
+            async def propose(
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                n: int = 5,
+                session: Any = None,
+            ):
+                return (CategorizationCandidate("B", 1.0),)
 
         register_categorizer(CustomA())
         with pytest.warns(UserWarning, match="replac"):
@@ -192,6 +228,20 @@ class TestRegistry:
                 self, line: StatementLine, household_context: HouseholdContext
             ) -> CategorizationResult:
                 return CategorizationResult("x", 1.0)
+
+            async def propose(
+                self,
+                line: StatementLine,
+                household_context: HouseholdContext,
+                *,
+                n: int = 5,
+                session: Any = None,
+            ):
+                from tulip_core.reconciliation.categorizer import (
+                    CategorizationCandidate,
+                )
+
+                return (CategorizationCandidate("x", 1.0),)
 
         with pytest.raises(TypeError, match="async"):
             register_categorizer(SyncCategorizer())  # type: ignore[arg-type]
