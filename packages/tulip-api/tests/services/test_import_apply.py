@@ -1059,6 +1059,60 @@ class TestPromoteWithQifTags:
             tags = TransactionTagRepository(s, setup["household_id"]).list_tags(tx.id)
         assert sorted(tags) == ["tulipdrive", "warranty"]
 
+    @pytest.mark.asyncio
+    async def test_per_split_tags_attach_to_individual_postings(self, session_maker, setup):
+        """#447 follow-up: each split's tags land on its specific posting,
+        not just the union on the parent transaction."""
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-58.99",
+            splits=[
+                {
+                    "amount": "-45.27",
+                    "currency": "USD",
+                    "category": "Needs:Utilities",
+                    "memo": None,
+                    "tags": ["tulipdrive"],
+                },
+                {
+                    "amount": "-13.72",
+                    "currency": "USD",
+                    "category": "Needs:Insurance",
+                    "memo": None,
+                    "tags": ["warranty"],
+                },
+            ],
+        )
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            from tulip_storage.repositories import PostingTagRepository
+
+            # The three postings: bank-side (no tags) + utilities (tulipdrive)
+            # + insurance (warranty).
+            postings = list(s.query(Posting).filter_by(transaction_id=tx.id).all())
+            assert len(postings) == 3
+            repo = PostingTagRepository(s, setup["household_id"])
+            tags_by_posting = repo.list_tags_for_postings([p.id for p in postings])
+            utilities = next(p for p in postings if p.amount == Decimal("45.27"))
+            insurance = next(p for p in postings if p.amount == Decimal("13.72"))
+            bank = next(p for p in postings if p.amount == Decimal("-58.99"))
+            assert tags_by_posting[utilities.id] == ["tulipdrive"]
+            assert tags_by_posting[insurance.id] == ["warranty"]
+            # Bank-side posting carries no per-posting tag (no split it
+            # corresponds to).
+            assert tags_by_posting[bank.id] == []
+
     def _seed_split_line(
         self,
         session_maker,

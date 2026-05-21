@@ -397,6 +397,11 @@ async def promote_statement_line(
                 amount=Money(line.amount, line.currency),
             )
         ]
+        # #447 follow-up: capture each split's posting id so we can
+        # attach the split's tags directly to that posting (not just
+        # the parent transaction). Same ordering as ``splits`` for a
+        # 1:1 zip below.
+        split_posting_ids: list[UUID] = []
         for split in splits:
             # #450: prefer the path-aware resolver so GnuCash-rooted
             # charts (Expenses:Wants:Personal:Gifts) accept Banktivity-
@@ -414,9 +419,11 @@ async def promote_statement_line(
                     currency=line.currency,
                     actor_user_id=actor_user_id,
                 )
+            split_posting_id = uuid4()
+            split_posting_ids.append(split_posting_id)
             postings.append(
                 DomainPosting(
-                    id=uuid4(),
+                    id=split_posting_id,
                     account_id=split_account.id,
                     amount=Money(-split.amount.amount, line.currency),
                     memo=split.memo,
@@ -440,6 +447,12 @@ async def promote_statement_line(
             transaction_id=tx.id,
             line_raw_json=line.raw_json,
             splits=splits,
+        )
+        _apply_qif_posting_tags(
+            session=session,
+            household_id=household_id,
+            splits=splits,
+            split_posting_ids=split_posting_ids,
         )
         StatementLineRepository(session, household_id).mark_promoted(line.id, tx.id)
         return tx
@@ -512,14 +525,9 @@ def _apply_qif_tags_from_raw_json(
     """Apply QIF tags to the newly-created transaction (#447).
 
     The line-level tags (L-line suffix + per-split union) land on
-    ``transaction_tags`` via :class:`TransactionTagRepository`. Each
-    split's individual tags ALSO land on the corresponding posting
-    via :class:`PostingTagRepository` once the schema is in place
-    (PR #451) — but per-posting wiring during apply happens in a
-    follow-up because identifying which posting matches which split
-    requires walking the saved postings. For now the line-level
-    union covers the common case and unblocks the user's Banktivity
-    import.
+    ``transaction_tags`` via :class:`TransactionTagRepository`.
+    The paired :func:`_apply_qif_posting_tags` writes the per-split
+    subset to ``posting_tags`` so per-split attribution survives.
     """
     from tulip_storage.repositories import TransactionTagRepository
     from tulip_storage.repositories.transaction_tag import TagInvalidError
@@ -540,6 +548,41 @@ def _apply_qif_tags_from_raw_json(
         # (e.g. with spaces) are silently dropped rather than failing
         # the whole import. Operator can re-tag manually if needed.
         return
+
+
+def _apply_qif_posting_tags(
+    *,
+    session: Session,
+    household_id: UUID,
+    splits: tuple[ParsedSplit, ...],
+    split_posting_ids: list[UUID],
+) -> None:
+    """Apply each split's tags to its specific posting (#447 follow-up).
+
+    Banktivity emits per-split tags via the ``S<category>/<tag>:<tag>``
+    syntax — semantically those tags describe the split (one line item),
+    not the parent transaction. The transaction-level write in
+    :func:`_apply_qif_tags_from_raw_json` takes the union for cross-
+    cutting reporting (``--tag walter`` finds every walter-touching
+    transaction); this helper writes the per-split subset to
+    ``posting_tags`` so per-posting attribution survives.
+
+    Caller passes ``split_posting_ids`` in the same order as ``splits``.
+    """
+    from tulip_storage.repositories import PostingTagRepository
+    from tulip_storage.repositories.transaction_tag import TagInvalidError
+
+    if not splits or len(splits) != len(split_posting_ids):
+        return
+    repo = PostingTagRepository(session, household_id)
+    for split, posting_id in zip(splits, split_posting_ids, strict=True):
+        if not split.tags:
+            continue
+        try:
+            repo.set_tags(posting_id, list(split.tags))
+        except TagInvalidError:
+            # Match the transaction-level policy: drop malformed silently.
+            continue
 
 
 async def apply_batch(
