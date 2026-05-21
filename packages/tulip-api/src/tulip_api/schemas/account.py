@@ -40,6 +40,16 @@ class AccountCreate(BaseModel):
             "instead. Defaults to false (regular postable account)."
         ),
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional account-level tags (ADR-0009, PR B). Each entry "
+            "is normalised (lowercase, stripped) before storage; "
+            "duplicates collapse. Account tags inherit down to every "
+            "posting on the account at read time (effective_tags, "
+            "PR C)."
+        ),
+    )
     create_parents: bool = Field(
         default=False,
         description=(
@@ -93,6 +103,14 @@ class AccountUpdate(BaseModel):
             "it has direct postings — clean those up first."
         ),
     )
+    tags: list[str] | None = Field(
+        default=None,
+        description=(
+            "Replace the account's tag set (ADR-0009, PR B). Omit to "
+            "leave unchanged; pass an explicit list (including ``[]``) "
+            "to wholesale-replace."
+        ),
+    )
 
 
 class AccountRead(BaseModel):
@@ -108,6 +126,10 @@ class AccountRead(BaseModel):
     is_active: bool
     is_placeholder: bool = False
     parent_account_id: UUID | None
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Tag names attached to this account (ADR-0009).",
+    )
     notes: str | None = Field(
         default=None,
         description=(

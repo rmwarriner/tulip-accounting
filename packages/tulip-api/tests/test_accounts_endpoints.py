@@ -512,3 +512,116 @@ class TestAccountPlaceholder:
         )
         assert r.status_code == 200
         assert r.json()["is_placeholder"] is False
+
+
+# ---- ADR-0009 PR B: account tags --------------------------------------------
+
+
+class TestAccountTags:
+    """Account-level tags via POST + PATCH + GET round-trip."""
+
+    def test_create_with_tags(self, client: TestClient, auth_h: dict[str, str]):
+        r = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Visa",
+                "type": "liability",
+                "currency": "USD",
+                "tags": ["credit-card", "joint"],
+            },
+        )
+        assert r.status_code == 201, r.text
+        # Deduplicated + sorted on read.
+        assert sorted(r.json()["tags"]) == ["credit-card", "joint"]
+
+    def test_patch_replaces_tags(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Visa",
+                "type": "liability",
+                "currency": "USD",
+                "tags": ["a", "b"],
+            },
+        ).json()
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"tags": ["c"]},
+        )
+        assert r.status_code == 200
+        assert r.json()["tags"] == ["c"]
+
+    def test_patch_with_empty_list_clears_tags(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Visa",
+                "type": "liability",
+                "currency": "USD",
+                "tags": ["joint"],
+            },
+        ).json()
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"tags": []},
+        )
+        assert r.status_code == 200
+        assert r.json()["tags"] == []
+
+    def test_patch_without_tags_field_preserves_existing(
+        self, client: TestClient, auth_h: dict[str, str]
+    ):
+        """Omitting ``tags`` from the body leaves the set unchanged."""
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Visa",
+                "type": "liability",
+                "currency": "USD",
+                "tags": ["joint"],
+            },
+        ).json()
+        # PATCH only changing the name.
+        r = client.patch(
+            f"/v1/accounts/{created['id']}",
+            headers=auth_h,
+            json={"name": "Visa Card"},
+        )
+        assert r.status_code == 200
+        assert r.json()["tags"] == ["joint"]
+
+    def test_get_by_id_returns_tags(self, client: TestClient, auth_h: dict[str, str]):
+        created = client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Cash",
+                "type": "asset",
+                "currency": "USD",
+                "tags": ["wallet"],
+            },
+        ).json()
+        r = client.get(f"/v1/accounts/{created['id']}", headers=auth_h)
+        assert r.status_code == 200
+        assert r.json()["tags"] == ["wallet"]
+
+    def test_list_endpoint_returns_tags(self, client: TestClient, auth_h: dict[str, str]):
+        client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={
+                "name": "Cash",
+                "type": "asset",
+                "currency": "USD",
+                "tags": ["wallet"],
+            },
+        )
+        rows = client.get("/v1/accounts", headers=auth_h).json()
+        cash = next(r for r in rows if r["name"] == "Cash")
+        assert cash["tags"] == ["wallet"]

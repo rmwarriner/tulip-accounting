@@ -10,6 +10,7 @@ higher layers (the API) call it on every business mutation.
 """
 
 from tulip_storage.repositories.account import AccountRepository
+from tulip_storage.repositories.account_tag import AccountTagRepository
 from tulip_storage.repositories.ai_invocation import AIInvocationRepository
 from tulip_storage.repositories.allocation_pool import AllocationPoolRepository
 from tulip_storage.repositories.attachment import AttachmentRepository
@@ -21,6 +22,7 @@ from tulip_storage.repositories.import_batch import ImportBatchRepository
 from tulip_storage.repositories.notification import NotificationRepository
 from tulip_storage.repositories.pending_proposal import PendingProposalRepository
 from tulip_storage.repositories.period import PeriodRepository
+from tulip_storage.repositories.posting_tag import PostingTagRepository
 from tulip_storage.repositories.reconciliation import ReconciliationRepository
 from tulip_storage.repositories.reconciliation_match import (
     ReconciliationMatchRepository,
@@ -44,6 +46,7 @@ from tulip_storage.repositories.transaction_tag import (
 __all__ = [
     "AIInvocationRepository",
     "AccountRepository",
+    "AccountTagRepository",
     "AllocationPoolRepository",
     "AttachmentLinkRepository",
     "AttachmentRepository",
@@ -55,6 +58,7 @@ __all__ = [
     "NotificationRepository",
     "PendingProposalRepository",
     "PeriodRepository",
+    "PostingTagRepository",
     "ReconciliationMatchRepository",
     "ReconciliationRepository",
     "ScheduledJobRepository",

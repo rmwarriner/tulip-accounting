@@ -44,7 +44,12 @@ router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
 log = structlog.get_logger("tulip_api.accounts")
 
 
-def _to_read(a: Account, *, notes: str | None = None) -> AccountRead:
+def _to_read(
+    a: Account,
+    *,
+    notes: str | None = None,
+    tags: list[str] | None = None,
+) -> AccountRead:
     return AccountRead(
         id=a.id,
         code=a.code,
@@ -57,6 +62,7 @@ def _to_read(a: Account, *, notes: str | None = None) -> AccountRead:
         is_placeholder=a.is_placeholder,
         parent_account_id=a.parent_account_id,
         notes=notes,
+        tags=tags or [],
     )
 
 
@@ -202,7 +208,14 @@ def list_accounts(
     """List active accounts visible to the caller."""
     repo = AccountRepository(session, claims.household_id)
     rows = [a for a in repo.list_active() if _filter_for_role(a, claims)]
-    return [_to_read(a) for a in rows]
+    # Batch-fetch tags so the list endpoint stays at 2 queries total
+    # (one for accounts, one for the tag join).
+    from tulip_storage.repositories import AccountTagRepository
+
+    tag_map = AccountTagRepository(session, claims.household_id).list_tags_for_accounts(
+        [a.id for a in rows]
+    )
+    return [_to_read(a, tags=tag_map.get(a.id, [])) for a in rows]
 
 
 @router.post(
@@ -285,6 +298,19 @@ def create_account(
         is_placeholder=body.is_placeholder,
         created_by_user_id=claims.user_id,
     )
+    from tulip_storage.repositories import AccountTagRepository
+    from tulip_storage.repositories.transaction_tag import TagInvalidError
+
+    saved_tags: list[str] = []
+    if body.tags:
+        try:
+            saved_tags = AccountTagRepository(session, claims.household_id).set_tags(
+                a.id, list(body.tags)
+            )
+        except TagInvalidError as exc:
+            from tulip_api.errors import TagInvalidError as ApiTagInvalidError
+
+            raise ApiTagInvalidError(reason=str(exc)) from exc
     after_snapshot: dict[str, object] = {
         "name": a.name,
         "type": a.type.value,
@@ -295,6 +321,8 @@ def create_account(
         # column is encrypted at rest precisely because the operator
         # may put PII in there). Boolean signal is enough for the audit.
         after_snapshot["notes_set"] = True
+    if saved_tags:
+        after_snapshot["tags"] = saved_tags
     audit.write(
         action="create",
         actor_kind="user",
@@ -306,7 +334,7 @@ def create_account(
     )
     session.commit()
     log.info("account.created", account_id=str(a.id))
-    return _to_read(a, notes=body.notes)
+    return _to_read(a, notes=body.notes, tags=saved_tags)
 
 
 def _create_with_parents(
@@ -514,7 +542,10 @@ def get_account(
     a = repo.get(account_id)
     if a is None or not _filter_for_role(a, claims):
         raise AccountNotFoundError()
-    return _to_read(a, notes=repo.decrypt_notes(a))
+    from tulip_storage.repositories import AccountTagRepository
+
+    tags = AccountTagRepository(session, claims.household_id).list_tags(a.id)
+    return _to_read(a, notes=repo.decrypt_notes(a), tags=tags)
 
 
 @router.patch(
@@ -618,6 +649,20 @@ def update_account(
                     account_id=str(a.id), posting_count=int(posting_count)
                 )
         a.is_placeholder = body.is_placeholder
+
+    from tulip_storage.repositories import AccountTagRepository
+    from tulip_storage.repositories.transaction_tag import TagInvalidError
+
+    tag_repo = AccountTagRepository(session, claims.household_id)
+    tags_changed = False
+    if body.tags is not None:
+        try:
+            tag_repo.set_tags(a.id, list(body.tags))
+        except TagInvalidError as exc:
+            from tulip_api.errors import TagInvalidError as ApiTagInvalidError
+
+            raise ApiTagInvalidError(reason=str(exc)) from exc
+        tags_changed = True
     session.flush()
 
     after_snapshot: dict[str, object] = {
@@ -628,6 +673,8 @@ def update_account(
     }
     if notes_changed:
         after_snapshot["notes_set"] = a.notes_encrypted is not None
+    if tags_changed:
+        after_snapshot["tags"] = tag_repo.list_tags(a.id)
     AuditLogWriter(session, claims.household_id).write(
         action="update",
         actor_kind="user",
@@ -639,7 +686,7 @@ def update_account(
         request_id=_request_uuid(request),
     )
     session.commit()
-    return _to_read(a, notes=repo.decrypt_notes(a))
+    return _to_read(a, notes=repo.decrypt_notes(a), tags=tag_repo.list_tags(a.id))
 
 
 @router.get(
