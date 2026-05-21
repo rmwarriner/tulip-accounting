@@ -483,12 +483,20 @@ def parse(file_bytes: bytes, *, currency: str) -> list[ParsedStatementLine]:
             rec.pending_split_memo = None
             rec.splits.append(split)
         elif code == "$":
-            if not rec.splits:
-                raise QifParseError(
-                    f"line {source_line_number}: $ split-amount line appeared "
-                    "before any S split-category line"
-                )
-            rec.splits[-1].amount_str = value
+            if rec.splits:
+                # Bank-section ``$`` partners the preceding ``S`` (split
+                # amount). Standard bookkeeping shape.
+                rec.splits[-1].amount_str = value
+            else:
+                # No preceding ``S``: this isn't a split-amount line at
+                # all. Investment sections use ``$`` as the transfer
+                # amount on Cash/MiscInc/MiscExp records that move money
+                # to/from another account via ``L[<account>]``. Banktivity
+                # also emits it on some non-split bank records. Store it
+                # in ``raw`` so downstream code can recover the value;
+                # rejecting outright (the pre-fix behaviour) lost whole
+                # accounts to a single record with an investment shape.
+                rec.raw[code] = value
         elif code == "E":
             # ``E`` is the split memo. Banktivity emits it *before* its
             # ``S<category>`` partner; we buffer it on the record and the
