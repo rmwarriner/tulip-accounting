@@ -16,12 +16,14 @@ mount and on refresh.
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 from typing import ClassVar
 
 from textual.app import App
 from textual.binding import Binding, BindingType
 
 from tulip_tui.data.account_write import AccountDraft
+from tulip_tui.data.ai_categorize import AIProposalCandidate
 from tulip_tui.data.envelopes import EnvelopesData
 from tulip_tui.data.import_batch_detail import ImportBatchDetail
 from tulip_tui.data.imports import ImportsData
@@ -58,6 +60,8 @@ TxEditAction = Callable[[str, TransactionDraft], object]
 TxVoidAction = Callable[[str, str], object]
 AccountCreateAction = Callable[[AccountDraft], object]
 AccountEditAction = Callable[[str, AccountDraft], object]
+TxFetchProposalsAction = Callable[[str, Decimal, str, str], tuple[AIProposalCandidate, ...]]
+TxApplyCategoryAction = Callable[[str, str], object]
 
 ReconciliationDetailLoaderFactory = Callable[[str], Callable[[], ReconciliationDetail]]
 ReconciliationAutoMatchAction = Callable[[str], object]
@@ -188,6 +192,16 @@ def _no_op_account_edit(_account_id: str, _draft: AccountDraft) -> object:
     raise RuntimeError("account edit action not configured")
 
 
+def _no_op_tx_fetch_proposals(
+    _description: str, _amount: Decimal, _currency: str, _posted_date: str
+) -> tuple[AIProposalCandidate, ...]:
+    raise RuntimeError("tx fetch proposals action not configured")
+
+
+def _no_op_tx_apply_category(_tx_id: str, _account_code: str) -> object:
+    raise RuntimeError("tx apply category action not configured")
+
+
 class TulipTuiApp(App[None]):
     """Tulip TUI shell — boots into the accounts browser."""
 
@@ -234,6 +248,8 @@ class TulipTuiApp(App[None]):
         tx_create_action: TxCreateAction = _no_op_tx_create,
         tx_edit_action: TxEditAction = _no_op_tx_edit,
         tx_void_action: TxVoidAction = _no_op_tx_void,
+        tx_fetch_proposals_action: TxFetchProposalsAction = _no_op_tx_fetch_proposals,
+        tx_apply_category_action: TxApplyCategoryAction = _no_op_tx_apply_category,
         account_create_action: AccountCreateAction = _no_op_account_create,
         account_edit_action: AccountEditAction = _no_op_account_edit,
     ) -> None:
@@ -261,6 +277,8 @@ class TulipTuiApp(App[None]):
         self._tx_create_action = tx_create_action
         self._tx_edit_action = tx_edit_action
         self._tx_void_action = tx_void_action
+        self._tx_fetch_proposals_action = tx_fetch_proposals_action
+        self._tx_apply_category_action = tx_apply_category_action
         self._account_create_action = account_create_action
         self._account_edit_action = account_edit_action
 
@@ -284,6 +302,8 @@ class TulipTuiApp(App[None]):
                 on_create=self._tx_create_action,
                 on_edit=self._tx_edit_action,
                 on_void=self._tx_void_action,
+                on_fetch_proposals=self._tx_fetch_proposals_action,
+                on_apply_category=self._tx_apply_category_action,
             )
         )
 

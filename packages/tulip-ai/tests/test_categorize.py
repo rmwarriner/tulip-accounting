@@ -705,3 +705,213 @@ async def test_provider_error_response_text_persisted_when_log_prompts_on(
         assert rows[0].outcome == "provider_error"
         assert rows[0].response_text is not None
         assert "provider blew up" in rows[0].response_text
+
+
+# ---- #425: top-N propose() -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_happy_path_returns_ranked_candidates(
+    session_maker: sessionmaker[Session],
+    household_and_user,
+    master_key: bytes,
+) -> None:
+    """propose() round-trips top-N JSON, filters chart, sorts by confidence."""
+    household, _ = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[
+            ("5100", "Groceries", AccountType.EXPENSE),
+            ("5300", "Fuel", AccountType.EXPENSE),
+            ("5400", "Dining", AccountType.EXPENSE),
+        ],
+    )
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+
+    canned = json.dumps(
+        {
+            "candidates": [
+                {"account_code": "5300", "confidence": 0.55, "reasoning": "fuel-ish"},
+                {"account_code": "5100", "confidence": 0.85, "reasoning": "grocery-ish"},
+                {"account_code": "5400", "confidence": 0.30},
+                # Unknown code — filtered out.
+                {"account_code": "9999", "confidence": 0.99},
+                # Zero confidence — dropped.
+                {"account_code": "5100", "confidence": 0.0},
+            ]
+        }
+    )
+    adapter = RecordingAdapter(canned_reply=canned)
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    candidates = await categorizer.propose(
+        _make_statement_line(description="WHOLE FOODS MARKET", amount="-87.42"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+        n=5,
+    )
+    # Three valid → sorted by confidence descending.
+    assert len(candidates) == 3
+    assert [c.account_code for c in candidates] == ["5100", "5300", "5400"]
+    assert candidates[0].confidence == pytest.approx(0.85)
+    assert candidates[0].reasoning == "grocery-ish"
+    # 5400 had no reasoning field — preserved as None.
+    assert candidates[2].reasoning is None
+
+
+@pytest.mark.asyncio
+async def test_propose_caps_to_n(
+    session_maker: sessionmaker[Session],
+    household_and_user,
+    master_key: bytes,
+) -> None:
+    """propose(n=2) returns at most 2 candidates."""
+    household, _ = household_and_user
+    _seed_chart(
+        session_maker,
+        household.id,
+        codes=[
+            ("5100", "Groceries", AccountType.EXPENSE),
+            ("5300", "Fuel", AccountType.EXPENSE),
+            ("5400", "Dining", AccountType.EXPENSE),
+        ],
+    )
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+
+    canned = json.dumps(
+        {
+            "candidates": [
+                {"account_code": "5300", "confidence": 0.55},
+                {"account_code": "5100", "confidence": 0.85},
+                {"account_code": "5400", "confidence": 0.30},
+            ]
+        }
+    )
+    adapter = RecordingAdapter(canned_reply=canned)
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    candidates = await categorizer.propose(
+        _make_statement_line(description="GAS STATION", amount="-42.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+        n=2,
+    )
+    assert len(candidates) == 2
+    assert [c.account_code for c in candidates] == ["5100", "5300"]
+
+
+@pytest.mark.asyncio
+async def test_propose_falls_back_when_policy_disabled(
+    session_maker: sessionmaker[Session],
+    household_and_user,
+    master_key: bytes,
+) -> None:
+    """Disabled policy returns the Imbalance:Unknown single-candidate fallback."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    with session_maker() as s:
+        h = s.get(Household, household.id)
+        assert h is not None
+        h.ai_policy = {
+            "default_provider": "anthropic",
+            "default_model": "claude-opus-4-7",
+            "capabilities": {"categorize": {"policy": "disabled"}},
+        }
+        s.commit()
+
+    adapter = RecordingAdapter(canned_reply="{}")
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    candidates = await categorizer.propose(
+        _make_statement_line(description="X", amount="-1.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].account_code == "Imbalance:Unknown"
+    assert candidates[0].confidence == 0.0
+    # No adapter call when disabled.
+    assert adapter.calls == []
+    # Audit row landed with outcome=policy_disabled.
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].outcome == "policy_disabled"
+
+
+@pytest.mark.asyncio
+async def test_propose_falls_back_on_provider_error(
+    session_maker: sessionmaker[Session],
+    household_and_user,
+    master_key: bytes,
+) -> None:
+    """Provider error → single Imbalance:Unknown candidate, audit row records error."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+
+    class BoomAdapter:
+        async def chat(self, **_kwargs):
+            raise AIProviderError("provider down")
+
+    categorizer = AICategorizer(
+        session_maker=session_maker,
+        master_key=master_key,
+        adapter=BoomAdapter(),  # type: ignore[arg-type]
+    )
+    candidates = await categorizer.propose(
+        _make_statement_line(description="X", amount="-1.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].account_code == "Imbalance:Unknown"
+    with session_maker() as s:
+        rows = s.execute(select(AIInvocation)).scalars().all()
+        assert rows[0].outcome == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_propose_falls_back_on_malformed_response(
+    session_maker: sessionmaker[Session],
+    household_and_user,
+    master_key: bytes,
+) -> None:
+    """Garbage JSON → single Imbalance:Unknown candidate (success-audited)."""
+    household, _ = household_and_user
+    _seed_chart(session_maker, household.id, codes=[("5100", "Groceries", AccountType.EXPENSE)])
+    _set_ai_keys(session_maker, household.id, keys={"anthropic": "sk-test"}, master_key=master_key)
+    adapter = RecordingAdapter(canned_reply="this is not json")
+    categorizer = AICategorizer(session_maker=session_maker, master_key=master_key, adapter=adapter)
+    candidates = await categorizer.propose(
+        _make_statement_line(description="X", amount="-1.00"),
+        HouseholdContext(household_id=household.id, account_whitelist=frozenset()),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].account_code == "Imbalance:Unknown"
+
+
+# ---- core type guards -------------------------------------------------------
+
+
+def test_categorization_candidate_validates_account_code() -> None:
+    from tulip_core.reconciliation.categorizer import CategorizationCandidate
+
+    with pytest.raises(ValueError, match="account_code"):
+        CategorizationCandidate(account_code="", confidence=0.5)
+
+
+def test_categorization_candidate_validates_confidence_range() -> None:
+    from tulip_core.reconciliation.categorizer import CategorizationCandidate
+
+    with pytest.raises(ValueError, match="confidence"):
+        CategorizationCandidate(account_code="5100", confidence=1.1)
+
+
+@pytest.mark.asyncio
+async def test_null_categorizer_propose_returns_single_imbalance() -> None:
+    from tulip_core.reconciliation.categorizer import NullCategorizer
+
+    null = NullCategorizer()
+    line = _make_statement_line(description="X", amount="-1.00")
+    candidates = await null.propose(
+        line,
+        HouseholdContext(household_id=uuid4(), account_whitelist=frozenset()),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].account_code == "Imbalance:Unknown"
+    assert candidates[0].confidence == 1.0

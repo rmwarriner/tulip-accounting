@@ -72,6 +72,32 @@ class AIPreviewResponse(BaseModel):
     payload: dict[str, object]
 
 
+class AICategorizeProposalsRequest(BaseModel):
+    """Body for ``POST /v1/ai/categorize-proposals`` (#425)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=500)
+    amount: Decimal
+    currency: str = Field(min_length=3, max_length=3)
+    posted_date: date
+    n: int = Field(default=5, ge=1, le=10)
+
+
+class AICategorizeCandidate(BaseModel):
+    """One ranked candidate in the propose response."""
+
+    account_code: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str | None = None
+
+
+class AICategorizeProposalsResponse(BaseModel):
+    """Top-N candidates returned by the categorizer (#425)."""
+
+    candidates: list[AICategorizeCandidate]
+
+
 class AIAskRequest(BaseModel):
     """Body for ``POST /v1/ai/ask`` — one user question over the AI views (P6.2)."""
 
