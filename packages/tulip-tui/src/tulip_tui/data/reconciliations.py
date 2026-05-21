@@ -38,9 +38,19 @@ class ReconciliationsData:
 
 
 def load_reconciliations(client: TulipClient) -> ReconciliationsData:
-    """Fetch and parse ``/v1/reconciliations``."""
+    """Fetch and parse ``/v1/reconciliations``.
+
+    The API returns ``{"items": [...]}`` per
+    ``ReconciliationListResponse``; iterate into the envelope.
+    Falls back to a bare-list shape for backwards-compat with
+    older fixtures.
+    """
     raw = client.get("/v1/reconciliations", authenticated=True).json()
-    items = tuple(_to_summary(row) for row in raw)
+    if isinstance(raw, dict):
+        rows = raw.get("items") or []
+    else:
+        rows = raw
+    items = tuple(_to_summary(row) for row in rows)
     return ReconciliationsData(reconciliations=items)
 
 
