@@ -23,6 +23,7 @@ default; ``show`` renders header-plus-postings.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -1151,6 +1152,284 @@ def edit_transaction(
                         f"(reversal {body_out['reversal_id']})."
                     )
                 return
+    except CliError as err:
+        err.render()
+        raise typer.Exit(err.exit_code) from None
+
+
+@transactions_app.command("recategorize")
+def recategorize_transactions(
+    ctx: typer.Context,
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help=(
+                "Target account that should replace --from on matching "
+                "transactions. Accepts UUID, code, name, or colon-path "
+                "(e.g. 'Expenses:Wants:Groceries')."
+            ),
+        ),
+    ],
+    from_account: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help=(
+                "Re-target postings currently on this account. Typically "
+                "an Imbalance variant after an import that fell through "
+                "the categorizer. Accepts UUID, code, name, or colon-path."
+            ),
+        ),
+    ],
+    description_contains: Annotated[
+        str | None,
+        typer.Option(
+            "--description-contains",
+            help=(
+                "Case-insensitive substring filter on transaction "
+                "description. Omit to match every transaction touching "
+                "--from (rare; usually you want a vendor filter)."
+            ),
+        ),
+    ] = None,
+    include_posted: Annotated[
+        bool,
+        typer.Option(
+            "--include-posted",
+            help=(
+                "Also re-categorize POSTED transactions via void+replace "
+                "(creates a reversal sibling + a replacement; each POSTED "
+                "tx in the result set produces 3 ledger rows). RECONCILED "
+                "transactions are still skipped — those need manual "
+                "review via `tulip transactions edit`."
+            ),
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print the planned changes without writing.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip the interactive confirmation prompt.",
+        ),
+    ] = False,
+) -> None:
+    r"""Bulk-replace one account with another on matching transactions.
+
+    Designed for cleaning up an Imbalance:Unknown backlog after a fresh
+    import: every transaction whose description contains the given
+    substring has its --from posting re-targeted to --to. Posting
+    amounts, memos, and the bank-side posting are preserved untouched.
+
+    Example::
+
+        tulip transactions recategorize \
+            --from "Imbalance:Unknown" \
+            --to "Expenses:Wants:Groceries" \
+            --description-contains "Walmart"
+
+    Only PENDING transactions are touched in v1; POSTED and RECONCILED
+    transactions are skipped with a note since they require the
+    void-and-recreate flow that ``tulip transactions edit`` uses.
+    """
+    config: Config = ctx.obj["config"]
+    as_json: bool = ctx.obj["json"]
+    needle = description_contains.lower() if description_contains else None
+
+    try:
+        with _client(config, as_json=as_json) as client:
+            from_id = _resolve_account_id_for_filter(client, from_account)
+            to_id = _resolve_account_id_for_filter(client, to)
+            if from_id == to_id:
+                raise CliError(
+                    problem={
+                        "type": "/.well-known/errors/recategorize.same_account",
+                        "title": "--from and --to resolved to the same account",
+                        "status": 400,
+                        "detail": (
+                            f"--from {from_account!r} and --to {to!r} both "
+                            f"resolve to {from_id}. The re-categorize would "
+                            "be a no-op; check your account identifiers."
+                        ),
+                        "code": "recategorize.same_account",
+                    },
+                    as_json=as_json,
+                )
+
+            # Pull every tx touching --from across the eligible statuses.
+            # PENDING is always eligible; POSTED is included on opt-in.
+            # RECONCILED is intentionally excluded — those need manual
+            # review via `tulip transactions edit`.
+            eligible_statuses = ["pending"]
+            if include_posted:
+                eligible_statuses.append("posted")
+            candidates: list[dict[str, Any]] = []
+            for st in eligible_statuses:
+                response = client.get(
+                    "/v1/transactions",
+                    authenticated=True,
+                    params={"status": st, "account_id": from_id},
+                )
+                candidates.extend(response.json())
+            if needle is not None:
+                candidates = [
+                    tx
+                    for tx in candidates
+                    if isinstance(tx.get("description"), str)
+                    and needle in tx["description"].lower()
+                ]
+            actionable: list[dict[str, Any]] = []
+            skipped_status_count = 0
+            for tx in candidates:
+                tx_status = str(tx.get("status", "")).lower()
+                if tx_status == "reconciled":
+                    skipped_status_count += 1
+                    continue
+                if tx_status not in ("pending", "posted"):
+                    skipped_status_count += 1
+                    continue
+                # Only re-target postings actually on --from.
+                target_postings = [
+                    p for p in tx.get("postings", []) if p.get("account_id") == from_id
+                ]
+                if not target_postings:
+                    # Server filtered by account_id; defensive skip.
+                    continue
+                actionable.append(tx)
+
+            if not actionable:
+                if as_json:
+                    sys.stdout.write(
+                        json.dumps(
+                            {
+                                "matched": 0,
+                                "updated": 0,
+                                "skipped_reconciled": skipped_status_count,
+                            }
+                        )
+                        + "\n"
+                    )
+                else:
+                    typer.echo("No matching transactions to re-categorize.")
+                    if skipped_status_count:
+                        typer.echo(
+                            f"({skipped_status_count} RECONCILED transaction(s) "
+                            "skipped — use `tulip transactions edit` for those.)"
+                        )
+                return
+
+            posted_count = sum(
+                1 for tx in actionable if str(tx.get("status", "")).lower() == "posted"
+            )
+            if not as_json and not yes and not dry_run:
+                typer.echo(
+                    f"Will re-target {len(actionable)} transaction(s) "
+                    f"from {from_account!r} → {to!r}."
+                )
+                if posted_count:
+                    typer.echo(
+                        f"  {posted_count} are POSTED — those will void+replace "
+                        "(each produces a reversal sibling + a replacement)."
+                    )
+                if skipped_status_count:
+                    typer.echo(
+                        f"  ({skipped_status_count} RECONCILED transaction(s) "
+                        "skipped — use `tulip transactions edit` for those.)"
+                    )
+                typer.confirm("Proceed?", abort=True)
+
+            updated = 0
+            updated_via_replace = 0
+            errors: list[tuple[str, str]] = []
+            for tx in actionable:
+                new_postings = [
+                    {
+                        "account_id": to_id
+                        if p.get("account_id") == from_id
+                        else p.get("account_id"),
+                        "amount": p.get("amount"),
+                        "currency": p.get("currency"),
+                        "memo": p.get("memo"),
+                        "pool_id": p.get("pool_id"),
+                    }
+                    for p in tx.get("postings", [])
+                ]
+                tx_id = tx["id"]
+                tx_status = str(tx.get("status", "")).lower()
+                if dry_run:
+                    if not as_json:
+                        via = "replace" if tx_status == "posted" else "patch"
+                        typer.echo(
+                            f"  would re-target {tx_id[:8]} via {via} "
+                            f"({tx.get('description', '')[:50]!r})"
+                        )
+                    updated += 1
+                    if tx_status == "posted":
+                        updated_via_replace += 1
+                    continue
+                try:
+                    if tx_status == "posted":
+                        client.post(
+                            f"/v1/transactions/{tx_id}/replace",
+                            json={
+                                "date": tx["date"],
+                                "description": tx["description"],
+                                "reference": tx.get("reference"),
+                                "postings": new_postings,
+                                "reason": (
+                                    f"Bulk re-categorize: {from_account} → {to} "
+                                    "(via `tulip transactions recategorize`)"
+                                ),
+                            },
+                            authenticated=True,
+                        )
+                        updated_via_replace += 1
+                    else:
+                        client.patch(
+                            f"/v1/transactions/{tx_id}",
+                            json={"postings": new_postings},
+                            authenticated=True,
+                        )
+                    updated += 1
+                except CliError as err:
+                    errors.append((str(tx_id), str(err.problem.get("code", "unknown"))))
+
+            if as_json:
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "matched": len(actionable),
+                            "updated": updated,
+                            "updated_via_replace": updated_via_replace,
+                            "skipped_reconciled": skipped_status_count,
+                            "errors": [{"id": tid, "code": code} for tid, code in errors],
+                            "dry_run": dry_run,
+                        }
+                    )
+                    + "\n"
+                )
+            else:
+                verb = "would update" if dry_run else "updated"
+                typer.echo(
+                    f"{verb.capitalize()} {updated} of {len(actionable)} matching transaction(s)."
+                )
+                if updated_via_replace:
+                    typer.echo(
+                        f"  {updated_via_replace} via void+replace "
+                        "(POSTED transactions; each creates a reversal sibling)."
+                    )
+                if errors:
+                    typer.echo(f"  {len(errors)} error(s):")
+                    for tid, code in errors:
+                        typer.echo(f"    {tid[:8]}: {code}")
     except CliError as err:
         err.render()
         raise typer.Exit(err.exit_code) from None
