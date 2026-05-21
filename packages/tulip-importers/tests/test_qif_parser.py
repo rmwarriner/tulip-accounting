@@ -418,3 +418,37 @@ class TestListAccountDeclarations:
         qif = b"!Account\nNZ\nTBank\n^\n!Account\nNA\nTCCard\n^\n!Account\nNM\nTInvst\n^\n"
         names = [d.name for d in list_account_declarations(qif)]
         assert names == ["Z", "A", "M"]
+
+
+# ---- #445: $ without preceding S (investment-section transfer) -----------
+
+
+class TestDollarWithoutSplit:
+    def test_dollar_without_split_does_not_raise(self):
+        """Banktivity emits ``$`` as the transfer amount on Invst Cash
+        records — no ``S`` precedes it. The parser must not reject the
+        file (#445)."""
+        qif = (
+            b"!Type:Invst\n"
+            b"D1/7/26\n"
+            b"NCash\n"
+            b"T147.56\n"
+            b"O0.00\n"
+            b"PEmployer Payroll\n"
+            b"L[Checking]\n"
+            b"$2589.83\n"
+            b"^\n"
+        )
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        # Value lands in raw so consumers can recover it.
+        assert lines[0].raw.get("$") == "2589.83"
+        # And no splits were created from this record.
+        assert lines[0].splits == ()
+
+    def test_dollar_with_preceding_split_still_works(self):
+        """The bank-section case (S then $) is unchanged."""
+        qif = b"!Type:Bank\nD2026-05-01\nT-100\nSGroceries\n$-60\nSFuel\n$-40\n^\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert len(lines[0].splits) == 2
