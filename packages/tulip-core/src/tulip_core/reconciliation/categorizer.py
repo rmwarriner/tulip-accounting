@@ -45,6 +45,27 @@ class CategorizationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CategorizationCandidate:
+    """One ranked alternative for the TUI categorize proposal modal (#425).
+
+    ``reasoning`` is the optional model's brief justification (the
+    AI categorizer asks for it; ``NullCategorizer`` and rule-based
+    fallbacks leave it ``None``).
+    """
+
+    account_code: str
+    confidence: float
+    reasoning: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate ``account_code`` non-empty + ``confidence`` range."""
+        if not self.account_code or not self.account_code.strip():
+            raise ValueError("account_code must be non-empty")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence must be in [0.0, 1.0] (got {self.confidence})")
+
+
+@dataclass(frozen=True, slots=True)
 class HouseholdContext:
     """Per-household context handed to the categorizer.
 
@@ -91,6 +112,27 @@ class Categorizer(Protocol):
         """Suggest a category for an unmatched statement line."""
         ...
 
+    async def propose(
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        n: int = 5,
+        session: Any = None,  # noqa: ANN401 — tulip-core can't import sqlalchemy
+    ) -> tuple[CategorizationCandidate, ...]:
+        """Suggest up to ``n`` ranked candidates for an unmatched line (#425).
+
+        Returns at most ``n`` :class:`CategorizationCandidate` records
+        sorted by confidence descending. Powers the TUI's "AI proposal
+        with alternates" modal: the user sees the top suggestion plus
+        runner-ups and picks one (or rejects the lot and uses the
+        manual picker). Implementations that don't have native top-N
+        support (NullCategorizer, providers without re-ranking) return
+        a single-element tuple wrapping the same answer
+        :meth:`categorize` would have given — backwards-compatible.
+        """
+        ...
+
 
 class NullCategorizer:
     """v1 default: every line gets ``Imbalance:Unknown`` with confidence 1.0.
@@ -110,6 +152,18 @@ class NullCategorizer:
         """Return ``Imbalance:Unknown`` regardless of ``line``."""
         del line, household_context, session  # unused — placeholder-by-design
         return CategorizationResult(account_code="Imbalance:Unknown", confidence=1.0)
+
+    async def propose(
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        n: int = 5,
+        session: Any = None,  # noqa: ANN401 — tulip-core can't import sqlalchemy
+    ) -> tuple[CategorizationCandidate, ...]:
+        """One-candidate tuple wrapping the same ``Imbalance:Unknown`` (#425)."""
+        del line, household_context, n, session  # unused — placeholder-by-design
+        return (CategorizationCandidate(account_code="Imbalance:Unknown", confidence=1.0),)
 
 
 # ---- module-global registry -----------------------------------------------

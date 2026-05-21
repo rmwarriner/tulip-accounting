@@ -9,8 +9,14 @@ with their own loaders.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from tulip_cli.auth.tokens import default_token_store
+
+if TYPE_CHECKING:
+    from decimal import Decimal
+
+    from tulip_tui.data.ai_categorize import AIProposalCandidate
 from tulip_cli.config import load_config
 from tulip_cli.http import TulipClient
 from tulip_tui.app import TulipTuiApp
@@ -245,6 +251,74 @@ def _account_create_action(draft: AccountDraft) -> object:
         return create_account(client, draft)
 
 
+def _tx_fetch_proposals_action(
+    description: str, amount: Decimal, currency: str, posted_date: str
+) -> tuple[AIProposalCandidate, ...]:
+    """Call ``POST /v1/ai/categorize-proposals`` (#425)."""
+    from tulip_tui.data.ai_categorize import fetch_proposals
+
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        return fetch_proposals(
+            client,
+            description=description,
+            amount=amount,
+            currency=currency,
+            posted_date=posted_date,
+        )
+
+
+def _tx_apply_category_action(tx_id: str, account_code: str) -> object:
+    """Re-categorize a PENDING transaction (#425).
+
+    Resolves ``account_code`` to an account id, fetches the current
+    transaction, finds the non-bank posting (the one whose account is
+    income/expense, currently Imbalance:Unknown), and PATCHes the
+    transaction with the new ``account_id`` on that posting. Errors
+    propagate to the screen's notice line.
+    """
+    config = load_config()
+    with TulipClient(config, token_store=default_token_store()) as client:
+        accounts = client.get("/v1/accounts", authenticated=True).json()
+        target = next((a for a in accounts if a.get("code") == account_code), None)
+        if target is None:
+            raise RuntimeError(
+                f"AI proposed code {account_code!r} but no account with that "
+                f"code is visible — refresh the chart and try again"
+            )
+        tx = client.get(f"/v1/transactions/{tx_id}", authenticated=True).json()
+        # Find the non-bank-side posting. Heuristic: largest |amount| is the
+        # bank side; the rest are the categorizable legs. For a 2-posting
+        # transaction (the common case), that's everything that ISN'T the
+        # bank side.
+        postings = tx.get("postings") or []
+        if len(postings) < 2:
+            raise RuntimeError("transaction has < 2 postings — can't recategorize")
+        from decimal import Decimal as _D
+
+        bank_idx = max(
+            range(len(postings)),
+            key=lambda i: abs(_D(str(postings[i].get("amount", "0")))),
+        )
+        new_postings = []
+        for i, p in enumerate(postings):
+            entry = {
+                "account_id": p["account_id"] if i == bank_idx else target["id"],
+                "amount": str(p["amount"]),
+                "currency": p["currency"],
+            }
+            if p.get("memo"):
+                entry["memo"] = p["memo"]
+            if p.get("pool_id"):
+                entry["pool_id"] = p["pool_id"]
+            new_postings.append(entry)
+        return client.patch(
+            f"/v1/transactions/{tx_id}",
+            authenticated=True,
+            json={"postings": new_postings},
+        ).json()
+
+
 def _account_edit_action(account_id: str, draft: AccountDraft) -> object:
     """PATCH a subset of the editable fields."""
     config = load_config()
@@ -290,6 +364,8 @@ def run() -> None:
         tx_create_action=_tx_create_action,
         tx_edit_action=_tx_edit_action,
         tx_void_action=_tx_void_action,
+        tx_fetch_proposals_action=_tx_fetch_proposals_action,
+        tx_apply_category_action=_tx_apply_category_action,
         account_create_action=_account_create_action,
         account_edit_action=_account_edit_action,
     ).run()

@@ -1931,6 +1931,56 @@ column (defaults to false; no behaviour change for existing
 chart). Precondition for the GnuCash import (#432) to land its
 `Placeholder` column cleanly.
 
+#### P9.6.d — AI categorize proposal modal in the TUI — ✅ *(2026-05-20)*
+
+Per [#425](https://github.com/rmwarriner/tulip-accounting/issues/425). Closes the original P9.6 umbrella.
+Two coupled slices in one PR:
+
+**Backend extension**:
+- New `CategorizationCandidate` dataclass in `tulip_core` (the
+  ranked-candidate analog to `CategorizationResult`).
+- `Categorizer.propose(line, ctx, *, n=5)` Protocol method
+  returning a tuple sorted by confidence descending.
+- `NullCategorizer.propose` returns a single-element tuple
+  wrapping the same `Imbalance:Unknown` answer for backwards
+  compatibility.
+- `AICategorizer.propose` uses a top-N-aware system prompt
+  (`{"candidates": [...]}`) and a new defensive parser
+  (`_parse_propose_response`) that filters codes against the
+  chart, drops zero-confidence candidates, dedups by code,
+  and caps to `n`. Same policy / cost-cap / rate-limit /
+  audit plumbing as `categorize`.
+- 8 new tests covering the happy path, n-cap, fallback for
+  disabled / provider-error / malformed-JSON, the dataclass
+  validators, and `NullCategorizer.propose`.
+
+**API surface**:
+- `POST /v1/ai/categorize-proposals` accepts a synthetic line
+  shape (description / amount / currency / posted_date / n)
+  and returns the ranked candidates JSON. Uses the registered
+  categorizer (no separate AI instance). Fallback returns the
+  single `Imbalance:Unknown` candidate; bad `n` returns 422.
+  3 endpoint tests.
+
+**TUI**:
+- `c` on a PENDING transaction in the register fetches up to
+  5 proposals via the new endpoint, pushes
+  `AICategorizeProposalModal` showing the top-1 prominently
+  with the remaining alternates in a focusable table.
+- `a` / `enter` accepts the cursor row's candidate. `escape`
+  cancels.
+- The accept handler resolves the picked `account_code` →
+  account_id, fetches the current transaction, identifies the
+  non-bank-side posting (largest |amount| = bank), and PATCHes
+  the transaction with the new account_id on the other leg.
+- 5 pilot-mode modal tests cover render / accept / arrow-then-
+  accept / escape / empty-candidates.
+
+Deliberately out of scope (filed for a follow-up if asked):
+multi-select on the register with `space` for batch
+categorize, and a manual-picker fallback `m` on the modal.
+The single-tx flow ships the headline feature.
+
 #### P9.6.c — Add/edit/void transaction modal in the TUI — ✅ *(2026-05-20)*
 
 Per [#423](https://github.com/rmwarriner/tulip-accounting/issues/423). Three new bindings on the transactions

@@ -39,7 +39,10 @@ from tulip_ai.redaction import (
     ChartEntry,
     PromptRedactor,
 )
-from tulip_core.reconciliation.categorizer import CategorizationResult
+from tulip_core.reconciliation.categorizer import (
+    CategorizationCandidate,
+    CategorizationResult,
+)
 from tulip_storage.encryption import decrypt_field, field_aad
 from tulip_storage.models import Account, AccountType, Household, User
 
@@ -56,6 +59,9 @@ if TYPE_CHECKING:
 log = logging.getLogger("tulip_ai.categorize")
 
 _FALLBACK_RESULT = CategorizationResult(account_code="Imbalance:Unknown", confidence=0.0)
+_FALLBACK_CANDIDATES: tuple[CategorizationCandidate, ...] = (
+    CategorizationCandidate(account_code="Imbalance:Unknown", confidence=0.0),
+)
 
 
 @dataclass(slots=True)
@@ -136,6 +142,199 @@ class AICategorizer:
                 extra={"household_id": str(household_context.household_id)},
             )
             return _FALLBACK_RESULT
+
+    async def propose(
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        n: int = 5,
+        session: Session | None = None,
+    ) -> tuple[CategorizationCandidate, ...]:
+        """Suggest up to ``n`` ranked candidates for one statement line (#425).
+
+        Powers the TUI's AI proposal modal. Same broad-exception
+        guard as :meth:`categorize`: any failure returns a single
+        ``Imbalance:Unknown`` candidate rather than letting the
+        importer / TUI flow blow up.
+        """
+        try:
+            return await self._propose_inner(line, household_context, n=n, session=session)
+        except Exception:
+            log.exception(
+                "ai.propose.failed",
+                extra={"household_id": str(household_context.household_id)},
+            )
+            return _FALLBACK_CANDIDATES
+
+    async def _propose_inner(
+        self,
+        line: StatementLine,
+        household_context: HouseholdContext,
+        *,
+        n: int,
+        session: Session | None,
+    ) -> tuple[CategorizationCandidate, ...]:
+        """Inner propose body — top-N variant of ``_categorize_inner``.
+
+        Shares the same policy gate, redaction, rate-limit, audit-row
+        plumbing. The two divergences are the system prompt (asks for
+        ranked top-N) and the parser (returns a tuple instead of one).
+        Capability is recorded as ``"categorize"`` so existing
+        cost-cap accounting + audit reports pick it up alongside the
+        single-call path; ``response_text`` (when logged) carries the
+        full JSON array.
+        """
+        n = max(1, min(n, 10))  # cap at 10 — guards prompt-token budget
+        with use_session_or_make_one(session, self._session_maker) as (session, should_commit):
+            inputs = self._load_inputs(
+                session,
+                household_context.household_id,
+                household_context.acting_user_id,
+            )
+            if inputs is None:
+                return _FALLBACK_CANDIDATES
+
+            policy = resolve_policy(inputs.household.ai_policy, inputs.user_policy, "categorize")
+            writer = AIInvocationWriter(session)
+
+            payload = build_categorize_prompt(line, inputs.chart)
+            body = PromptRedactor(policy.profile).to_message_body(payload)
+
+            if policy.level == "disabled":
+                writer.write(
+                    AIInvocationRecord(
+                        household_id=household_context.household_id,
+                        capability="categorize",
+                        policy_resolved="disabled",
+                        profile=policy.profile,
+                        outcome="policy_disabled",
+                        prompt_hash=hash_prompt_payload(body),
+                    )
+                )
+                if should_commit:
+                    session.commit()
+                return _FALLBACK_CANDIDATES
+
+            if inputs.api_key is None and policy.provider != "ollama":
+                writer.write(
+                    AIInvocationRecord(
+                        household_id=household_context.household_id,
+                        capability="categorize",
+                        policy_resolved=policy.level,
+                        profile=policy.profile,
+                        provider=policy.provider,
+                        model=policy.model,
+                        outcome="provider_error",
+                        prompt_hash=hash_prompt_payload(body),
+                        response_text=(
+                            "no api key configured for provider" if policy.log_prompts else None
+                        ),
+                    )
+                )
+                if should_commit:
+                    session.commit()
+                return _FALLBACK_CANDIDATES
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are a transaction categorizer. Pick up to {n} "
+                        "candidate account_codes from the provided chart, "
+                        "ranked best-first. Return JSON of the shape "
+                        '{"candidates": [{"account_code": "<code>", '
+                        '"confidence": <0.0-1.0>, "reasoning": "<short>"}, ...]}. '
+                        "Use only codes that appear in the chart. Higher "
+                        "confidence means a stronger match."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(body, ensure_ascii=False)},
+            ]
+
+            gate = enforce_pre_call(
+                session,
+                household_id=household_context.household_id,
+                user_id=household_context.acting_user_id,
+                rate_limit_per_hour=policy.rate_limit_per_hour,
+                monthly_cost_cap_usd=policy.monthly_cost_cap_usd,
+                cost_cap_behaviour=policy.cost_cap_behaviour,
+                fallback_provider=policy.fallback_provider,
+                fallback_model=policy.fallback_model,
+                primary_provider=policy.provider,
+                primary_model=policy.model,
+            )
+            if not isinstance(gate, PreCallApproval):
+                writer.write(
+                    AIInvocationRecord(
+                        household_id=household_context.household_id,
+                        capability="categorize",
+                        policy_resolved=policy.level,
+                        profile=policy.profile,
+                        provider=policy.provider,
+                        model=policy.model,
+                        outcome=gate.outcome,
+                        prompt_hash=hash_prompt_payload(body),
+                        response_text=gate.reason[:500] if policy.log_prompts else None,
+                    )
+                )
+                if should_commit:
+                    session.commit()
+                return _FALLBACK_CANDIDATES
+
+            call_provider = gate.provider or ""
+            call_model = gate.model or ""
+            try:
+                response = await self._adapter.chat(
+                    provider=call_provider,
+                    model=call_model,
+                    api_key=inputs.api_key if not gate.degraded else None,
+                    messages=messages,
+                    max_tokens=600,  # ~6x single-shot — fits up to 10 candidates
+                )
+            except AIProviderError as exc:
+                writer.write(
+                    AIInvocationRecord(
+                        household_id=household_context.household_id,
+                        capability="categorize",
+                        policy_resolved=policy.level,
+                        profile=policy.profile,
+                        provider=call_provider,
+                        model=call_model,
+                        outcome="provider_error",
+                        prompt_hash=hash_prompt_payload(body),
+                        response_text=str(exc)[:500] if policy.log_prompts else None,
+                    )
+                )
+                if should_commit:
+                    session.commit()
+                return _FALLBACK_CANDIDATES
+
+            candidates = _parse_propose_response(response, fallback_chart=inputs.chart, n=n)
+            writer.write(
+                AIInvocationRecord(
+                    household_id=household_context.household_id,
+                    capability="categorize",
+                    policy_resolved=policy.level,
+                    profile=policy.profile,
+                    provider=call_provider,
+                    model=call_model,
+                    tokens_in=response.tokens_in,
+                    tokens_out=response.tokens_out,
+                    cost_estimate_usd=response.cost_estimate_usd,
+                    latency_ms=response.latency_ms,
+                    outcome="success",
+                    prompt_hash=hash_prompt_payload(body),
+                    provider_response_id=response.provider_response_id,
+                    prompt_json=(
+                        json.dumps(body, ensure_ascii=False) if policy.log_prompts else None
+                    ),
+                    response_text=response.text if policy.log_prompts else None,
+                )
+            )
+            if should_commit:
+                session.commit()
+            return candidates
 
     async def _categorize_inner(
         self,
@@ -390,6 +589,64 @@ class AICategorizer:
             return None
         value = keys_dict.get(provider)
         return value if isinstance(value, str) else None
+
+
+def _parse_propose_response(
+    response: ProviderResponse, *, fallback_chart: Sequence[ChartEntry], n: int
+) -> tuple[CategorizationCandidate, ...]:
+    """Parse the provider's JSON response into ranked candidates (#425).
+
+    Looks for ``{"candidates": [{"account_code", "confidence",
+    "reasoning"?}, ...]}``. Filters out codes that aren't in the
+    chart, clamps confidences to ``[0.0, 1.0]``, drops any with
+    ``confidence <= 0``, sorts by confidence descending, and caps
+    to ``n``. Returns the fallback single-candidate tuple on
+    malformed JSON or zero valid candidates.
+    """
+    valid_codes = {entry.code for entry in fallback_chart}
+    text = response.text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if "\n" in text:
+            first, _, rest = text.partition("\n")
+            if first.strip().lower() in ("json", "javascript"):
+                text = rest
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return _FALLBACK_CANDIDATES
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return _FALLBACK_CANDIDATES
+    raw_candidates = parsed.get("candidates")
+    if not isinstance(raw_candidates, list) or not raw_candidates:
+        return _FALLBACK_CANDIDATES
+
+    out: list[CategorizationCandidate] = []
+    seen_codes: set[str] = set()
+    for entry in raw_candidates:
+        if not isinstance(entry, dict):
+            continue
+        code = entry.get("account_code")
+        if not isinstance(code, str) or code not in valid_codes or code in seen_codes:
+            continue
+        try:
+            conf = float(entry.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            conf = 0.5
+        conf = max(0.0, min(1.0, conf))
+        if conf <= 0.0:
+            continue
+        reasoning_raw = entry.get("reasoning")
+        reasoning = reasoning_raw if isinstance(reasoning_raw, str) and reasoning_raw else None
+        out.append(CategorizationCandidate(account_code=code, confidence=conf, reasoning=reasoning))
+        seen_codes.add(code)
+
+    if not out:
+        return _FALLBACK_CANDIDATES
+    out.sort(key=lambda c: c.confidence, reverse=True)
+    return tuple(out[:n])
 
 
 def _parse_response(

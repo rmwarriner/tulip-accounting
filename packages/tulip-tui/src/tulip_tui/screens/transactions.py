@@ -22,12 +22,14 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from tulip_tui.data.ai_categorize import AIProposalCandidate
 from tulip_tui.data.transaction_write import TransactionDraft
 from tulip_tui.data.transactions import (
     PostingSummary,
     TransactionsData,
     TransactionSummary,
 )
+from tulip_tui.screens.ai_categorize_modal import AICategorizeProposalModal
 from tulip_tui.screens.transaction_modal import (
     TransactionEditModal,
     VoidConfirmModal,
@@ -37,6 +39,8 @@ TransactionsLoader = Callable[[], TransactionsData]
 CreateTransactionAction = Callable[[TransactionDraft], object]
 EditTransactionAction = Callable[[str, TransactionDraft], object]
 VoidTransactionAction = Callable[[str, str], object]
+FetchProposalsAction = Callable[[str, "Decimal", str, str], tuple[AIProposalCandidate, ...]]
+ApplyCategoryAction = Callable[[str, str], object]
 
 
 def _noop_create(_draft: TransactionDraft) -> object:
@@ -49,6 +53,16 @@ def _noop_edit(_tx_id: str, _draft: TransactionDraft) -> object:
 
 def _noop_void(_tx_id: str, _reason: str) -> object:
     raise RuntimeError("void action not configured")
+
+
+def _noop_fetch_proposals(
+    _description: str, _amount: Decimal, _currency: str, _posted_date: str
+) -> tuple[AIProposalCandidate, ...]:
+    raise RuntimeError("AI categorize proposals action not configured")
+
+
+def _noop_apply_category(_tx_id: str, _account_code: str) -> object:
+    raise RuntimeError("apply category action not configured")
 
 
 def _row_text(tx: TransactionSummary) -> tuple[str, str, str, str, str]:
@@ -85,6 +99,7 @@ class TransactionsScreen(Screen[None]):
         Binding("n", "new_tx", "new tx", show=True),
         Binding("e", "edit_tx", "edit tx", show=True),
         Binding("x", "void_tx", "void tx", show=True),
+        Binding("c", "categorize", "AI categorize", show=True),
     ]
 
     DEFAULT_CSS = """
@@ -115,13 +130,17 @@ class TransactionsScreen(Screen[None]):
         on_create: CreateTransactionAction = _noop_create,
         on_edit: EditTransactionAction = _noop_edit,
         on_void: VoidTransactionAction = _noop_void,
+        on_fetch_proposals: FetchProposalsAction = _noop_fetch_proposals,
+        on_apply_category: ApplyCategoryAction = _noop_apply_category,
     ) -> None:
-        """Store the loader and the per-action callbacks (P9.6.c)."""
+        """Store the loader and the per-action callbacks (P9.6.c, #425)."""
         super().__init__()
         self._loader = loader
         self._on_create = on_create
         self._on_edit = on_edit
         self._on_void = on_void
+        self._on_fetch_proposals = on_fetch_proposals
+        self._on_apply_category = on_apply_category
         self._data: TransactionsData = TransactionsData(transactions=())
         self._rendered_rows: list[str] = []
         self._empty = False
@@ -204,6 +223,55 @@ class TransactionsScreen(Screen[None]):
         modal = VoidConfirmModal(tx_id=tx.id, description=tx.description)
         tx_id = tx.id
         self.app.push_screen(modal, lambda result: self._on_void_modal_done(tx_id, result))
+
+    def action_categorize(self) -> None:
+        """``c`` — fetch AI proposals + push the picker modal (#425).
+
+        Only meaningful on PENDING transactions. Any failure surfaces
+        as an inline notice rather than crashing the screen.
+        """
+        tx = self._cursor_tx()
+        if tx is None:
+            self._set_notice("no transaction focused")
+            return
+        if tx.status != "pending":
+            self._set_notice(
+                f"AI categorize only works on PENDING transactions (this one is {tx.status})"
+            )
+            return
+        # Use the transaction's largest non-bank-side posting amount + currency
+        # as the synthetic line for the propose call. v1 sends ``description``
+        # straight through; the API normalises further.
+        if not tx.postings:
+            self._set_notice("transaction has no postings to categorize")
+            return
+        # Pick the posting whose absolute amount is largest — typically the
+        # bank-side leg. We send its currency + the transaction amount.
+        largest = max(tx.postings, key=lambda p: abs(p.amount))
+        try:
+            candidates = self._on_fetch_proposals(
+                tx.description, largest.amount, largest.currency, tx.date
+            )
+        except Exception as exc:
+            self._set_notice(f"[red]proposals failed:[/red] {exc}")
+            return
+        modal = AICategorizeProposalModal(description=tx.description, candidates=candidates)
+        tx_id = tx.id
+        self.app.push_screen(modal, lambda result: self._on_categorize_modal_done(tx_id, result))
+
+    def _on_categorize_modal_done(self, tx_id: str, result: object) -> None:
+        if result is None:
+            self._set_notice("categorize cancelled")
+            return
+        if not isinstance(result, str):
+            return
+        try:
+            self._on_apply_category(tx_id, result)
+        except Exception as exc:
+            self._set_notice(f"[red]apply failed:[/red] {exc}")
+            return
+        self._set_notice(f"categorized as {result}")
+        self._load()
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         """Re-render the detail pane to match the newly-highlighted row."""

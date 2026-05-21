@@ -34,6 +34,9 @@ from tulip_api.schemas.ai import (
     CLEAR_SENTINEL,
     AIAskRequest,
     AIAskResponse,
+    AICategorizeCandidate,
+    AICategorizeProposalsRequest,
+    AICategorizeProposalsResponse,
     AIConfigCapability,
     AIConfigCapabilityPatch,
     AIConfigPatch,
@@ -597,6 +600,72 @@ def preview_categorize_prompt(
         provider=policy.provider,
         model=policy.model,
         payload=body_dict,
+    )
+
+
+@router.post(
+    "/categorize-proposals",
+    response_model=AICategorizeProposalsResponse,
+    responses={
+        400: problem_response("request.body_invalid"),
+        401: problem_response("auth.unauthorized"),
+        403: problem_response("auth.forbidden"),
+        422: problem_response("validation.failed"),
+    },
+)
+async def categorize_proposals(
+    body: AICategorizeProposalsRequest,
+    claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> AICategorizeProposalsResponse:
+    """Return up to ``n`` ranked categorize candidates for a synthetic line (#425).
+
+    Calls the registered :class:`tulip_core.reconciliation.Categorizer`'s
+    ``propose()`` method. Honours the household + per-user AI policy
+    exactly the same way the import-apply flow does (including the
+    rate-limit / cost-cap / policy-disabled fall-throughs). On any
+    fallback (disabled, no key, provider error, malformed response)
+    the response is a single ``Imbalance:Unknown`` candidate with
+    confidence 0.0 — the TUI surfaces that as "no proposal".
+
+    The TUI calls this when the user presses ``c`` on a PENDING
+    transaction. Body fields mirror :class:`AIPreviewRequest` so the
+    operator can synthesize the same statement-line shape; the new
+    ``n`` field caps the number of candidates returned.
+    """
+    from tulip_core.reconciliation.categorizer import (
+        HouseholdContext,
+        get_categorizer,
+    )
+
+    line = StatementLine(
+        id=uuid4(),
+        import_batch_id=uuid4(),
+        line_number=1,
+        posted_date=body.posted_date,
+        amount=Money(body.amount, body.currency),
+        description=body.description,
+    )
+    categorizer = get_categorizer()
+    candidates = await categorizer.propose(
+        line,
+        HouseholdContext(
+            household_id=claims.household_id,
+            account_whitelist=frozenset(),
+            acting_user_id=claims.user_id,
+        ),
+        n=body.n,
+        session=session,
+    )
+    return AICategorizeProposalsResponse(
+        candidates=[
+            AICategorizeCandidate(
+                account_code=c.account_code,
+                confidence=c.confidence,
+                reasoning=c.reasoning,
+            )
+            for c in candidates
+        ]
     )
 
 

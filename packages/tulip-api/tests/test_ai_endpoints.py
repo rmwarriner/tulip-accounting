@@ -128,6 +128,65 @@ class TestPreview:
         assert r.status_code == 401
 
 
+class TestCategorizeProposals:
+    """#425: top-N propose surface for the TUI."""
+
+    def test_proposals_with_disabled_policy_returns_imbalance(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """Fresh household has the default policy and no key → fallback."""
+        client.post(
+            "/v1/accounts",
+            headers=auth_h,
+            json={"code": "5100", "name": "Groceries", "type": "expense", "currency": "USD"},
+        )
+        r = client.post(
+            "/v1/ai/categorize-proposals",
+            headers=auth_h,
+            json={
+                "description": "WHOLE FOODS MARKET",
+                "amount": "-87.42",
+                "currency": "USD",
+                "posted_date": "2026-05-03",
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert isinstance(body["candidates"], list)
+        # Without configured AI, the fallback single candidate fires.
+        assert len(body["candidates"]) == 1
+        assert body["candidates"][0]["account_code"] == "Imbalance:Unknown"
+
+    def test_proposals_request_caps_n_field(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        """n must be in [1, 10]."""
+        r = client.post(
+            "/v1/ai/categorize-proposals",
+            headers=auth_h,
+            json={
+                "description": "X",
+                "amount": "-1.00",
+                "currency": "USD",
+                "posted_date": "2026-05-03",
+                "n": 20,
+            },
+        )
+        assert r.status_code == 422
+
+    def test_proposals_requires_auth(self, client: TestClient) -> None:
+        r = client.post(
+            "/v1/ai/categorize-proposals",
+            json={
+                "description": "X",
+                "amount": "-1.00",
+                "currency": "USD",
+                "posted_date": "2026-05-03",
+            },
+        )
+        assert r.status_code == 401
+
+
 class TestAsk:
     def test_ask_with_no_api_key_returns_error_summary(
         self, client: TestClient, auth_h: dict[str, str]
