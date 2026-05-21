@@ -962,3 +962,129 @@ class TestPromoteQifClearedStatus:
             )
             s.commit()
             assert tx.status == TransactionStatus.POSTED
+
+
+# ---- #447: QIF tags from L / S lines -------------------------------------
+
+
+class TestPromoteWithQifTags:
+    """The line-level tag tuple (union of L-line + per-split tags) lands
+    on the transaction via ``transaction_tags``."""
+
+    @pytest.mark.asyncio
+    async def test_l_line_tags_land_on_transaction(self, session_maker, setup):
+        from tulip_api.services.import_apply import (
+            serialize_parsed_line_raw_json,
+        )
+        from tulip_core.money import Money
+        from tulip_core.reconciliation.statement_line import ParsedStatementLine
+        from tulip_storage.repositories import TransactionTagRepository
+
+        line_id = uuid4()
+        parsed = ParsedStatementLine(
+            line_number=42,
+            posted_date=date(2026, 5, 1),
+            amount=Money(Decimal("-12.50"), "USD"),
+            description="Coffee Shop",
+            raw={"L": "Expenses:Coffee"},
+            tags=("wants", "robert"),
+        )
+        raw_json = serialize_parsed_line_raw_json(parsed)
+        with session_maker() as s:
+            line = StatementLine(
+                household_id=setup["household_id"],
+                id=line_id,
+                import_batch_id=setup["batch_id"],
+                line_number=42,
+                posted_date=date(2026, 5, 1),
+                amount=Decimal("-12.50"),
+                currency="USD",
+                description="Coffee Shop",
+                raw_json=raw_json,
+            )
+            s.add(line)
+            s.commit()
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            tags = TransactionTagRepository(s, setup["household_id"]).list_tags(tx.id)
+        assert sorted(tags) == ["robert", "wants"]
+
+    @pytest.mark.asyncio
+    async def test_split_tags_union_lands_on_transaction(self, session_maker, setup):
+        line_id = self._seed_split_line(
+            session_maker,
+            setup,
+            total="-58.99",
+            splits=[
+                {
+                    "amount": "-45.27",
+                    "currency": "USD",
+                    "category": "Needs:Utilities",
+                    "memo": None,
+                    "tags": ["tulipdrive"],
+                },
+                {
+                    "amount": "-13.72",
+                    "currency": "USD",
+                    "category": "Needs:Insurance",
+                    "memo": None,
+                    "tags": ["tulipdrive", "warranty"],
+                },
+            ],
+        )
+        with session_maker() as s:
+            batch = _reload(s, ImportBatch, setup["household_id"], setup["batch_id"])
+            line = _reload(s, StatementLine, setup["household_id"], line_id)
+            tx = await promote_statement_line(
+                session=s,
+                household_id=setup["household_id"],
+                batch=batch,
+                line=line,
+                categorizer=NullCategorizer(),
+                actor_user_id=None,
+            )
+            s.commit()
+            from tulip_storage.repositories import TransactionTagRepository
+
+            tags = TransactionTagRepository(s, setup["household_id"]).list_tags(tx.id)
+        assert sorted(tags) == ["tulipdrive", "warranty"]
+
+    def _seed_split_line(
+        self,
+        session_maker,
+        setup,
+        *,
+        total: str,
+        splits: list[dict],
+    ) -> UUID:
+        """Mirror of TestPromoteSplitLine._seed_split_line — class-local copy."""
+        import json as _json
+
+        line_id = uuid4()
+        with session_maker() as s:
+            line = StatementLine(
+                household_id=setup["household_id"],
+                id=line_id,
+                import_batch_id=setup["batch_id"],
+                line_number=99,
+                posted_date=date(2026, 1, 2),
+                amount=Decimal(total),
+                currency="USD",
+                description="Tagged splits",
+                raw_json=_json.dumps(
+                    {"raw": {"P": "CenterPoint", "T": total}, "__splits__": splits}
+                ),
+            )
+            s.add(line)
+            s.commit()
+        return line_id

@@ -112,9 +112,13 @@ class TestParseSplits:
         ((line,)) = parse(_read("split_gas_bill.qif"), currency="USD")
         gas, warranty = line.splits
 
-        # Per-split QIF S-field on the structured ParsedSplit.
-        assert gas.category == "Needs:Utilities:Natural Gas/TulipDrive"
-        assert warranty.category == "Needs:Insurance:Home Warranty/TulipDrive"
+        # Per-split QIF S-field on the structured ParsedSplit. The
+        # ``/TulipDrive`` suffix is a Banktivity tag (#447) and lands on
+        # ``split.tags`` separately from the category.
+        assert gas.category == "Needs:Utilities:Natural Gas"
+        assert warranty.category == "Needs:Insurance:Home Warranty"
+        assert gas.tags == ("TulipDrive",)
+        assert warranty.tags == ("TulipDrive",)
         # Per-split memo (the QIF ``E`` line right before each ``S``).
         assert gas.memo == "Current gas charges"
         assert warranty.memo == "Current home service charges"
@@ -148,20 +152,51 @@ class TestParseSplits:
             Decimal("-150.00"),
             Decimal("-115.50"),
         ]
-        # Per-split category survives parsing.
+        # Per-split category survives parsing. The ``/BNSF`` suffix is
+        # tag metadata (#447) and is captured separately on each split.
         categories = [s.category for s in line.splits]
         assert categories == [
-            "Income:Wages/BNSF",
-            "Expenses:Taxes:Federal/BNSF",
-            "Expenses:Taxes:State/BNSF",
-            "Expenses:Taxes:FICA/BNSF",
+            "Income:Wages",
+            "Expenses:Taxes:Federal",
+            "Expenses:Taxes:State",
+            "Expenses:Taxes:FICA",
         ]
+        # Tags from the ``/<tag>`` suffix land on each split.
+        assert [s.tags for s in line.splits] == [
+            ("BNSF",),
+            ("BNSF",),
+            ("BNSF",),
+            ("BNSF",),
+        ]
+        # Line-level union deduplicates: the four splits all carry the
+        # same single tag, so the parent line gets just ``("BNSF",)``.
+        assert line.tags == ("BNSF",)
 
     def test_split_sum_mismatch_raises(self):
         # Per #270 + #297: "If split amounts don't sum to T, the row is
         # rejected with an import error rather than silently dropped."
         with pytest.raises(QifParseError, match="split"):
             parse(_read("split_sum_mismatch.qif"), currency="USD")
+
+    def test_l_line_tag_suffix_lands_on_line_tags(self):
+        """#447: a non-split L-line with ``<category>/<tag>:<tag>`` exposes
+        the tags on ``line.tags`` and strips them from ``raw["L"]``."""
+        qif = b"!Type:Bank\nD2026-05-01\nT-12.50\nPCoffee Shop\nLExpenses:Coffee/Wants:Robert\n^\n"
+        lines = parse(qif, currency="USD")
+        assert len(lines) == 1
+        assert lines[0].tags == ("Wants", "Robert")
+        # ``raw["L"]`` now holds just the category, not the tag suffix.
+        assert lines[0].raw["L"] == "Expenses:Coffee"
+
+    def test_l_line_bracketed_transfer_with_tag_still_pairs(self):
+        """``L[Checking]/Reimbursable`` should keep the transfer marker
+        intact in raw so transfer_target() works."""
+        from tulip_importers.qif import transfer_target
+
+        qif = b"!Type:Bank\nD2026-05-01\nT-100\nL[Checking]/Reimbursable\n^\n"
+        lines = parse(qif, currency="USD")
+        assert lines[0].tags == ("Reimbursable",)
+        assert transfer_target(lines[0].raw) == "Checking"
 
     def test_single_line_unsplit_has_empty_splits_tuple(self):
         # Regression: non-split QIF entries continue to produce exactly
