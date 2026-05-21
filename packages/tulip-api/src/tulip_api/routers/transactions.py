@@ -708,6 +708,59 @@ def get_transaction(
     return _read_response(tx_id, claims.household_id, session)
 
 
+@router.get(
+    "/{tx_id}/effective-tags",
+    responses={
+        401: problem_response("auth.unauthorized"),
+        404: problem_response("transaction.not_found"),
+    },
+)
+def get_transaction_effective_tags(
+    tx_id: UUID,
+    claims: Claims = Depends(get_current_claims),  # noqa: B008
+    session: Session = Depends(get_session),  # noqa: B008
+) -> dict[str, object]:
+    """Return the effective tags for a transaction with provenance (ADR-0009 PR C).
+
+    Shape::
+
+        {
+          "direct": ["birthday"],
+          "effective": ["birthday", "essential", "walter"],
+          "by_provenance": [
+            {"name": "birthday",  "provenance": "transaction", "source_id": "<tx>"},
+            {"name": "essential", "provenance": "account",     "source_id": "<acct>"},
+            {"name": "walter",    "provenance": "posting",     "source_id": "<post>"}
+          ]
+        }
+
+    The TUI shows the operator both the direct set and the
+    inherited set (with provenance) so they know which edge to
+    remove if they want a given tag gone.
+    """
+    from tulip_storage.repositories import (
+        EffectiveTagsRepository,
+        TransactionTagRepository,
+    )
+
+    if TransactionRepository(session, claims.household_id).get(tx_id) is None:
+        raise TransactionNotFoundError()
+    direct = TransactionTagRepository(session, claims.household_id).list_tags(tx_id)
+    raw = EffectiveTagsRepository(session, claims.household_id).for_transaction(tx_id)
+    return {
+        "direct": direct,
+        "effective": sorted({t.name for t in raw}),
+        "by_provenance": [
+            {
+                "name": t.name,
+                "provenance": t.provenance,
+                "source_id": str(t.source_id),
+            }
+            for t in raw
+        ],
+    }
+
+
 def _resolve_notes_patch(body: TransactionUpdate) -> str | None | object:
     """Return UNSET if ``notes`` was omitted; else the body value (str or None).
 

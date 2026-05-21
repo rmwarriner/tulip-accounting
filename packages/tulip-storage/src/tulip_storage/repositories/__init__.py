@@ -17,6 +17,10 @@ from tulip_storage.repositories.attachment import AttachmentRepository
 from tulip_storage.repositories.attachment_link import AttachmentLinkRepository
 from tulip_storage.repositories.audit_log import AuditLogWriter
 from tulip_storage.repositories.csv_profile import CsvProfileRepository
+from tulip_storage.repositories.effective_tags import (
+    EffectiveTag,
+    EffectiveTagsRepository,
+)
 from tulip_storage.repositories.envelope import EnvelopeRepository
 from tulip_storage.repositories.import_batch import ImportBatchRepository
 from tulip_storage.repositories.notification import NotificationRepository
@@ -52,6 +56,8 @@ __all__ = [
     "AttachmentRepository",
     "AuditLogWriter",
     "CsvProfileRepository",
+    "EffectiveTag",
+    "EffectiveTagsRepository",
     "EnvelopeRepository",
     "ImportBatchRepository",
     "MasterKeyRequiredError",
