@@ -41,6 +41,7 @@ class AccountSummary:
     currency: str
     balance: Decimal | None
     is_placeholder: bool = False  # #52
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ def load_accounts(client: TulipClient) -> AccountsData:
     summaries: list[AccountSummary] = []
     for raw in accounts_raw:
         account_id = str(raw["id"])
+        raw_tags = raw.get("tags") or []
         summaries.append(
             AccountSummary(
                 id=account_id,
@@ -82,6 +84,7 @@ def load_accounts(client: TulipClient) -> AccountsData:
                 currency=str(raw.get("currency", "")),
                 balance=balances_by_id.get(account_id),
                 is_placeholder=bool(raw.get("is_placeholder", False)),
+                tags=tuple(str(t) for t in raw_tags if t),
             )
         )
 

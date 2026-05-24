@@ -38,6 +38,7 @@ class TransactionDraft:
     description: str
     reference: str | None
     postings: tuple[ParsedPosting, ...]
+    tags: tuple[str, ...] = ()
 
 
 def parse_posting_line(line: str) -> ParsedPosting:
@@ -129,6 +130,8 @@ def create_transaction(client: TulipClient, draft: TransactionDraft) -> dict[str
     }
     if draft.reference:
         body["reference"] = draft.reference
+    if draft.tags:
+        body["tags"] = list(draft.tags)
     resp = client.post("/v1/transactions", authenticated=True, json=body)
     return cast("dict[str, object]", resp.json())
 

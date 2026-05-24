@@ -274,6 +274,52 @@ def test_load_transactions_handles_empty_result() -> None:
     assert data.transactions == ()
 
 
+def test_load_transactions_captures_tags() -> None:
+    """Tags returned by the API land on the summary as a tuple of strings."""
+    tx_payload = [
+        {
+            "id": _TX_1,
+            "date": "2026-05-14",
+            "description": "Trader Joe's",
+            "reference": None,
+            "notes": None,
+            "status": "posted",
+            "tags": ["food", "grocery"],
+            "postings": [
+                {
+                    "id": "p1",
+                    "account_id": _CHECKING,
+                    "amount": "-20.00",
+                    "currency": "USD",
+                    "memo": None,
+                    "pool_id": None,
+                },
+                {
+                    "id": "p2",
+                    "account_id": _GROCERIES,
+                    "amount": "20.00",
+                    "currency": "USD",
+                    "memo": None,
+                    "pool_id": None,
+                },
+            ],
+        }
+    ]
+    with _build_client(_handler_factory(tx_payload=tx_payload)) as client:
+        data = load_transactions(client)
+
+    assert data.transactions[0].tags == ("food", "grocery")
+
+
+def test_load_transactions_empty_tags_when_absent() -> None:
+    """When the API omits the tags field the summary has an empty tuple."""
+    with _build_client(_handler_factory()) as client:
+        data = load_transactions(client)
+
+    for tx in data.transactions:
+        assert tx.tags == ()
+
+
 def test_load_transactions_raises_on_api_error() -> None:
     from tulip_cli.errors import CliError
 

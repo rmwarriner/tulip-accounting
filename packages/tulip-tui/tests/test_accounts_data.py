@@ -273,6 +273,62 @@ def test_load_accounts_handles_empty_household() -> None:
     assert data.as_of == "2026-05-17"
 
 
+def test_load_accounts_captures_tags() -> None:
+    """Tags returned by the API land on the AccountSummary as a tuple of strings."""
+    accounts_payload = [
+        {
+            "id": _ACCOUNT_CHECKING_ID,
+            "code": "assets:checking",
+            "name": "Checking",
+            "type": "asset",
+            "subtype": None,
+            "currency": "USD",
+            "visibility": "shared",
+            "is_active": True,
+            "parent_account_id": None,
+            "tags": ["liquid", "primary"],
+        },
+    ]
+    trial_payload = {
+        "as_of": "2026-05-17",
+        "rows": [],
+        "totals_by_currency": [],
+        "pending_included": False,
+        "pending_count": 0,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/accounts":
+            return httpx.Response(200, json=accounts_payload)
+        if request.url.path == "/v1/reports/trial-balance":
+            return httpx.Response(200, json=trial_payload)
+        raise AssertionError(f"unexpected: {request.url.path}")
+
+    with _build_client(httpx.MockTransport(handler)) as client:
+        data = load_accounts(client)
+
+    assert data.accounts[0].tags == ("liquid", "primary")
+
+
+def test_load_accounts_empty_tags_when_absent() -> None:
+    """Accounts without a ``tags`` key get an empty tuple, not an error."""
+    accounts_payload = _accounts_response()
+    trial_payload = _trial_balance_response()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/accounts":
+            return httpx.Response(200, json=accounts_payload)
+        if request.url.path == "/v1/reports/trial-balance":
+            return httpx.Response(200, json=trial_payload)
+        raise AssertionError(f"unexpected: {request.url.path}")
+
+    with _build_client(httpx.MockTransport(handler)) as client:
+        data = load_accounts(client)
+
+    for acct in data.accounts:
+        assert acct.tags == ()
+
+
 def test_load_accounts_raises_when_api_returns_error() -> None:
     """API errors bubble out as ``CliError`` for the screen to surface."""
     from tulip_cli.errors import CliError

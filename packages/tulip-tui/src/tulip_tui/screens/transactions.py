@@ -83,6 +83,8 @@ def _detail_text(tx: TransactionSummary) -> str:
         lines.append(f"reference: {tx.reference}")
     if tx.notes:
         lines.append(f"notes: {tx.notes}")
+    if tx.tags:
+        lines.append(f"tags: {' · '.join(tx.tags)}")
     lines.append("")
     for posting in tx.postings:
         memo = f"  ({posting.memo})" if posting.memo else ""
@@ -195,6 +197,7 @@ class TransactionsScreen(Screen[None]):
             initial_description=tx.description,
             initial_reference=tx.reference or "",
             initial_postings=postings_text,
+            initial_tags=tx.tags,
         )
         tx_id = tx.id
         self.app.push_screen(

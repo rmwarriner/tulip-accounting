@@ -228,3 +228,45 @@ async def test_accounts_screen_enter_pushes_transactions_screen() -> None:
 
     # The drill-in passes the selected account's id into the factory.
     assert captured["account_id"] == "acc-1"
+
+
+@pytest.mark.asyncio
+async def test_detail_pane_shows_tags() -> None:
+    """Tags appear in the detail pane when the transaction has them."""
+    tagged_tx = TransactionSummary(
+        id="tx-tag",
+        date="2026-05-14",
+        description="Groceries",
+        reference=None,
+        notes=None,
+        status="posted",
+        postings=(
+            PostingSummary(
+                account_id="acc-1",
+                account_label="Checking",
+                amount=Decimal("-20.00"),
+                currency="USD",
+                memo=None,
+            ),
+            PostingSummary(
+                account_id="acc-2",
+                account_label="Food",
+                amount=Decimal("20.00"),
+                currency="USD",
+                memo=None,
+            ),
+        ),
+        amount_display="-20.00 USD",
+        tags=("food", "grocery"),
+    )
+    accounts_loader = lambda: AccountsData(  # noqa: E731
+        as_of="2026-05-14", accounts=(), groups=()
+    )
+    app = TulipTuiApp(loader=accounts_loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = await _push_transactions(app, TransactionsData(transactions=(tagged_tx,)))
+        await pilot.pause()
+        detail = screen.detail_text()
+        assert "food" in detail
+        assert "grocery" in detail

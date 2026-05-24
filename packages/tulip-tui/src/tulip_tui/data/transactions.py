@@ -42,6 +42,7 @@ class TransactionSummary:
     status: str
     postings: tuple[PostingSummary, ...]
     amount_display: str
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +116,7 @@ def _to_summary(
                 memo=_optional_str(posting.get("memo")),
             )
         )
+    raw_tags = cast("list[object]", row.get("tags") or [])
     return TransactionSummary(
         id=str(row.get("id", "")),
         date=str(row.get("date", "")),
@@ -124,6 +126,7 @@ def _to_summary(
         status=str(row.get("status", "")),
         postings=tuple(postings),
         amount_display=_amount_display(postings),
+        tags=tuple(str(t) for t in raw_tags if t),
     )
 
 
