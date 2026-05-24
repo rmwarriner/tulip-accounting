@@ -342,3 +342,85 @@ async def test_n_with_no_create_action_surfaces_error() -> None:
         await pilot.pause()
 
     assert "create failed" in screen.notice()
+
+
+# ---- tags field tests -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modal_renders_tags_input() -> None:
+    """The ``#tx-tags`` Input widget is present in the modal."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = TransactionEditModal(
+            initial_date="2026-05-20",
+            initial_description="x",
+            initial_postings="1110=-1.00\n5100=1.00",
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        assert modal.query_one("#tx-tags", Input) is not None
+
+
+@pytest.mark.asyncio
+async def test_modal_parses_comma_separated_tags() -> None:
+    """Comma-separated input becomes a tuple of lowercased, stripped tag strings."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = TransactionEditModal(
+            initial_date="2026-05-20",
+            initial_description="Lunch",
+            initial_postings="1110=-12.50\n5100=12.50",
+            initial_tags=("food", "grocery"),
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        # Overwrite with a raw comma-separated string.
+        modal.query_one("#tx-tags", Input).value = "Food , GROCERY , dining"
+        draft = modal.snapshot()
+        assert draft is not None
+        assert draft.tags == ("food", "grocery", "dining")
+
+
+@pytest.mark.asyncio
+async def test_modal_prefills_tags_from_initial_tags() -> None:
+    """``initial_tags`` renders as a comma-joined string in the tags input."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = TransactionEditModal(
+            initial_date="2026-05-20",
+            initial_description="x",
+            initial_postings="1110=-1.00\n5100=1.00",
+            initial_tags=("food", "grocery"),
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        rendered = modal.query_one("#tx-tags", Input).value
+        assert rendered == "food, grocery"
+
+
+@pytest.mark.asyncio
+async def test_modal_empty_tags_when_no_input() -> None:
+    """An empty tags field yields an empty tuple in the draft."""
+    app = TulipTuiApp(loader=_accounts_loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = TransactionEditModal(
+            initial_date="2026-05-20",
+            initial_description="x",
+            initial_postings="1110=-1.00\n5100=1.00",
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        draft = modal.snapshot()
+        assert draft is not None
+        assert draft.tags == ()

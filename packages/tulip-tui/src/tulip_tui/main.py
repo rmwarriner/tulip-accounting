@@ -232,6 +232,7 @@ def _tx_edit_action(tx_id: str, draft: TransactionDraft) -> object:
     patch: dict[str, object] = {
         "date": draft.date,
         "description": draft.description,
+        "tags": list(draft.tags),
     }
     if draft.reference is not None:
         patch["reference"] = draft.reference
@@ -326,6 +327,7 @@ def _account_edit_action(account_id: str, draft: AccountDraft) -> object:
         "name": draft.name,
         "visibility": draft.visibility,
         "is_placeholder": draft.is_placeholder,
+        "tags": list(draft.tags),
     }
     if draft.code is not None:
         patch["code"] = draft.code

@@ -349,3 +349,79 @@ async def test_n_with_no_create_action_surfaces_error() -> None:
         modal.dismiss(draft)
         await pilot.pause()
     assert "create failed" in screen.notice()
+
+
+# ---- tags field tests -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_account_modal_renders_tags_input() -> None:
+    """The ``#acct-tags`` Input widget is present in the modal."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(title="Test")
+        await app.push_screen(modal)
+        await pilot.pause()
+        assert modal.query_one("#acct-tags", Input) is not None
+
+
+@pytest.mark.asyncio
+async def test_account_modal_parses_comma_separated_tags() -> None:
+    """Comma-separated input becomes a tuple of lowercased, stripped strings."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(
+            initial_name="Checking",
+            initial_type="asset",
+            initial_currency="USD",
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        modal.query_one("#acct-tags", Input).value = "Liquid , PRIMARY , checking"
+        draft = modal.snapshot()
+        assert draft is not None
+        assert draft.tags == ("liquid", "primary", "checking")
+
+
+@pytest.mark.asyncio
+async def test_account_modal_prefills_tags_from_initial_tags() -> None:
+    """``initial_tags`` renders as a comma-joined string in the tags input."""
+    from textual.widgets import Input
+
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(
+            initial_name="Checking",
+            initial_type="asset",
+            initial_currency="USD",
+            initial_tags=("liquid", "primary"),
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        rendered = modal.query_one("#acct-tags", Input).value
+        assert rendered == "liquid, primary"
+
+
+@pytest.mark.asyncio
+async def test_account_modal_empty_tags_when_no_input() -> None:
+    """An empty tags field yields an empty tuple in the draft."""
+    app = TulipTuiApp(loader=_accounts_loader_empty)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = AccountEditModal(
+            initial_name="Checking",
+            initial_type="asset",
+            initial_currency="USD",
+        )
+        await app.push_screen(modal)
+        await pilot.pause()
+        draft = modal.snapshot()
+        assert draft is not None
+        assert draft.tags == ()

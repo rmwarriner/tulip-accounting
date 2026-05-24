@@ -2083,6 +2083,39 @@ tables, every binding's happy + refuse path, modal open + confirm,
 inline error on load failure, drill-in from the reconciliations
 list).
 
+#### P9.6.e — Tags in the TUI — ✅ *(2026-05-24)*
+
+Per [ADR-0009](adrs/0009-tag-redesign.md) (PRs A/B/C landed the backend). This
+slice wires tags into the TUI read and write surfaces so the
+normalised tag system is visible and editable without leaving the app.
+
+- **Data layer** — `TransactionSummary.tags` and `AccountSummary.tags`
+  (`tuple[str, ...]`, default `()`) populated from the API's
+  `tags: list[str]` field on both resources.
+- **Write layer** — `TransactionDraft.tags` and `AccountDraft.tags`
+  (`tuple[str, ...]`, default `()`) included in `POST /v1/transactions`
+  and `POST /v1/accounts` when non-empty.
+- **Transaction modal** (`TransactionEditModal`) — new comma-separated
+  `#tx-tags` Input field with `initial_tags` prefill. `_parse_tags`
+  normalises: strip whitespace, lowercase, deduplicate (order preserved;
+  API alpha-sorts on write).
+- **Account modal** (`AccountEditModal`) — same `#acct-tags` Input and
+  prefill pattern.
+- **Transaction detail pane** — tags rendered as `tags: food · grocery`
+  when present.
+- **Edit prefill** — `action_edit_tx` passes `initial_tags=tx.tags`;
+  `action_edit_account` passes `initial_tags=account.tags` so edits
+  round-trip existing tags.
+- **`main.py` edit actions** — `_tx_edit_action` includes
+  `"tags": list(draft.tags)` in the PATCH (always sent; empty list
+  clears tags); `_account_edit_action` same.
+- **Tests** — 12 new: 2 data-layer (transactions + accounts tags round-trip
+  and absent-field defaults); 4 transaction modal (renders widget,
+  comma parsing, prefill, empty case); 4 account modal (same); 1
+  transactions screen detail-pane rendering.
+
+No backend changes — all endpoints already accept and return `tags`.
+
 #### P9.6.a — Apply imports inside the TUI — ✅ *(2026-05-20)*
 
 Per [#418](https://github.com/rmwarriner/tulip-accounting/issues/418). New `ImportBatchDetailScreen` reachable with

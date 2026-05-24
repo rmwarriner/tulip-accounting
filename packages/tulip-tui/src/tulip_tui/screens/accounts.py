@@ -162,6 +162,7 @@ class AccountsScreen(Screen[None]):
             initial_currency=account.currency,
             initial_code=account.code or "",
             initial_placeholder=account.is_placeholder,
+            initial_tags=account.tags,
         )
         account_id = account.id
         self.app.push_screen(modal, lambda result: self._on_edit_modal_done(account_id, result))

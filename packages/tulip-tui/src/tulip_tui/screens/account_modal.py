@@ -30,6 +30,16 @@ _TYPE_RE = re.compile(r"^(asset|liability|equity|income|expense)$")
 _CURRENCY_RE = re.compile(r"^[A-Za-z]{3}$")
 
 
+def _parse_tags(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated tag string into a normalised tuple."""
+    seen: list[str] = []
+    for part in raw.split(","):
+        t = part.strip().lower()
+        if t and t not in seen:
+            seen.append(t)
+    return tuple(seen)
+
+
 class AccountEditModal(ModalScreen[AccountDraft | None]):
     """Modal form for ``tulip accounts add`` / ``edit`` (#431)."""
 
@@ -92,6 +102,7 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         initial_parent_id: str | None = None,
         initial_notes: str = "",
         initial_placeholder: bool = False,
+        initial_tags: tuple[str, ...] = (),
     ) -> None:
         """Store prefill values; modal renders on mount."""
         super().__init__()
@@ -105,6 +116,7 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         self._initial_parent_id = initial_parent_id
         self._initial_notes = initial_notes
         self._initial_placeholder = initial_placeholder
+        self._initial_tags = ", ".join(initial_tags)
         self._error: str = ""
 
     def compose(self) -> ComposeResult:
@@ -146,6 +158,8 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
             )
             yield Static("notes (optional, encrypted at rest)", classes="label")
             yield Input(value=self._initial_notes, id="acct-notes")
+            yield Static("tags (optional, comma-separated)", classes="label")
+            yield Input(value=self._initial_tags, id="acct-tags")
             yield Static("", id="acct-error")
             with Horizontal(id="acct-buttons"):
                 yield Button("Cancel", id="acct-cancel")
@@ -175,6 +189,7 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
         parent_id_raw = self.query_one("#acct-parent-id", Input).value.strip()
         parent_id = parent_id_raw or None
         notes = self.query_one("#acct-notes", Input).value.strip() or None
+        tags = _parse_tags(self.query_one("#acct-tags", Input).value)
 
         if not name:
             self._set_error("name is required")
@@ -196,6 +211,7 @@ class AccountEditModal(ModalScreen[AccountDraft | None]):
             parent_account_id=parent_id,
             notes=notes,
             is_placeholder=is_placeholder,
+            tags=tags,
         )
 
     def _set_error(self, msg: str) -> None:

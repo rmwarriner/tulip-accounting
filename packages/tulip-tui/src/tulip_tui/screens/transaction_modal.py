@@ -37,6 +37,20 @@ from tulip_tui.data.transaction_write import (
 )
 
 
+def _parse_tags(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated tag string into a normalised tuple.
+
+    Each element is stripped and lowercased; blanks and duplicates are
+    dropped. Order is preserved (the API will alpha-sort on write).
+    """
+    seen: list[str] = []
+    for part in raw.split(","):
+        t = part.strip().lower()
+        if t and t not in seen:
+            seen.append(t)
+    return tuple(seen)
+
+
 def _today() -> str:
     """Return today's date as ISO-8601 (UTC), per the QUICKSTART convention."""
     return datetime.now(UTC).date().isoformat()
@@ -110,6 +124,7 @@ class TransactionEditModal(ModalScreen[TransactionDraft | None]):
         initial_description: str = "",
         initial_reference: str = "",
         initial_postings: str = "",
+        initial_tags: tuple[str, ...] = (),
     ) -> None:
         """Store the prefill values; ``initial_date`` defaults to today (UTC)."""
         super().__init__()
@@ -120,6 +135,7 @@ class TransactionEditModal(ModalScreen[TransactionDraft | None]):
         self._initial_postings = initial_postings or (
             "# one posting per line — e.g.\n# 1110=-12.50\n# 5100=12.50\n"
         )
+        self._initial_tags = ", ".join(initial_tags)
         self._error: str = ""
 
     def compose(self) -> ComposeResult:
@@ -134,6 +150,8 @@ class TransactionEditModal(ModalScreen[TransactionDraft | None]):
             yield Input(value=self._initial_reference, id="tx-reference")
             yield Static("postings (one per line: account=amount[@CUR])", classes="label")
             yield TextArea(text=self._initial_postings, id="tx-postings")
+            yield Static("tags (optional, comma-separated)", classes="label")
+            yield Input(value=self._initial_tags, id="tx-tags")
             yield Static("", id="tx-error")
             with Horizontal(id="tx-buttons"):
                 yield Button("Cancel", id="tx-cancel")
@@ -175,11 +193,13 @@ class TransactionEditModal(ModalScreen[TransactionDraft | None]):
             self._set_error(str(exc))
             return None
 
+        tags = _parse_tags(self.query_one("#tx-tags", Input).value)
         return TransactionDraft(
             date=date_val,
             description=description,
             reference=reference or None,
             postings=postings,
+            tags=tags,
         )
 
     def _set_error(self, msg: str) -> None:
