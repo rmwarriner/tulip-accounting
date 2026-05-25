@@ -28,7 +28,6 @@ from tulip_cli.commands.doctor import doctor as doctor_command
 from tulip_cli.commands.envelopes import envelopes_app
 from tulip_cli.commands.household import household_app
 from tulip_cli.commands.imports import imports_app
-from tulip_cli.commands.journal import journal_app
 from tulip_cli.commands.notifications import notifications_app
 from tulip_cli.commands.periods import periods_app
 from tulip_cli.commands.pool_actions import (
@@ -40,6 +39,7 @@ from tulip_cli.commands.pool_actions import (
 from tulip_cli.commands.pool_actions import (
     transfer as transfer_command,
 )
+from tulip_cli.commands.pta import pta_app
 from tulip_cli.commands.reconcile import reconcile_app
 from tulip_cli.commands.refills import refills_app
 from tulip_cli.commands.register import register as register_command
@@ -134,7 +134,7 @@ app.add_typer(refills_app, name="refills")
 # for back-compat with P5.2.a/b examples that used the singular form.
 app.add_typer(imports_app, name="imports")
 app.add_typer(imports_app, name="import")
-app.add_typer(journal_app, name="journal")
+app.add_typer(pta_app, name="pta")
 app.add_typer(reconcile_app, name="reconcile")
 app.add_typer(reports_app, name="reports")
 app.add_typer(user_app, name="user")

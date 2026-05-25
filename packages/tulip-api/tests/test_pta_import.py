@@ -1,6 +1,6 @@
-"""Tests for POST /v1/journal/import (P7.5).
+"""Tests for POST /v1/pta/import (P7.5, renamed from /v1/journal/import in #415).
 
-Round-trip through GET /v1/journal/export → POST /v1/journal/import
+Round-trip through GET /v1/pta/export → POST /v1/pta/import
 is the primary acceptance criterion: the export round-trips back
 into the same household as PENDING transactions.
 """
@@ -42,10 +42,10 @@ def _account(client: TestClient, headers: dict[str, str], **extra: object) -> st
     return str(client.post("/v1/accounts", headers=headers, json=body).json()["id"])
 
 
-def _post_journal(client: TestClient, headers: dict[str, str], text: str) -> object:
-    """Helper: POST /v1/journal/import with a plain-text body."""
+def _post_pta(client: TestClient, headers: dict[str, str], text: str) -> object:
+    """Helper: POST /v1/pta/import with a plain-text body."""
     return client.post(
-        "/v1/journal/import",
+        "/v1/pta/import",
         headers={**headers, "content-type": "text/plain"},
         content=text,
     )
@@ -66,7 +66,7 @@ class TestImportHappyPath:
                 "",
             ]
         )
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 201, r.text
         payload = r.json()
         assert payload["created"] == 1
@@ -97,8 +97,8 @@ class TestImportHappyPath:
         assert r.status_code == 201
 
         # Export and re-import.
-        exported = client.get("/v1/journal/export", headers=auth_h).text
-        r2 = _post_journal(client, auth_h, exported)
+        exported = client.get("/v1/pta/export", headers=auth_h).text
+        r2 = _post_pta(client, auth_h, exported)
         assert r2.status_code == 201, r2.text
         assert r2.json()["created"] == 1  # one tx survived the round-trip
 
@@ -113,10 +113,10 @@ class TestImportErrors:
                 "    foo  bar",
             ]
         )
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 400
         payload = r.json()
-        assert payload["code"] == "journal.parse_failed"
+        assert payload["code"] == "pta.parse_failed"
         assert payload["errors"]
         assert "line" in payload["errors"][0]
 
@@ -131,10 +131,10 @@ class TestImportErrors:
                 "",
             ]
         )
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 400
         payload = r.json()
-        assert payload["code"] == "journal.import_failed"
+        assert payload["code"] == "pta.import_failed"
         assert any("could not resolve" in e["message"] for e in payload["errors"])
 
     def test_unbalanced_postings_return_400(
@@ -151,10 +151,10 @@ class TestImportErrors:
                 "",
             ]
         )
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 400
         payload = r.json()
-        assert payload["code"] == "journal.import_failed"
+        assert payload["code"] == "pta.import_failed"
         assert any("not balance" in e["message"] for e in payload["errors"])
 
     def test_currency_mismatch_returns_400(
@@ -170,22 +170,22 @@ class TestImportErrors:
                 "",
             ]
         )
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 400
         payload = r.json()
-        assert payload["code"] == "journal.import_failed"
+        assert payload["code"] == "pta.import_failed"
 
     def test_empty_body_creates_no_transactions(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
-        r = _post_journal(client, auth_h, "")
+        r = _post_pta(client, auth_h, "")
         # Empty body has no transactions and no errors → 201 with zero created.
         assert r.status_code == 201
         assert r.json()["created"] == 0
 
     def test_no_token_returns_unauthorized(self, client: TestClient) -> None:
         r = client.post(
-            "/v1/journal/import",
+            "/v1/pta/import",
             headers={"content-type": "text/plain"},
             content="2026-05-01 desc\n    A:B  1.00 USD\n    A:C  -1.00 USD\n",
         )
@@ -197,7 +197,7 @@ _ = date
 
 
 class TestParseLineCap:
-    """#351 / security audit L-12: the journal parser bounds each line
+    """#351 / security audit L-12: the PTA parser bounds each line
     before any regex runs. A pathologically long line surfaces as a
     typed parse error instead of risking catastrophic backtracking.
     """
@@ -206,12 +206,12 @@ class TestParseLineCap:
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
         """A 5000-char description (above the 4096 cap) is rejected with
-        ``journal.parse_failed`` + a line-too-long error.
+        ``pta.parse_failed`` + a line-too-long error.
         """
         oversize_line = "2026-05-01 " + ("A" * 5000) + "\n"
         body = oversize_line + "    Asset:Cash  1.00 USD\n    Expense:Misc  -1.00 USD\n"
-        r = _post_journal(client, auth_h, body)
+        r = _post_pta(client, auth_h, body)
         assert r.status_code == 400
-        assert r.json()["code"] == "journal.parse_failed"
+        assert r.json()["code"] == "pta.parse_failed"
         errors = r.json()["errors"]
         assert any("line exceeds" in e["message"] for e in errors)

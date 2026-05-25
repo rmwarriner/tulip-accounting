@@ -1,7 +1,7 @@
 [project]
 name = "tulip-importers"
 version = "0.0.0"
-description = "File-format importers (OFX, QIF, CSV, journal) for Tulip Accounting."
+description = "File-format importers (OFX, QIF, CSV, PTA/hledger) for Tulip Accounting."
 requires-python = ">=3.12"
 dependencies = [
     "tulip-core",

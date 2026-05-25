@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 
 # Stable name + code used for the auto-created Imbalance account
 # (one per currency). hledger / ledger-cli use the same name convention,
-# so journal export → external tool → re-import round-trips cleanly.
+# so PTA export → external tool → re-import round-trips cleanly.
 _IMBALANCE_NAME = "Imbalance:Unknown"
 _IMBALANCE_CODE_PREFIX = "9999"  # 9999.<CURRENCY>, e.g. 9999.USD
 

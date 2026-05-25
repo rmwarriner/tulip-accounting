@@ -283,7 +283,7 @@ red when soft-closed.
 
 ---
 
-## 8. Reports + journal export/import
+## 8. Reports + PTA export/import
 
 `tulip reports` covers the nine v1 reports. Every subcommand accepts
 `--format json|html|pdf|csv` (default `json`) and `--output PATH`.
@@ -322,18 +322,18 @@ transactions for review:
 
 ```bash
 # Export the whole ledger as hledger journal text.
-uv run tulip journal export --output ledger.journal
+uv run tulip pta export --output ledger.journal
 
 # Or restrict to a date range, write to stdout, pipe into hledger.
-uv run tulip journal export --start 2026-01-01 --end 2026-05-31 | hledger -f - balance
+uv run tulip pta export --start 2026-01-01 --end 2026-05-31 | hledger -f - balance
 
 # Re-import a journal file (creates PENDING transactions — review with
 # `tulip transactions list --status pending` then promote).
-uv run tulip journal import ledger.journal
+uv run tulip pta import ledger.journal
 ```
 
-Import errors surface line numbers (`journal.parse_failed` for syntax,
-`journal.import_failed` for unknown accounts, unbalanced postings, or
+Import errors surface line numbers (`pta.parse_failed` for syntax,
+`pta.import_failed` for unknown accounts, unbalanced postings, or
 currency mismatches) so you can fix the file and retry.
 
 ---
@@ -533,7 +533,7 @@ toggle on and off as you experiment.
 - Run `tulip --help` to discover commands not covered here: `envelopes`,
   `sinking-funds`, `refills`, `transfer`, `budget-inflow`,
   `notifications`.
-- The `tulip reports` and `tulip journal` groups (covered in §8 above)
+- The `tulip reports` and `tulip pta` groups (covered in §8 above)
   are the easiest way to get printable outputs and hledger-format
   round-trips.
 - File issues at https://github.com/rmwarriner/tulip-accounting/issues —

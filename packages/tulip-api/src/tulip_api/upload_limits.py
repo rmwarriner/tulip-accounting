@@ -48,7 +48,7 @@ async def read_request_body_capped(request: Request, *, max_bytes: int) -> bytes
     """Read the request body in chunks, raising as soon as the cap is exceeded.
 
     Used for endpoints that accept a raw body (``Request.body()`` pattern),
-    e.g. ``POST /v1/journal/import``.
+    e.g. ``POST /v1/pta/import``.
     """
     _check_content_length(request.headers.get("content-length"), max_bytes)
 

@@ -41,7 +41,7 @@ class SourceFormat(Enum):
     OFX = "ofx"
     QIF = "qif"
     CSV = "csv"
-    JOURNAL = "journal"
+    PTA_HLEDGER = "pta_hledger"
 
 
 class ImportBatchStatus(Enum):

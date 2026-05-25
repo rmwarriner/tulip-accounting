@@ -1,6 +1,6 @@
 # Tulip Accounting — Architectural Specification (v1)
 
-**Status:** Phases 0–7 complete; Phase 8 (operations + hardening) in progress. Internal-beta ready. The full v1 surface is in place: ADR-0005 AI integration end-to-end, all nine reports rendered in HTML/PDF/CSV, hledger-format journal export + import, and the `tulip reports` / `tulip journal` CLI groups. Phase 8 deep security + deep privacy audits have shipped, along with their highest-severity Wave-1 follow-ups and a post-audit CLI/importers usability bundle.
+**Status:** Phases 0–7 complete; Phase 8 (operations + hardening) in progress. Internal-beta ready. The full v1 surface is in place: ADR-0005 AI integration end-to-end, all nine reports rendered in HTML/PDF/CSV, hledger-format PTA export + import, and the `tulip reports` / `tulip pta` CLI groups. Phase 8 deep security + deep privacy audits have shipped, along with their highest-severity Wave-1 follow-ups and a post-audit CLI/importers usability bundle.
 **Document version:** 1.3
 **Date:** 2026-04-29 (original) · 2026-05-07 (Phase 5 close + roadmap refresh) · 2026-05-12 (Phase 7 close) · 2026-05-14 (Phase 8 audits + Wave-1)
 
@@ -50,7 +50,7 @@ Tulip Accounting is a household-focused, double-entry accounting system with fir
 - OCR on receipts and full-text attachment search (deferred to v1.x)
 - WebAuthn / passkey MFA (deferred; TOTP only in v1)
 - FX rate fetching and revaluation (multi-currency schema in place; rate engine deferred)
-- Polished journal-format importer (basic import in v1; polish in v1.1)
+- Polished PTA importer (basic hledger import in v1; ledger/beancount planned for #34)
 
 ---
 
@@ -281,7 +281,7 @@ attachment_links (many-to-many)
 import_batches
   id (uuid pk)
   household_id (fk)
-  source_format (enum: ofx, qif, csv, journal)
+  source_format (enum: ofx, qif, csv, pta_hledger)
   source_filename
   imported_count, skipped_count, error_count
   raw_payload_attachment_id (nullable fk — original file kept as attachment)
@@ -471,10 +471,10 @@ Each importer:
 
 **Multi-account QIF** (#195a/#195b, #198): Banktivity-style QIF exports carry several accounts in one file (`!Account` section headers) and intra-file transfers (`L[Account]` links). `POST /v1/imports/multi-account` takes the whole file plus an `account_map` JSON form field (QIF account name → Tulip account) in a single POST; the importer pairs the two legs of each transfer into one balanced transaction, and an unmatched leg falls back to a one-sided line with a warning. Non-transaction QIF sections (`!Type:Cat`, `!Type:Class`, etc.) are skipped rather than erroring.
 
-### 5.10 Journal Format Export/Import (Level 3)
+### 5.10 PTA (Plain-Text Accounting) Export/Import (Level 3)
 
-- Export: `tulip export journal --account=<code> --from=<date> --to=<date> > out.journal`. Output is hledger-compatible. Lossy fields (envelope linkage, audit metadata, attachment refs) are emitted as comments where standard format allows.
-- Import: `tulip import journal in.journal`. v1 supports postings + standard directives (account, commodity, P, ~). Envelope/sinking-fund metadata in comments is parsed if present (Tulip-specific extension); standard journals import as plain transactions.
+- Export: `tulip pta export --start=<date> --end=<date> > out.journal`. Output is hledger-compatible. Lossy fields (envelope linkage, audit metadata, attachment refs) are emitted as comments where standard format allows. `--format hledger` is the default; `ledger`/`beancount` are planned for #34.
+- Import: `tulip pta import in.journal`. v1 supports postings + standard directives (account, commodity, P, ~). Envelope/sinking-fund metadata in comments is parsed if present (Tulip-specific extension); standard journals import as plain transactions.
 
 ---
 
@@ -610,7 +610,7 @@ The user has explicitly called out comprehensive testing compliant with modern T
 | Integration | pytest + sqlite-on-disk | All API endpoints | Each endpoint has happy-path + permission-violation + validation-failure tests |
 | Contract | schemathesis | API surface | Auto-generates tests from OpenAPI spec; runs in CI |
 | Architecture tests | `pytest-archtest` or custom | Module boundaries | E.g., "no module outside `tulip.core.accounting` may insert into `postings`" |
-| End-to-end | pytest + spawned-server fixture | Critical flows | Login → import OFX → reconcile → close period → export journal |
+| End-to-end | pytest + spawned-server fixture | Critical flows | Login → import OFX → reconcile → close period → export PTA |
 
 **TDD discipline:**
 - Every feature ships with tests written *before* the implementation (red → green → refactor).
@@ -887,7 +887,7 @@ tulip-accounting/
 │   │   │   ├── ofx/
 │   │   │   ├── qif/
 │   │   │   ├── csv/
-│   │   │   └── journal/       # hledger-format read/write
+│   │   │   └── journal/       # hledger-format read/write (internal module; API surface is /v1/pta)
 │   │   └── tests/
 │   │
 │   ├── tulip-reports/         # report generators
@@ -1024,13 +1024,13 @@ Per [ADR-0004](adrs/0004-reconciliation.md). Closed 2026-05-07 across nine sub-s
 - ✅ **P6.5.b** — `tulip ai config` editor + `log_prompts` toggle + `tulip ai status` fallback-semantics callout. `GET/PUT /v1/ai/config` + `PUT /v1/ai/config/capabilities/{capability}` admin surface (PR #163).
 - ✅ **P6.5.c** — Sinking-fund forecast extension to the daily-insights handler via a single `ForecastRequest` dataclass (PR #171). Phase 6 closes.
 
-### Phase 7 — Reports + journal export/import ✅ complete
+### Phase 7 — Reports + PTA export/import ✅ complete
 - ✅ **P7.1** — `tulip-reports` package skeleton + all nine reports rendered in HTML via a shared Jinja2 layout (trial-balance, balance-sheet, income-statement, cash-flow, envelope-status, sinking-fund-progress, reconciliation-summary, audit-log, custom-query) (PR #180).
 - ✅ **P7.2** — PDF rendering via weasyprint (pydyf + pango), one engine reused across every report (PR #183).
 - ✅ **P7.3** — CSV output for every report via the Python `csv` stdlib + a per-report row-flattening adapter (PR #184).
-- ✅ **P7.4** — hledger-compatible `GET /v1/journal/export[?start=...&end=...]`; output round-trips through hledger / ledger-cli (PR #186).
-- ✅ **P7.5** — hledger-compatible `POST /v1/journal/import`; account paths resolve by code first then `(type, name)`; imported transactions land in PENDING for review — same convention as the OFX / QIF / CSV importers (PR #188). Phase 7 closes.
-- ✅ **P7.1.b** — CLI surface: `tulip reports <name>` (9 subcommands, `--format json|html|pdf|csv`, `--output PATH`) and `tulip journal {export,import}` over the existing endpoints (PR #190).
+- ✅ **P7.4** — hledger-compatible `GET /v1/pta/export[?format=hledger&start=...&end=...]`; output round-trips through hledger / ledger-cli (PR #186; renamed from `/v1/journal/export` in #415).
+- ✅ **P7.5** — hledger-compatible `POST /v1/pta/import`; account paths resolve by code first then `(type, name)`; imported transactions land in PENDING for review — same convention as the OFX / QIF / CSV importers (PR #188; renamed from `/v1/journal/import` in #415). Phase 7 closes.
+- ✅ **P7.1.b** — CLI surface: `tulip reports <name>` (9 subcommands, `--format json|html|pdf|csv`, `--output PATH`) and `tulip pta {export,import}` over the existing endpoints (PR #190; renamed from `tulip journal` in #415).
 
 ### Phase 8 — Operations + hardening 🔄 in progress
 - ✅ **Deep security audit** — shipped 2026-05-12 as [docs/audits/2026-05-12-deep-security-audit.md](audits/2026-05-12-deep-security-audit.md). Multi-agent static review across seven streams (auth/session, authz/tenancy, crypto, input-validation, secrets/logging/deps, audit-log/ops, AI/backup); `pip-audit` clean. **0 Critical · 8 High · 25 Medium · 24 Low.** Document-only; findings tracked as follow-up issues. Explicitly *not* a pen test — that stays deferred to the pre-cloud phase (Phase 10; the audit document, dated before the Phase 9 TUI insertion, refers to it as "Phase 9").

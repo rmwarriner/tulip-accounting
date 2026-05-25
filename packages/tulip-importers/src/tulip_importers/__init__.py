@@ -1,1 +1,1 @@
-"""File-format importers (OFX, QIF, CSV, journal) for Tulip Accounting."""
+"""File-format importers (OFX, QIF, CSV, PTA/hledger) for Tulip Accounting."""
