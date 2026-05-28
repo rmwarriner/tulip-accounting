@@ -1,9 +1,13 @@
-"""hledger-compatible journal export + import (P7.4 / P7.5).
+"""Plain-text accounting (PTA) export + import — hledger format (P7.4 / P7.5).
 
-GET ``/v1/journal/export`` renders the household's posted transactions
+Replaces the former ``/v1/journal/*`` surface (renamed in #415).  The
+``pta`` namespace reserves room for ``--format ledger`` / ``beancount``
+support planned in #34 without forcing a second rename.
+
+GET  ``/v1/pta/export``  renders the household's posted transactions
 as plain-text hledger journal text.
 
-POST ``/v1/journal/import`` accepts a journal file body and creates
+POST ``/v1/pta/import``  accepts a journal file body and creates
 **pending** transactions ready for review — same convention as the
 existing OFX / QIF / CSV importers (#74).
 """
@@ -11,7 +15,7 @@ existing OFX / QIF / CSV importers (#74).
 from __future__ import annotations
 
 from datetime import date as date_type
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
@@ -26,14 +30,14 @@ if TYPE_CHECKING:
     from tulip_api.auth.tokens import Claims
 
 
-router = APIRouter(prefix="/v1/journal", tags=["journal"])
+router = APIRouter(prefix="/v1/pta", tags=["pta"])
 
 
-_MAX_JOURNAL_BYTES = 5 * 1024 * 1024  # 5 MB — matches the OFX cap (#74).
+_MAX_PTA_BYTES = 5 * 1024 * 1024  # 5 MB — matches the OFX cap (#74).
 
 
 def _filter_for_role(account_visibility: str, created_by: object, claims: Claims) -> bool:
-    """Mirror routers.reports._filter_for_role for journal-export filtering."""
+    """Mirror routers.reports._filter_for_role for pta-export filtering."""
     if account_visibility == "shared":
         return True
     if claims.role == "admin":
@@ -41,36 +45,36 @@ def _filter_for_role(account_visibility: str, created_by: object, claims: Claims
     return created_by == claims.user_id
 
 
-class JournalParseFailedError(TulipProblem):
-    """The uploaded journal couldn't be parsed (P7.5)."""
+class PtaParseFailedError(TulipProblem):
+    """The uploaded PTA file couldn't be parsed (P7.5)."""
 
     def __init__(self, errors: list[dict[str, object]]) -> None:
-        """Build the journal.parse_failed problem."""
+        """Build the pta.parse_failed problem."""
         super().__init__(
-            code="journal.parse_failed",
-            title="Journal parsing failed",
+            code="pta.parse_failed",
+            title="PTA parsing failed",
             status=400,
             detail=(
-                f"{len(errors)} parse error(s) in the uploaded journal. "
+                f"{len(errors)} parse error(s) in the uploaded file. "
                 "See ``errors`` for line numbers + messages."
             ),
             extensions={"errors": errors},
         )
 
 
-class JournalImportFailedError(TulipProblem):
-    """Resolution / validation failed during journal import (P7.5)."""
+class PtaImportFailedError(TulipProblem):
+    """Resolution / validation failed during PTA import (P7.5)."""
 
     def __init__(self, errors: list[dict[str, object]]) -> None:
-        """Build the journal.import_failed problem."""
+        """Build the pta.import_failed problem."""
         super().__init__(
-            code="journal.import_failed",
-            title="Journal import failed",
+            code="pta.import_failed",
+            title="PTA import failed",
             status=400,
             detail=(
-                f"{len(errors)} error(s) resolving the journal. Each error "
+                f"{len(errors)} error(s) resolving the file. Each error "
                 "names a line number + the issue (unknown account, balance "
-                "mismatch, currency mismatch). Fix the journal or seed the "
+                "mismatch, currency mismatch). Fix the file or seed the "
                 "missing accounts and retry."
             ),
             extensions={"errors": errors},
@@ -92,7 +96,14 @@ class JournalImportFailedError(TulipProblem):
     },
 )
 def export(
-    start: date_type | None = Query(  # noqa: B008 — FastAPI requires Query()
+    format: Literal["hledger"] = Query(
+        default="hledger",
+        description=(
+            "Output format. Only ``hledger`` is supported today; "
+            "``ledger`` and ``beancount`` are planned for #34."
+        ),
+    ),
+    start: date_type | None = Query(  # noqa: B008
         default=None,
         description="Inclusive lower bound on transaction date (YYYY-MM-DD).",
     ),
@@ -118,6 +129,7 @@ def export(
     ``Content-Disposition: attachment`` header so the CLI / curl
     download to a sensible filename by default.
     """
+    del format  # only "hledger" accepted; consumed by FastAPI validation
     from tulip_reports.journal.export import export_journal
 
     body = export_journal(
@@ -135,7 +147,7 @@ def export(
     if end is not None:
         suffix_parts.append(end.isoformat())
     suffix = "-".join(suffix_parts) if suffix_parts else "all"
-    filename = f"tulip-journal-{suffix}.journal"
+    filename = f"tulip-pta-{suffix}.journal"
     return Response(
         content=body,
         media_type="text/plain; charset=utf-8",
@@ -150,10 +162,10 @@ def export(
     "/import",
     response_model=None,
     responses={
-        201: {"description": "Journal parsed + resolved; pending transactions created."},
+        201: {"description": "PTA file parsed + resolved; pending transactions created."},
         400: problem_response(
-            "journal.parse_failed",
-            "journal.import_failed",
+            "pta.parse_failed",
+            "pta.import_failed",
             "request.body_invalid",
             "request.payload_too_large",
         ),
@@ -161,7 +173,7 @@ def export(
         403: problem_response("auth.forbidden"),
     },
 )
-async def import_journal(
+async def import_pta(
     request: Request,
     claims: Claims = Depends(require_role("admin", "member")),  # noqa: B008
     session: Session = Depends(get_session),  # noqa: B008
@@ -184,25 +196,25 @@ async def import_journal(
     # as soon as the running total exceeds the cap.
     from tulip_api.upload_limits import read_request_body_capped
 
-    body = await read_request_body_capped(request, max_bytes=_MAX_JOURNAL_BYTES)
+    body = await read_request_body_capped(request, max_bytes=_MAX_PTA_BYTES)
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise JournalParseFailedError(
-            errors=[{"line": 0, "message": f"journal body must be UTF-8: {exc}"}]
+        raise PtaParseFailedError(
+            errors=[{"line": 0, "message": f"file body must be UTF-8: {exc}"}]
         ) from exc
 
     from tulip_reports.journal import parse_journal, resolve_journal
 
     parsed = parse_journal(text)
     if parsed.errors:
-        raise JournalParseFailedError(
+        raise PtaParseFailedError(
             errors=[{"line": e.line_number, "message": e.message} for e in parsed.errors]
         )
 
     resolved = resolve_journal(session, household_id=claims.household_id, parsed=parsed)
     if resolved.errors:
-        raise JournalImportFailedError(
+        raise PtaImportFailedError(
             errors=[{"line": e.line_number, "message": e.message} for e in resolved.errors]
         )
 
@@ -257,7 +269,7 @@ async def import_journal(
 
 
 __all__ = [
-    "JournalImportFailedError",
-    "JournalParseFailedError",
+    "PtaImportFailedError",
+    "PtaParseFailedError",
     "router",
 ]

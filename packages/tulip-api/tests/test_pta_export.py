@@ -1,4 +1,4 @@
-"""Tests for GET /v1/journal/export (P7.4).
+"""Tests for GET /v1/pta/export (P7.4, renamed from /v1/journal/export in #415).
 
 Covers shape (header line, indented postings, blank line between txs)
 + the date-range filter + auth gate. Pending and voided transactions
@@ -70,11 +70,11 @@ def _post_tx(
     assert r.status_code == 201, r.text
 
 
-class TestJournalExport:
+class TestPtaExport:
     def test_empty_household_returns_header_comments_only(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
-        r = client.get("/v1/journal/export", headers=auth_h)
+        r = client.get("/v1/pta/export", headers=auth_h)
         assert r.status_code == 200, r.text
         assert r.headers["content-type"].startswith("text/plain")
         body = r.text
@@ -96,7 +96,7 @@ class TestJournalExport:
             description="Grocery store",
         )
 
-        r = client.get("/v1/journal/export", headers=auth_h)
+        r = client.get("/v1/pta/export", headers=auth_h)
         assert r.status_code == 200
         body = r.text
         # Header line: date + description.
@@ -130,7 +130,7 @@ class TestJournalExport:
         )
 
         r = client.get(
-            "/v1/journal/export?start=2026-05-01&end=2026-12-31",
+            "/v1/pta/export?start=2026-05-01&end=2026-12-31",
             headers=auth_h,
         )
         assert r.status_code == 200
@@ -144,14 +144,14 @@ class TestJournalExport:
     def test_content_disposition_includes_sensible_filename(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
-        r = client.get("/v1/journal/export?start=2026-01-01&end=2026-12-31", headers=auth_h)
+        r = client.get("/v1/pta/export?start=2026-01-01&end=2026-12-31", headers=auth_h)
         cd = r.headers.get("content-disposition", "")
         assert "filename=" in cd
         assert ".journal" in cd
         assert "2026-01-01-2026-12-31" in cd
 
     def test_no_token_returns_unauthorized(self, client: TestClient) -> None:
-        r = client.get("/v1/journal/export")
+        r = client.get("/v1/pta/export")
         assert_problem(r, code="auth.unauthorized", status=401)
 
     def test_account_without_code_falls_back_to_type_name_path(
@@ -169,10 +169,22 @@ class TestJournalExport:
             on=date(2026, 5, 1),
             description="No-code test",
         )
-        r = client.get("/v1/journal/export", headers=auth_h)
+        r = client.get("/v1/pta/export", headers=auth_h)
         body = r.text
         assert "Expense:Misc Food" in body
         assert "Asset:Cash on hand" in body
+
+    def test_format_hledger_param_accepted(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.get("/v1/pta/export?format=hledger", headers=auth_h)
+        assert r.status_code == 200
+
+    def test_unsupported_format_returns_422(
+        self, client: TestClient, auth_h: dict[str, str]
+    ) -> None:
+        r = client.get("/v1/pta/export?format=beancount", headers=auth_h)
+        assert r.status_code == 422
 
 
 class TestExportMetadataOptOut:
@@ -184,7 +196,7 @@ class TestExportMetadataOptOut:
     def test_default_export_carries_household_name_header(
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
-        r = client.get("/v1/journal/export", headers=auth_h)
+        r = client.get("/v1/pta/export", headers=auth_h)
         assert r.status_code == 200
         body = r.text
         assert "Tulip Accounting" in body
@@ -195,7 +207,7 @@ class TestExportMetadataOptOut:
         self, client: TestClient, auth_h: dict[str, str]
     ) -> None:
         r = client.get(
-            "/v1/journal/export?include_metadata=false",
+            "/v1/pta/export?include_metadata=false",
             headers=auth_h,
         )
         assert r.status_code == 200

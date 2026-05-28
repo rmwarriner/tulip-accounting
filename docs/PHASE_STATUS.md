@@ -606,7 +606,7 @@ Every Wave-1 security follow-up shipped, one PR per issue:
   master-key / JWT-secret under `TULIP_ENV=prod`; **#231** composite FK
   on `pending_proposals.ai_invocation_id` + `notifications.ai_invocation_id`;
   **#222** audit-log rows for logout / refresh / proposal / refill-schedule;
-  **#229** role-visibility filter threaded through the reports + journal
+  **#229** role-visibility filter threaded through the reports + PTA
   export.
 
 ### Privacy Wave-1 — 🔄 Critical + Highs landing (#233–#235, #242)
@@ -793,10 +793,10 @@ and `--output PATH`. JSON/HTML default to stdout; PDF/CSV require
 `--output` since binary-to-terminal isn't useful. Date options are
 validated client-side with a `typer.BadParameter` for fast feedback.
 
-**`tulip journal`** — two subcommands:
-- `journal export` wraps `GET /v1/journal/export`. Accepts `--start`,
-  `--end`, `--output`. Writes to stdout by default.
-- `journal import FILE` wraps `POST /v1/journal/import`. Reads the
+**`tulip pta`** — two subcommands (renamed from `tulip journal` in #415):
+- `pta export` wraps `GET /v1/pta/export`. Accepts `--format hledger`
+  (default), `--start`, `--end`, `--output`. Writes to stdout by default.
+- `pta import FILE` wraps `POST /v1/pta/import`. Reads the
   file's bytes, posts as `text/plain`, surfaces `{created, transaction_ids}`
   or the typed Problem Details errors verbatim.
 
@@ -804,14 +804,14 @@ validated client-side with a `typer.BadParameter` for fast feedback.
 - `test_reports_command.py` (9 tests): trial-balance JSON/HTML/CSV-to-file/
   PDF-requires-output paths; `--as-of` and invalid-date forwarding;
   audit-log pagination; custom-query unsafe-SQL surfacing; auth gate.
-- `test_journal_command.py` (8 tests): export to stdout / file / date
+- `test_pta_command.py` (8 tests): export to stdout / file / date
   range / invalid date; **export→import round-trip** (primary
   acceptance); import parse-error surfacing; `--json` passthrough on
   import; auth gate.
 
 Full suite: 1528 passed, 1 skipped in 4:01.
 
-### P7.5 — hledger journal import — ✅ *(2026-05-12)*
+### P7.5 — hledger PTA import — ✅ *(2026-05-12)*
 
 Final Phase-7 slice. Closes the round-trip with P7.4: users can pull
 their ledger out as hledger journal text and push it back in. Imported
@@ -832,16 +832,16 @@ convention as the existing OFX / QIF / CSV importers (#74).
 - Validates: every account resolves, posting currency matches
   account currency, postings balance per currency.
 
-**HTTP** (`tulip_api.routers.journal`):
-- `POST /v1/journal/import` accepts plain-text body (5 MB cap),
+**HTTP** (`tulip_api.routers.pta`):
+- `POST /v1/pta/import` accepts plain-text body (5 MB cap),
   parses + resolves, inserts as PENDING transactions via
   `TransactionRepository.save_balanced`. Response carries
   `created` count + the `transaction_ids` array.
-- Parse errors → `journal.parse_failed` (400) with `errors`
+- Parse errors → `pta.parse_failed` (400) with `errors`
   extension array.
-- Resolve errors → `journal.import_failed` (400) with the same shape.
+- Resolve errors → `pta.import_failed` (400) with the same shape.
 
-**Tests** — +8 in `test_journal_import.py`:
+**Tests** — +8 in `test_pta_import.py`:
 - Happy path: minimal two-posting tx creates one PENDING transaction.
 - **Export → import round-trip** through the existing transactions
   endpoint — the primary acceptance criterion.
@@ -857,7 +857,7 @@ Full suite: 1511 passed locally.
 **Phase 7 closes** with this slice. CLI subcommands tracked as P7.1.b
 follow-up (see below for the in-flight CLI slice).
 
-### P7.4 — hledger-compatible journal export — ✅ *(2026-05-12)*
+### P7.4 — hledger-compatible PTA export — ✅ *(2026-05-12)*
 
 Fourth Phase-7 slice. Adds a plain-text export of the household
 ledger in hledger journal format — the de-facto standard for the
@@ -872,10 +872,10 @@ hledger / ledger-cli for users who want analysis in those tools.
   `<Type>:<code>:<name>` (or `<Type>:<name>` when no code is set).
 
 **HTTP**:
-- New router `tulip_api.routers.journal` with one endpoint:
-  `GET /v1/journal/export[?start=...&end=...]`. Returns
+- New router `tulip_api.routers.pta` with one endpoint:
+  `GET /v1/pta/export[?format=hledger&start=...&end=...]`. Returns
   `text/plain; charset=utf-8` with `Content-Disposition:
-  attachment; filename=tulip-journal-<date>.journal` so browsers
+  attachment; filename=tulip-pta-<date>.journal` so browsers
   download to a sensible name.
 
 **Format details**:
@@ -1032,8 +1032,8 @@ date filters, custom-query SQL safety gate).
 **Out of scope** (deferred — all subsequently delivered):
 - PDF rendering via weasyprint — P7.2.
 - CSV output — P7.3.
-- CLI subcommands (`tulip reports <name>`, `tulip journal {export,import}`) — P7.1.b.
-- Journal export/import — P7.4 / P7.5.
+- CLI subcommands (`tulip reports <name>`, `tulip pta {export,import}`) — P7.1.b.
+- PTA export/import — P7.4 / P7.5.
 
 ---
 

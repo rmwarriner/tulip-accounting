@@ -6,9 +6,9 @@ accumulating the entire body in RAM first. The unit tests below use a
 ``FakeUploadFile`` / synthetic async iterator and assert both the
 overflow-detection and Content-Length eager-gate behaviours.
 
-The integration paths (``POST /v1/imports`` + ``POST /v1/journal/import``)
+The integration paths (``POST /v1/imports`` + ``POST /v1/pta/import``)
 inherit the protection by calling the helpers directly; covered by the
-existing imports / journal endpoint tests for the happy path, and by
+existing imports / pta endpoint tests for the happy path, and by
 the explicit oversize-request tests in this file's ``EndToEnd`` class.
 """
 

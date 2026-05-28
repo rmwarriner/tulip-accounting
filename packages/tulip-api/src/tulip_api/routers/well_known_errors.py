@@ -59,10 +59,10 @@ _PLACEHOLDER_ARGS: dict[str, dict[str, Any]] = {
     },
     "UnsupportedProposalKindError": {"kind": "transfer_pools"},
     "CustomQueryUnsafeError": {"reason": "table 'users' is not in the AI view allowlist"},
-    "JournalParseFailedError": {
+    "PtaParseFailedError": {
         "errors": [{"line": 7, "message": "malformed posting line"}],
     },
-    "JournalImportFailedError": {
+    "PtaImportFailedError": {
         "errors": [
             {"line": 3, "message": "could not resolve account path 'Expense:9999:Nonexistent'"},
         ],

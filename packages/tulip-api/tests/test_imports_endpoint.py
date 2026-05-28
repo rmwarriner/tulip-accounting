@@ -414,16 +414,16 @@ class TestUploadQif:
         checking_account: str,
     ):
         body_bytes = (_OFX_FIXTURES / "minimal_ofx2.ofx").read_bytes()
-        # 'journal' is reserved in the storage enum but no parser ships
-        # for it yet — it's the canonical "unimplemented format" probe.
+        # 'beancount' is a planned future format (#34) that has no parser
+        # yet — it's the canonical "unimplemented format" probe.
         r = client.post(
             "/v1/imports",
             headers=auth_h,
-            files={"file": ("file.journal", body_bytes, "text/plain")},
-            data={"account_id": checking_account, "source_format": "journal"},
+            files={"file": ("file.beancount", body_bytes, "text/plain")},
+            data={"account_id": checking_account, "source_format": "beancount"},
         )
         body = assert_problem(r, code="import.unsupported_format", status=400)
-        assert body["format"] == "journal"
+        assert body["format"] == "beancount"
 
 
 class TestUploadMultiAccountQif:

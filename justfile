@@ -35,6 +35,12 @@ precommit-install:
 # Override per-invocation via `XDIST_WORKERS=8 just test`.
 export XDIST_WORKERS := env_var_or_default("XDIST_WORKERS", "4")
 
+# On macOS/Homebrew, glib ships as libgobject-2.0.0.dylib but cffi (weasyprint)
+# looks for libgobject-2.0-0 — the Linux SONAMEconvention. Adding the Homebrew
+# lib dir to DYLD_LIBRARY_PATH lets the dynamic linker find the library.
+# CI runs on Linux where the standard SONAME resolves without this.
+export DYLD_LIBRARY_PATH := if os() == "macos" { "/opt/homebrew/lib" } else { env_var_or_default("DYLD_LIBRARY_PATH", "") }
+
 # Run the full test suite, parallelised via pytest-xdist (matches CI).
 test:
     uv run pytest -n auto --maxprocesses {{XDIST_WORKERS}}
